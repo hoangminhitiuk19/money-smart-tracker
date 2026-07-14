@@ -1,0 +1,125 @@
+import { NextResponse } from "next/server";
+import { requireAuth } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+
+const columns = [
+  "Date",
+  "Type",
+  "Title",
+  "Amount",
+  "Currency",
+  "Category",
+  "Quality Rating",
+  "From Source",
+  "To Source",
+  "Project",
+  "Description",
+  "Count Toward Fee Waiver",
+  "Created At"
+];
+
+function parseDateParam(value: string | null, boundary: "start" | "end") {
+  if (!value) {
+    return undefined;
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return undefined;
+  }
+
+  if (boundary === "start") {
+    date.setHours(0, 0, 0, 0);
+  } else {
+    date.setHours(23, 59, 59, 999);
+  }
+
+  return date;
+}
+
+function csvCell(value: unknown) {
+  const text =
+    value === null || value === undefined
+      ? ""
+      : value instanceof Date
+        ? value.toISOString()
+        : String(value);
+
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function csvRow(values: unknown[]) {
+  return values.map(csvCell).join(",");
+}
+
+export async function GET(request: Request) {
+  const user = await requireAuth({ onUnauthenticated: "return-null" });
+
+  if (!user) {
+    return new NextResponse("Unauthorized", { status: 401 });
+  }
+
+  const url = new URL(request.url);
+  const startDate = parseDateParam(url.searchParams.get("startDate"), "start");
+  const endDate = parseDateParam(url.searchParams.get("endDate"), "end");
+  const now = new Date();
+  const transactions = await prisma.transaction.findMany({
+    where: {
+      userId: user.id,
+      transactionDate:
+        startDate || endDate
+          ? {
+              gte: startDate,
+              lte: endDate
+            }
+          : undefined
+    },
+    orderBy: [{ transactionDate: "desc" }, { createdAt: "desc" }],
+    include: {
+      category: true,
+      fromMoneySource: true,
+      toMoneySource: true,
+      project: true
+    }
+  });
+  const csv = [
+    columns.join(","),
+    ...transactions.map((transaction) =>
+      csvRow([
+        transaction.transactionDate,
+        transaction.type,
+        transaction.title,
+        transaction.amount.toString(),
+        transaction.currency,
+        transaction.category?.name,
+        transaction.qualityRating,
+        transaction.fromMoneySource?.name,
+        transaction.toMoneySource?.name,
+        transaction.project?.name,
+        transaction.description,
+        transaction.countTowardFeeWaiver,
+        transaction.createdAt
+      ])
+    )
+  ].join("\n");
+
+  await prisma.activityLog.create({
+    data: {
+      userId: user.id,
+      action: "CSV_EXPORTED",
+      entityType: "Transaction",
+      metadata: {
+        exportedAt: now.toISOString(),
+        rowCount: transactions.length
+      }
+    }
+  });
+
+  return new NextResponse(csv, {
+    headers: {
+      "Content-Disposition": 'attachment; filename="transactions.csv"',
+      "Content-Type": "text/csv"
+    }
+  });
+}
