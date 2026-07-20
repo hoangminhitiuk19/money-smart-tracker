@@ -21,3 +21,6 @@ pnpm-debug.log*
 # env files
 .env
 .env*.local
+
+# claude code local state (worktrees, local settings)
+.claude/
