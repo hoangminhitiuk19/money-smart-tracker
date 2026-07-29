@@ -361,3 +361,16 @@ model ActivityLog {
 
   @@index([userId])
 }
+
+model RateLimitBucket {
+  scope          String
+  identifierHash String
+  windowStart    DateTime
+  count          Int      @default(0)
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+
+  @@id([scope, identifierHash, windowStart])
+  @@index([expiresAt])
+  @@map("rate_limit_buckets")
+}
