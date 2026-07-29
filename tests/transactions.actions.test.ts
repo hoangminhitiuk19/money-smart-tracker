@@ -121,6 +121,7 @@ describe("transaction mutation rate limiting", () => {
 
     expect(result).toEqual({ ok: false, error: RATE_LIMIT_MESSAGE });
     expect(prisma.recurringPayment.findFirst).not.toHaveBeenCalled();
+    expect(prisma.moneySource.findMany).not.toHaveBeenCalled();
     expect(prisma.transaction.create).not.toHaveBeenCalled();
   });
 });

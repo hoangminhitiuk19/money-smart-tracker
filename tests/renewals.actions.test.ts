@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createRenewal,
   markRenewalAsPaid,
+  pauseRenewal,
   pauseRenewalFormAction
 } from "@/lib/actions/renewals";
 import { prisma } from "@/lib/prisma";
@@ -114,6 +115,13 @@ describe("renewal mutation rate limiting", () => {
 
   it("consumes one rate-limit token when pausing through the form wrapper", async () => {
     await pauseRenewalFormAction("renewal-1");
+
+    expect(checkAuthenticatedMutation).toHaveBeenCalledTimes(1);
+    expect(checkAuthenticatedMutation).toHaveBeenCalledWith("user-1");
+  });
+
+  it("consumes one rate-limit token when pausing through the public action", async () => {
+    await pauseRenewal("renewal-1");
 
     expect(checkAuthenticatedMutation).toHaveBeenCalledTimes(1);
     expect(checkAuthenticatedMutation).toHaveBeenCalledWith("user-1");
