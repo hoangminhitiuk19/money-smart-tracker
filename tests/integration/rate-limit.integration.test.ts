@@ -30,14 +30,18 @@ describe("PostgreSQL rate-limit store", () => {
     ]);
   });
 
-  it("deletes no more than the requested number of expired rows", async () => {
+  it("deletes the 500 oldest expired rows and retains the newest expired row", async () => {
+    const oldestExpiryMs = new Date("2000-01-01T00:00:00.000Z").getTime();
+    const newestIdentifierHash = (500).toString(16).padStart(64, "0");
+    const newestExpiry = new Date(oldestExpiryMs + 500);
+
     await prisma.rateLimitBucket.createMany({
       data: Array.from({ length: 501 }, (_, index) => ({
         scope: cleanupScope,
         identifierHash: index.toString(16).padStart(64, "0"),
         windowStart: new Date(0),
         count: 1,
-        expiresAt: new Date("2000-01-01T00:00:00.000Z")
+        expiresAt: new Date(oldestExpiryMs + index)
       }))
     });
     expect(
@@ -49,5 +53,13 @@ describe("PostgreSQL rate-limit store", () => {
     expect(
       await prisma.rateLimitBucket.count({ where: { scope: cleanupScope } })
     ).toBe(1);
+    await expect(
+      prisma.rateLimitBucket.findMany({
+        where: { scope: cleanupScope },
+        select: { identifierHash: true, expiresAt: true }
+      })
+    ).resolves.toEqual([
+      { identifierHash: newestIdentifierHash, expiresAt: newestExpiry }
+    ]);
   });
 });

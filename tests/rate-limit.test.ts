@@ -61,4 +61,27 @@ describe("rate limiting", () => {
     expect(store.cleanupExpired).toHaveBeenCalledTimes(1);
     expect(store.cleanupExpired).toHaveBeenCalledWith(at, 500);
   });
+
+  it("keeps the allowed decision when best-effort cleanup rejects", async () => {
+    const store: RateLimitStore = {
+      consume: vi.fn(async () => 1),
+      cleanupExpired: vi.fn(async () => {
+        throw new Error("cleanup database detail");
+      })
+    };
+
+    await expect(
+      consumeRateLimit(policy, "user", {
+        store,
+        secret,
+        now: () => new Date("2026-07-29T00:00:30.000Z")
+      })
+    ).resolves.toEqual({
+      allowed: true,
+      unavailable: false,
+      limit: 2,
+      remaining: 1,
+      retryAfterSeconds: 30
+    });
+  });
 });
