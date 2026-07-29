@@ -115,6 +115,29 @@ describe("credential authorization rate limiting", () => {
     );
   });
 
+  it("stops the real login helper when the IP bucket is unavailable", async () => {
+    const { checkLoginAttempt } = await vi.importActual<
+      typeof import("@/lib/security/rate-limit")
+    >("@/lib/security/rate-limit");
+    mocks.checkPolicy.mockResolvedValueOnce({
+      ...allowedDecision,
+      unavailable: true
+    });
+
+    const result = await checkLoginAttempt(
+      request.headers,
+      "user@example.com",
+      mocks.checkPolicy
+    );
+
+    expect(result).toMatchObject({ allowed: true, unavailable: true });
+    expect(mocks.checkPolicy).toHaveBeenCalledOnce();
+    expect(mocks.checkPolicy).toHaveBeenCalledWith(
+      policies.loginIp,
+      "203.0.113.8"
+    );
+  });
+
   it("uses normalized email for the real helper's second bucket", async () => {
     const { checkLoginAttempt } = await vi.importActual<
       typeof import("@/lib/security/rate-limit")

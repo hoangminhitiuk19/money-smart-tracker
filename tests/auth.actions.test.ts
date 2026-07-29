@@ -127,6 +127,53 @@ describe("registration rate limiting", () => {
     expect(mocks.seedDefaultCategories).not.toHaveBeenCalled();
   });
 
+  it("stops the real registration helper after IP denial", async () => {
+    const { checkRegistrationAttempt } = await vi.importActual<
+      typeof import("@/lib/security/rate-limit")
+    >("@/lib/security/rate-limit");
+    mocks.checkPolicy.mockResolvedValueOnce({
+      ...allowedDecision,
+      allowed: false,
+      remaining: 0
+    });
+
+    const result = await checkRegistrationAttempt(
+      new Headers({ "x-forwarded-for": "198.51.100.4, 10.0.0.2" }),
+      "user@example.com",
+      mocks.checkPolicy
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(mocks.checkPolicy).toHaveBeenCalledOnce();
+    expect(mocks.checkPolicy).toHaveBeenCalledWith(
+      policies.registerIp,
+      "198.51.100.4"
+    );
+  });
+
+  it("stops the real registration helper when the IP bucket is unavailable", async () => {
+    const { checkRegistrationAttempt } = await vi.importActual<
+      typeof import("@/lib/security/rate-limit")
+    >("@/lib/security/rate-limit");
+    mocks.checkPolicy.mockResolvedValueOnce({
+      ...allowedDecision,
+      unavailable: true
+    });
+
+    const result = await checkRegistrationAttempt(
+      new Headers({ "x-forwarded-for": "198.51.100.4, 10.0.0.2" }),
+      "user@example.com",
+      mocks.checkPolicy
+    );
+
+    expect(result).toMatchObject({ allowed: true, unavailable: true });
+    expect(mocks.checkPolicy).toHaveBeenCalledOnce();
+    expect(mocks.checkPolicy).toHaveBeenCalledWith(
+      policies.registerIp,
+      "198.51.100.4"
+    );
+  });
+
   it("checks IP then normalized email in the real registration helper", async () => {
     const { checkRegistrationAttempt } = await vi.importActual<
       typeof import("@/lib/security/rate-limit")

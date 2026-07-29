@@ -52,7 +52,7 @@ async function checkAuthAttempt(
 ): Promise<RateLimitDecision> {
   const ipDecision = await policyChecker(ipPolicy, getClientIp(headers));
 
-  if (!ipDecision.allowed) {
+  if (!ipDecision.allowed || ipDecision.unavailable) {
     return ipDecision;
   }
 
