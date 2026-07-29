@@ -36,11 +36,17 @@ npm run verify
 
 Configure only these environment variables in each environment:
 
-| Environment | Required variables | Notes |
-| --- | --- | --- |
-| Local | `DATABASE_URL`, `NEXTAUTH_SECRET`, `NEXTAUTH_URL` | Keep values in the uncommitted `.env` file. |
-| Vercel Preview | `DATABASE_URL`, `NEXTAUTH_SECRET`, `NEXTAUTH_URL` | Configure these with Vercel's [Preview environment targeting](https://vercel.com/docs/environment-variables). Use a Preview-only database and secret. |
-| Vercel Production | `DATABASE_URL`, `NEXTAUTH_SECRET`, `NEXTAUTH_URL` | Configure these with Vercel's [Production environment targeting](https://vercel.com/docs/environment-variables). Use a separate Production database and secret. |
+| Environment | `DATABASE_URL` | `NEXTAUTH_SECRET` | `NEXTAUTH_URL` |
+| --- | --- | --- | --- |
+| Local | `postgresql://<local-user>:<local-password>@<local-endpoint>-pooler.<neon-host>/<local-database>?sslmode=require` | `<generated-local-secret-at-least-32-characters>` | `http://localhost:3000` |
+| Vercel Preview | `postgresql://<preview-user>:<preview-password>@<preview-endpoint>-pooler.<neon-host>/<preview-database>?sslmode=require` | `<generated-preview-secret-at-least-32-characters>` | `https://<preview-deployment-or-branch-url>` |
+| Vercel Production | `postgresql://<production-user>:<production-password>@<production-endpoint>-pooler.<neon-host>/<production-database>?sslmode=require` | `<generated-production-secret-at-least-32-characters>` | `https://<canonical-production-domain>` |
+
+Keep local values in the uncommitted `.env` file. Configure Vercel values with
+[Preview and Production environment targeting](https://vercel.com/docs/environment-variables).
+Use separate Preview and Production databases, and generate a different
+unpredictable secret of at least 32 characters for each environment. The values
+above are placeholders, never real credentials or secrets.
 
 For application traffic, use Neon’s pooled connection URL: its hostname includes
 `-pooler`. See Neon’s [connection-pooling guidance](https://neon.com/docs/connect/connection-pooling).
