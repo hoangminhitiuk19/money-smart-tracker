@@ -15,6 +15,10 @@ import {
   validateTransactionFields
 } from "@/lib/calc/transactions";
 import { prisma } from "@/lib/prisma";
+import {
+  checkAuthenticatedMutation,
+  RATE_LIMIT_MESSAGE
+} from "@/lib/security/rate-limit";
 
 const optionalTextSchema = z
   .string()
@@ -306,6 +310,10 @@ export async function createTransaction(
   data: TransactionInput | FormData
 ): Promise<TransactionActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const parsed = parseTransactionInput(data);
 
   if (!parsed.success) {
@@ -347,6 +355,10 @@ export async function updateTransaction(
   data: TransactionUpdateInput | FormData
 ): Promise<TransactionActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const existingTransaction = await verifyTransactionOwnership(id, user.id);
   const parsed = parseTransactionUpdateInput(data);
 
@@ -461,6 +473,10 @@ export async function deleteTransaction(
   id: string
 ): Promise<TransactionActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const transaction = await verifyTransactionOwnership(id, user.id);
 
   await prisma.transaction.deleteMany({

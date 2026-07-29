@@ -5,6 +5,10 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireAuth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import {
+  checkAuthenticatedMutation,
+  RATE_LIMIT_MESSAGE
+} from "@/lib/security/rate-limit";
 
 const dateFormats = ["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"] as const;
 const numberFormats = ["1,000,000", "1.000.000"] as const;
@@ -76,6 +80,10 @@ export async function updateUserSettings(
   formData: FormData
 ): Promise<SettingsState> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { error: RATE_LIMIT_MESSAGE };
+  }
   const parsed = settingsSchema.safeParse({
     confirmPassword: formData.get("confirmPassword")?.toString(),
     currentPassword: formData.get("currentPassword")?.toString(),
