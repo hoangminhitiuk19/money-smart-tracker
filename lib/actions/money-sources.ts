@@ -171,6 +171,7 @@ export async function toggleMoneySourceActiveFormAction(
   isActive: boolean,
   _formData: FormData
 ) {
+  void _formData;
   await updateMoneySource(id, { isActive });
 }
 

@@ -13,12 +13,15 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "prisma generate && next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint . --max-warnings=0",
     "test": "vitest",
     "test:run": "vitest run",
-    "prisma:migrate": "prisma migrate dev"
+    "prisma:migrate": "prisma migrate dev",
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run lint && npm run typecheck && npm run test:run && npx prisma validate && npm audit --omit=dev --audit-level=high && npm run build",
+    "prisma:deploy": "prisma migrate deploy"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
@@ -35,6 +38,7 @@
     "zod": "^4.2.1"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "3.3.1",
     "@types/node": "^24.10.1",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",

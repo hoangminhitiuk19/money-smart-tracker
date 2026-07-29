@@ -125,7 +125,7 @@ async function ReportsPageContent({
 }: {
   searchParams: SearchParams;
 }) {
-  const user = await requireAuth();
+  await requireAuth();
   const { startDate, endDate } = getDateRange(searchParams);
   const [
     incomeVsExpense,

@@ -54,7 +54,6 @@ const contributionUpdateSchema = contributionSchema.partial();
 type ContributionInput = z.input<typeof contributionSchema>;
 type ContributionUpdateInput = z.input<typeof contributionUpdateSchema>;
 type ContributionData = z.infer<typeof contributionSchema>;
-type ContributionUpdateData = z.infer<typeof contributionUpdateSchema>;
 
 export type GoalContributionActionResult = {
   ok: boolean;
