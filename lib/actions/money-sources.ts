@@ -5,6 +5,10 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireAuth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import {
+  checkAuthenticatedMutation,
+  RATE_LIMIT_MESSAGE
+} from "@/lib/security/rate-limit";
 
 const optionalTextSchema = z
   .string()
@@ -102,6 +106,10 @@ export async function createMoneySource(
   data: MoneySourceInput | FormData
 ): Promise<MoneySourceActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const parsed = parseMoneySourceInput(data);
 
   if (!parsed.success) {
@@ -134,6 +142,10 @@ export async function updateMoneySource(
   data: MoneySourceUpdateInput | FormData
 ): Promise<MoneySourceActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const parsed = parseMoneySourceUpdateInput(data);
 
   if (!parsed.success) {
@@ -179,6 +191,10 @@ export async function deleteMoneySource(
   id: string
 ): Promise<MoneySourceActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const moneySource = await verifyMoneySourceOwnership(id, user.id);
 
   const transactionCount = await prisma.transaction.count({

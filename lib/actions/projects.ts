@@ -5,6 +5,10 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireAuth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import {
+  checkAuthenticatedMutation,
+  RATE_LIMIT_MESSAGE
+} from "@/lib/security/rate-limit";
 
 const optionalTextSchema = z
   .string()
@@ -85,6 +89,10 @@ export async function createProject(
   data: ProjectInput | FormData
 ): Promise<ProjectActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const parsed = parseProjectInput(data);
 
   if (!parsed.success) {
@@ -117,6 +125,10 @@ export async function updateProject(
   data: ProjectUpdateInput | FormData
 ): Promise<ProjectActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const parsed = parseProjectUpdateInput(data);
 
   if (!parsed.success) {
@@ -147,6 +159,10 @@ export async function updateProjectFormAction(id: string, formData: FormData) {
 
 export async function deleteProject(id: string): Promise<ProjectActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const project = await verifyProjectOwnership(id, user.id);
 
   await prisma.financialProject.deleteMany({
