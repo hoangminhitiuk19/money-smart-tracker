@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { checkExport, RATE_LIMIT_MESSAGE } from "@/lib/security/rate-limit";
 
 const columns = [
   "Date",
@@ -58,6 +59,17 @@ export async function GET(request: Request) {
 
   if (!user) {
     return new NextResponse("Unauthorized", { status: 401 });
+  }
+
+  const rateLimit = await checkExport(user.id);
+  if (!rateLimit.allowed) {
+    return new NextResponse(RATE_LIMIT_MESSAGE, {
+      status: 429,
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Retry-After": String(rateLimit.retryAfterSeconds)
+      }
+    });
   }
 
   const url = new URL(request.url);
