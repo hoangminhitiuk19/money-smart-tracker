@@ -36,25 +36,29 @@ const statusVariants = {
   PAUSED: "paused"
 } as const;
 
-export default function GoalDetailPage({
+type PageProps = {
+  params: Promise<{ id: string }>;
+};
+
+export default async function GoalDetailPage({
   params
-}: {
-  params: { id: string };
-}) {
+}: PageProps) {
+  const { id } = await params;
+
   return (
     <Suspense fallback={<GoalDetailLoading />}>
-      <GoalDetailPageContent params={params} />
+      <GoalDetailPageContent id={id} />
     </Suspense>
   );
 }
 
 async function GoalDetailPageContent({
-  params
+  id
 }: {
-  params: { id: string };
+  id: string;
 }) {
   const user = await requireAuth();
-  const goal = await getGoal(params.id).catch(() => notFound());
+  const goal = await getGoal(id).catch(() => notFound());
   const [contributions, moneySources, transactions] = await Promise.all([
     listContributionsForGoal(goal.id),
     listMoneySources(),

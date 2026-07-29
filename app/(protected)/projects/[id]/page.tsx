@@ -12,24 +12,28 @@ const statusVariants = {
   PAUSED: "paused"
 } as const;
 
-export default function ProjectDetailPage({
+type PageProps = {
+  params: Promise<{ id: string }>;
+};
+
+export default async function ProjectDetailPage({
   params
-}: {
-  params: { id: string };
-}) {
+}: PageProps) {
+  const { id } = await params;
+
   return (
     <Suspense fallback={<ProjectDetailLoading />}>
-      <ProjectDetailPageContent params={params} />
+      <ProjectDetailPageContent id={id} />
     </Suspense>
   );
 }
 
 async function ProjectDetailPageContent({
-  params
+  id
 }: {
-  params: { id: string };
+  id: string;
 }) {
-  const project = await getProject(params.id).catch(() => notFound());
+  const project = await getProject(id).catch(() => notFound());
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">

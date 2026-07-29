@@ -1,6 +1,10 @@
 # Money Smart Tracker
 
-Next.js 14 App Router project with TypeScript, Tailwind CSS, Prisma, NextAuth v4, React Hook Form, Zod, Recharts, bcryptjs, and Vitest.
+Next.js 15 App Router project with React 19, TypeScript, Tailwind CSS, Prisma, NextAuth v4, React Hook Form, Zod, Recharts, bcryptjs, and Vitest.
+
+## Prerequisites
+
+- Node.js 22
 
 ## Environment
 
@@ -39,7 +43,7 @@ npx prisma migrate dev
 Install dependencies:
 
 ```bash
-npm install
+npm ci
 ```
 
 Run the dev server:

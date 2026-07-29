@@ -421,14 +421,18 @@ function RenewalRow({
   );
 }
 
-export default function RenewalsPage({
+type PageProps = {
+  searchParams: Promise<SearchParams>;
+};
+
+export default async function RenewalsPage({
   searchParams
-}: {
-  searchParams: SearchParams;
-}) {
+}: PageProps) {
+  const resolvedSearchParams = await searchParams;
+
   return (
     <Suspense fallback={<RenewalsLoading />}>
-      <RenewalsPageContent searchParams={searchParams} />
+      <RenewalsPageContent searchParams={resolvedSearchParams} />
     </Suspense>
   );
 }

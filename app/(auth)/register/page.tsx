@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useFormState, useFormStatus } from "react-dom";
+import { useActionState } from "react";
+import { useFormStatus } from "react-dom";
 import { registerUser } from "@/lib/actions/auth";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -31,7 +32,7 @@ function SubmitButton() {
 }
 
 export default function RegisterPage() {
-  const [state, formAction] = useFormState(registerUser, {});
+  const [state, formAction] = useActionState(registerUser, {});
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-6 py-12">

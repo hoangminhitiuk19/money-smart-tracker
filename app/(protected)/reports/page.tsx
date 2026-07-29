@@ -104,14 +104,18 @@ function groupRenewalsByMonth(
     .sort((left, right) => left.period.localeCompare(right.period));
 }
 
-export default function ReportsPage({
+type PageProps = {
+  searchParams: Promise<SearchParams>;
+};
+
+export default async function ReportsPage({
   searchParams
-}: {
-  searchParams: SearchParams;
-}) {
+}: PageProps) {
+  const resolvedSearchParams = await searchParams;
+
   return (
     <Suspense fallback={<ReportsLoading />}>
-      <ReportsPageContent searchParams={searchParams} />
+      <ReportsPageContent searchParams={resolvedSearchParams} />
     </Suspense>
   );
 }

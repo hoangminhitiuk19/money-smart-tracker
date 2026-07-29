@@ -95,25 +95,29 @@ function MoneyMetric({
   );
 }
 
-export default function AccountDetailPage({
+type PageProps = {
+  params: Promise<{ id: string }>;
+};
+
+export default async function AccountDetailPage({
   params
-}: {
-  params: { id: string };
-}) {
+}: PageProps) {
+  const { id } = await params;
+
   return (
     <Suspense fallback={<AccountDetailLoading />}>
-      <AccountDetailPageContent params={params} />
+      <AccountDetailPageContent id={id} />
     </Suspense>
   );
 }
 
 async function AccountDetailPageContent({
-  params
+  id
 }: {
-  params: { id: string };
+  id: string;
 }) {
   const user = await requireAuth();
-  const source = await getMoneySource(params.id).catch(() => notFound());
+  const source = await getMoneySource(id).catch(() => notFound());
 
   const transactionScope = {
     userId: user.id,
