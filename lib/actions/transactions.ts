@@ -48,7 +48,7 @@ const nullableIdSchema = z
 
 const maxDecimal18WithScale2 = new Prisma.Decimal("9999999999999999.99");
 const positiveDecimalSchema = z
-  .union([z.string(), z.number(), z.instanceof(Prisma.Decimal)])
+  .union([z.string(), z.instanceof(Prisma.Decimal)])
   .transform((value, context) => {
     const text = typeof value === "string" ? value.trim() : value.toString();
     let amount: Prisma.Decimal;
@@ -355,6 +355,18 @@ async function verifyRelatedExpense(
   }
 }
 
+async function hasOwnedLinkedRefund(id: string, userId: string) {
+  const linkedRefundCount = await prisma.transaction.count({
+    where: {
+      userId,
+      type: TransactionType.REFUND,
+      relatedTransactionId: id
+    }
+  });
+
+  return linkedRefundCount > 0;
+}
+
 async function getOwnedMoneySources(ids: string[], userId: string) {
   const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
 
@@ -584,6 +596,18 @@ export async function updateTransaction(
 
   if (!parsed.success) {
     return { ok: false, error: "Enter a valid transaction." };
+  }
+
+  if (
+    existingTransaction.type === TransactionType.EXPENSE &&
+    parsed.data.type !== undefined &&
+    parsed.data.type !== TransactionType.EXPENSE &&
+    (await hasOwnedLinkedRefund(id, user.id))
+  ) {
+    return {
+      ok: false,
+      error: "Unlink related refunds before changing this expense type."
+    };
   }
 
   if (parsed.data.relatedTransactionId === id) {

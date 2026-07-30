@@ -9,7 +9,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createTransaction,
   searchTransactions,
-  updateTransaction
+  updateTransaction,
+  type TransactionFormInput
 } from "@/lib/actions/transactions";
 import { prisma } from "@/lib/prisma";
 import {
@@ -57,6 +58,12 @@ let transactions: FakeTransaction[];
 function matchesTransactionWhere(transaction: FakeTransaction, where: any) {
   if (transaction.userId !== where.userId) {
     return false;
+  }
+
+  for (const field of ["id", "type", "relatedTransactionId"] as const) {
+    if (where[field] !== undefined && transaction[field] !== where[field]) {
+      return false;
+    }
   }
 
   if (where.OR) {
@@ -183,7 +190,7 @@ describe("transaction mutation rate limiting", () => {
 
     const result = await createTransaction({
       type: TransactionType.EXPENSE,
-      amount: 50,
+      amount: "50.00",
       title: "Coffee",
       transactionDate: new Date("2026-01-01"),
       fromMoneySourceId: "ms-a",
@@ -201,7 +208,7 @@ describe("createTransaction quality rating validation", () => {
   it("rejects a TRANSFER with a qualityRating set", async () => {
     const result = await createTransaction({
       type: TransactionType.TRANSFER,
-      amount: 100,
+      amount: "100.00",
       title: "Move money",
       transactionDate: new Date("2026-01-01"),
       fromMoneySourceId: "ms-a",
@@ -217,7 +224,7 @@ describe("createTransaction quality rating validation", () => {
   it("still allows a qualityRating on an EXPENSE", async () => {
     const result = await createTransaction({
       type: TransactionType.EXPENSE,
-      amount: 50,
+      amount: "50.00",
       title: "Coffee",
       transactionDate: new Date("2026-01-01"),
       fromMoneySourceId: "ms-a",
@@ -230,6 +237,23 @@ describe("createTransaction quality rating validation", () => {
 });
 
 describe("createTransaction exact decimal validation", () => {
+  it("rejects a JavaScript number before transaction or activity writes", async () => {
+    const result = await createTransaction({
+      type: TransactionType.EXPENSE,
+      amount: 50,
+      title: "Inexact numeric purchase",
+      transactionDate: new Date("2026-01-01"),
+      fromMoneySourceId: "ms-a"
+    } as unknown as TransactionFormInput);
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Enter a valid transaction."
+    });
+    expect(prisma.transaction.create).not.toHaveBeenCalled();
+    expect(prisma.activityLog.create).not.toHaveBeenCalled();
+  });
+
   it("passes exact Decimal text to Prisma without Number coercion", async () => {
     const result = await createTransaction({
       type: TransactionType.EXPENSE,
@@ -466,7 +490,7 @@ describe("createTransaction recurringPaymentId ownership", () => {
     await expect(
       createTransaction({
         type: TransactionType.EXPENSE,
-        amount: 50,
+        amount: "50.00",
         title: "Coffee",
         transactionDate: new Date("2026-01-01"),
         fromMoneySourceId: "ms-a",
@@ -481,7 +505,7 @@ describe("createTransaction recurringPaymentId ownership", () => {
   it("accepts a recurringPaymentId that belongs to the user", async () => {
     const result = await createTransaction({
       type: TransactionType.EXPENSE,
-      amount: 50,
+      amount: "50.00",
       title: "Coffee",
       transactionDate: new Date("2026-01-01"),
       fromMoneySourceId: "ms-a",
@@ -627,7 +651,26 @@ describe("updateTransaction nullable fields and type transitions", () => {
     ];
   });
 
+  it("rejects changing an EXPENSE type while a REFUND still links to it", async () => {
+    const originalExpense = { ...transactions[0] };
+    const originalRefund = { ...transactions[1] };
+
+    const result = await updateTransaction("expense-own", {
+      type: TransactionType.INCOME,
+      toMoneySourceId: "ms-a"
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/refund/i);
+    expect(transactions[0]).toEqual(originalExpense);
+    expect(transactions[1]).toEqual(originalRefund);
+    expect(prisma.transaction.updateMany).not.toHaveBeenCalled();
+    expect(prisma.activityLog.create).not.toHaveBeenCalled();
+  });
+
   it("clears stale expense-only and from-source state on EXPENSE to INCOME", async () => {
+    transactions[1].relatedTransactionId = null;
+
     const result = await updateTransaction("expense-own", {
       type: TransactionType.INCOME,
       toMoneySourceId: "ms-a"

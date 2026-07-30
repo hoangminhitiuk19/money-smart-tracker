@@ -457,18 +457,46 @@ describe("transaction action persistence", () => {
       }
     });
 
-    await expect(
-      updateTransaction(expense.id, {
-        type: TransactionType.INCOME,
-        toMoneySourceId: fixtures.bankBId
-      })
-    ).resolves.toEqual({ ok: true });
+    const beforeRejectedTransition = await countsForUser(
+      fixtures.context.userA.id
+    );
+    const rejectedTransition = await updateTransaction(expense.id, {
+      type: TransactionType.INCOME,
+      toMoneySourceId: fixtures.bankBId
+    });
+
+    expect(rejectedTransition.ok).toBe(false);
+    expect(rejectedTransition.error).toMatch(/refund/i);
+    const [expenseAfterRejection, refundAfterRejection] = await Promise.all([
+      prisma.transaction.findUniqueOrThrow({ where: { id: expense.id } }),
+      prisma.transaction.findUniqueOrThrow({ where: { id: refund.id } })
+    ]);
+    expect(expenseAfterRejection).toMatchObject({
+      type: TransactionType.EXPENSE,
+      fromMoneySourceId: fixtures.cardAId,
+      toMoneySourceId: null,
+      qualityRating: QualityRating.B
+    });
+    expect(refundAfterRejection).toMatchObject({
+      type: TransactionType.REFUND,
+      relatedTransactionId: expense.id
+    });
+    await expect(countsForUser(fixtures.context.userA.id)).resolves.toEqual(
+      beforeRejectedTransition
+    );
+
     await expect(
       updateTransaction(refund.id, {
         categoryId: null,
         description: null,
         projectId: null,
         relatedTransactionId: null
+      })
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      updateTransaction(expense.id, {
+        type: TransactionType.INCOME,
+        toMoneySourceId: fixtures.bankBId
       })
     ).resolves.toEqual({ ok: true });
 
