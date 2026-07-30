@@ -9,6 +9,7 @@ import {
 import { getDashboardSummary } from "@/lib/calc/dashboard";
 import { calculateGoalProgress } from "@/lib/calc/goals";
 import { calculateProjectSummary } from "@/lib/calc/projects";
+import { isUpcomingRenewal } from "@/lib/calc/renewals";
 import { transactionDateRange } from "@/lib/date-range";
 import { prisma } from "@/lib/prisma";
 
@@ -32,19 +33,6 @@ function getThirtyDaysFrom(date: Date) {
   return result;
 }
 
-function isUpcomingRenewal(renewal: {
-  nextDueDate: Date;
-  reminderDaysBefore: number;
-}) {
-  const today = getToday();
-  const reminderWindowEnd = new Date(today);
-  reminderWindowEnd.setDate(
-    reminderWindowEnd.getDate() + renewal.reminderDaysBefore
-  );
-
-  return renewal.nextDueDate <= reminderWindowEnd;
-}
-
 export async function getDashboardData(
   startDate: Date | string,
   endDate: Date | string
@@ -55,6 +43,7 @@ export async function getDashboardData(
   const periodStart = normalizeStartDate(startDate);
   const periodEnd = normalizeEndDate(endDate);
   const today = getToday();
+  const renewalToday = new Date();
   const cardFeeWindowEnd = getThirtyDaysFrom(today);
 
   const [
@@ -117,7 +106,9 @@ export async function getDashboardData(
     })
   ]);
 
-  const upcomingRenewals = activeRenewals.filter(isUpcomingRenewal);
+  const upcomingRenewals = activeRenewals.filter((renewal) =>
+    isUpcomingRenewal(renewal, renewalToday)
+  );
   const summary = getDashboardSummary(
     transactions,
     goals,

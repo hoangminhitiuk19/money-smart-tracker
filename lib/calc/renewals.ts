@@ -7,7 +7,7 @@ export type RenewalCycleInput = {
 };
 
 function daysInMonth(year: number, monthIndex: number) {
-  return new Date(year, monthIndex + 1, 0).getDate();
+  return new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
 }
 
 function addCalendarInterval(
@@ -15,20 +15,44 @@ function addCalendarInterval(
   amount: number,
   unit: "month" | "year"
 ) {
-  const originalDay = current.getDate();
+  const originalDay = current.getUTCDate();
   const shifted = new Date(current);
-  shifted.setDate(1);
+  shifted.setUTCDate(1);
 
   if (unit === "month") {
-    shifted.setMonth(shifted.getMonth() + amount);
+    shifted.setUTCMonth(shifted.getUTCMonth() + amount);
   } else {
-    shifted.setFullYear(shifted.getFullYear() + amount);
+    shifted.setUTCFullYear(shifted.getUTCFullYear() + amount);
   }
 
-  shifted.setDate(
-    Math.min(originalDay, daysInMonth(shifted.getFullYear(), shifted.getMonth()))
+  shifted.setUTCDate(
+    Math.min(
+      originalDay,
+      daysInMonth(shifted.getUTCFullYear(), shifted.getUTCMonth())
+    )
   );
   return shifted;
+}
+
+function startOfUtcDay(date: Date) {
+  return new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
+  );
+}
+
+export function isUpcomingRenewal(
+  renewal: {
+    nextDueDate: Date;
+    reminderDaysBefore: number;
+  },
+  today: Date = new Date()
+) {
+  const reminderWindowEnd = startOfUtcDay(today);
+  reminderWindowEnd.setUTCDate(
+    reminderWindowEnd.getUTCDate() + Math.max(0, renewal.reminderDaysBefore)
+  );
+
+  return startOfUtcDay(renewal.nextDueDate) <= reminderWindowEnd;
 }
 
 export function calculateNextDueDate(
@@ -40,7 +64,7 @@ export function calculateNextDueDate(
 
   if (frequency === RenewalFrequency.WEEKLY) {
     const nextDueDate = new Date(current);
-    nextDueDate.setDate(nextDueDate.getDate() + interval * 7);
+    nextDueDate.setUTCDate(nextDueDate.getUTCDate() + interval * 7);
     return nextDueDate;
   }
 
@@ -53,7 +77,7 @@ export function calculateNextDueDate(
   }
 
   const nextDueDate = new Date(current);
-  nextDueDate.setDate(nextDueDate.getDate() + interval);
+  nextDueDate.setUTCDate(nextDueDate.getUTCDate() + interval);
   return nextDueDate;
 }
 

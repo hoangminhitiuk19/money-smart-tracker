@@ -1,10 +1,16 @@
-import { QualityRating, RenewalFrequency, TransactionType } from "@prisma/client";
+import {
+  QualityRating,
+  RenewalFrequency,
+  RenewalStatus,
+  TransactionType
+} from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createRenewal,
   markRenewalAsPaid,
   pauseRenewal,
-  pauseRenewalFormAction
+  pauseRenewalFormAction,
+  skipRenewalCycle
 } from "@/lib/actions/renewals";
 import { prisma } from "@/lib/prisma";
 import {
@@ -57,7 +63,11 @@ vi.mock("@/lib/prisma", () => {
       countTowardFeeWaiver: false,
       frequency: RenewalFrequency.MONTHLY,
       intervalCount: 1,
-      nextDueDate: new Date("2026-02-01")
+      nextDueDate: new Date("2026-02-01"),
+      reminderDaysBefore: 3,
+      autoCreateTransaction: false,
+      status: RenewalStatus.ACTIVE,
+      lastGeneratedDate: null
     })),
     updateMany: vi.fn(async () => ({ count: 1 }))
   };
@@ -126,6 +136,81 @@ describe("renewal mutation rate limiting", () => {
     expect(checkAuthenticatedMutation).toHaveBeenCalledTimes(1);
     expect(checkAuthenticatedMutation).toHaveBeenCalledWith("user-1");
   });
+});
+
+describe("renewal cycle status enforcement", () => {
+  it.each([RenewalStatus.PAUSED, RenewalStatus.CANCELLED])(
+    "rejects marking a %s renewal paid without writes",
+    async (status) => {
+      vi.mocked(prisma.recurringPayment.findFirst).mockResolvedValueOnce({
+        id: "renewal-1",
+        userId: mockUser.id,
+        title: "Gym membership",
+        description: null,
+        amount: 30 as any,
+        currency: "VND",
+        transactionType: TransactionType.EXPENSE,
+        qualityRating: null,
+        fromMoneySourceId: "ms-a",
+        toMoneySourceId: null,
+        categoryId: null,
+        projectId: null,
+        countTowardFeeWaiver: false,
+        frequency: RenewalFrequency.MONTHLY,
+        intervalCount: 1,
+        nextDueDate: new Date("2026-02-01"),
+        reminderDaysBefore: 3,
+        autoCreateTransaction: false,
+        status,
+        lastGeneratedDate: null,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+
+      await expect(markRenewalAsPaid("renewal-1")).rejects.toThrow(
+        "Renewal is not active."
+      );
+      expect(prisma.transaction.create).not.toHaveBeenCalled();
+      expect(prisma.recurringPayment.updateMany).not.toHaveBeenCalled();
+      expect(prisma.activityLog.create).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([RenewalStatus.PAUSED, RenewalStatus.CANCELLED])(
+    "rejects skipping a %s renewal without writes",
+    async (status) => {
+      vi.mocked(prisma.recurringPayment.findFirst).mockResolvedValueOnce({
+        id: "renewal-1",
+        userId: mockUser.id,
+        title: "Gym membership",
+        description: null,
+        amount: 30 as any,
+        currency: "VND",
+        transactionType: TransactionType.EXPENSE,
+        qualityRating: null,
+        fromMoneySourceId: "ms-a",
+        toMoneySourceId: null,
+        categoryId: null,
+        projectId: null,
+        countTowardFeeWaiver: false,
+        frequency: RenewalFrequency.MONTHLY,
+        intervalCount: 1,
+        nextDueDate: new Date("2026-02-01"),
+        reminderDaysBefore: 3,
+        autoCreateTransaction: false,
+        status,
+        lastGeneratedDate: null,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+
+      await expect(skipRenewalCycle("renewal-1")).rejects.toThrow(
+        "Renewal is not active."
+      );
+      expect(prisma.recurringPayment.updateMany).not.toHaveBeenCalled();
+      expect(prisma.activityLog.create).not.toHaveBeenCalled();
+    }
+  );
 });
 
 describe("createRenewal quality rating validation", () => {

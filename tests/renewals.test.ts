@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   calculateNextDueDate,
   calculatePaidRenewalCycle,
-  calculateSkippedRenewalCycle
+  calculateSkippedRenewalCycle,
+  isUpcomingRenewal
 } from "@/lib/calc/renewals";
 
 function isoDate(date: Date) {
@@ -117,6 +118,52 @@ describe("calculateNextDueDate", () => {
         )
       )
     ).toBe("2028-02-29");
+  });
+
+  it("uses UTC calendar components without shifting a date-only monthly cycle", () => {
+    expect(
+      calculateNextDueDate(
+        new Date("2026-01-31T00:00:00.000Z"),
+        RenewalFrequency.MONTHLY,
+        1
+      ).toISOString()
+    ).toBe("2026-02-28T00:00:00.000Z");
+  });
+
+  it("uses UTC calendar components without shifting a date-only daily cycle", () => {
+    expect(
+      calculateNextDueDate(
+        new Date("2026-03-08T00:00:00.000Z"),
+        RenewalFrequency.DAILY,
+        1
+      ).toISOString()
+    ).toBe("2026-03-09T00:00:00.000Z");
+  });
+});
+
+describe("isUpcomingRenewal", () => {
+  it("includes August 2 on July 30 when the reminder is three days", () => {
+    expect(
+      isUpcomingRenewal(
+        {
+          nextDueDate: new Date("2026-08-02T00:00:00.000Z"),
+          reminderDaysBefore: 3
+        },
+        new Date("2026-07-30T00:00:00.000Z")
+      )
+    ).toBe(true);
+  });
+
+  it("excludes August 3 on July 30 when the reminder is three days", () => {
+    expect(
+      isUpcomingRenewal(
+        {
+          nextDueDate: new Date("2026-08-03T00:00:00.000Z"),
+          reminderDaysBefore: 3
+        },
+        new Date("2026-07-30T00:00:00.000Z")
+      )
+    ).toBe(false);
   });
 });
 
