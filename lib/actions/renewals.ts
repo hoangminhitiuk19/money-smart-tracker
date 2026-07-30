@@ -161,13 +161,13 @@ function optionalFormCheckboxValue(
   key: string,
   presenceKey: string
 ) {
-  const value = formValue(formData, key);
+  const values = formData.getAll(key);
 
-  if (value !== undefined) {
-    return value;
+  if (values.length === 0) {
+    return formData.has(presenceKey) ? false : undefined;
   }
 
-  return formData.has(presenceKey) ? false : undefined;
+  return values.length === 1 && values[0] === "on" ? true : values;
 }
 
 function nullableFormValue(formData: FormData, key: string) {

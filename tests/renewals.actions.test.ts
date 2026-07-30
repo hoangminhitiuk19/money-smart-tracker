@@ -489,4 +489,59 @@ describe("renewal fee-waiver checkbox FormData contract", () => {
       })
     );
   });
+
+  const invalidCheckboxCases = [
+    { name: "on then false duplicate", values: ["on", "false"] },
+    { name: "false then on duplicate", values: ["false", "on"] },
+    { name: "duplicate canonical values", values: ["on", "on"] },
+    { name: "noncanonical true value", values: ["true"] },
+    { name: "noncanonical false value", values: ["false"] }
+  ] as const;
+
+  it.each(invalidCheckboxCases)(
+    "safely rejects $name on create before writes",
+    async ({ values }) => {
+      const formData = new FormData();
+      formData.set("title", "Invalid checkbox create");
+      formData.set("amount", "30.00");
+      formData.set("transactionType", TransactionType.EXPENSE);
+      formData.set("fromMoneySourceId", "ms-credit");
+      formData.set("frequency", RenewalFrequency.MONTHLY);
+      formData.set("nextDueDate", "2026-02-01");
+      formData.set("countTowardFeeWaiverPresent", "1");
+      for (const value of values) {
+        formData.append("countTowardFeeWaiver", value);
+      }
+
+      await expect(createRenewal(formData)).resolves.toEqual({
+        ok: false,
+        error: "Enter a valid renewal."
+      });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.recurringPayment.create).not.toHaveBeenCalled();
+      expect(prisma.activityLog.create).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(invalidCheckboxCases)(
+    "safely rejects $name on update before writes",
+    async ({ values }) => {
+      vi.mocked(prisma.recurringPayment.findFirst).mockResolvedValue(
+        existingRenewalWithFeeWaiver(true)
+      );
+      const formData = new FormData();
+      formData.set("countTowardFeeWaiverPresent", "1");
+      for (const value of values) {
+        formData.append("countTowardFeeWaiver", value);
+      }
+
+      await expect(updateRenewal("renewal-1", formData)).resolves.toEqual({
+        ok: false,
+        error: "Enter a valid renewal."
+      });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.recurringPayment.updateMany).not.toHaveBeenCalled();
+      expect(prisma.activityLog.create).not.toHaveBeenCalled();
+    }
+  );
 });

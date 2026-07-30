@@ -315,6 +315,94 @@ describe("renewal CRUD and activity contracts", () => {
     ).resolves.toMatchObject({ countTowardFeeWaiver: true });
   });
 
+  const invalidCheckboxCases = [
+    { name: "on then false duplicate", values: ["on", "false"] },
+    { name: "false then on duplicate", values: ["false", "on"] },
+    { name: "duplicate canonical values", values: ["on", "on"] },
+    { name: "noncanonical true value", values: ["true"] },
+    { name: "noncanonical false value", values: ["false"] }
+  ] as const;
+
+  it.each(invalidCheckboxCases)(
+    "rejects $name on create without renewal or activity writes",
+    async ({ name, values }) => {
+      const card = await createOwnedCard(`Invalid create ${name}`);
+      const title = `Invalid checkbox create ${name} ${randomUUID()}`;
+      const formData = new FormData();
+      formData.set("title", title);
+      formData.set("amount", "10.00");
+      formData.set("transactionType", TransactionType.EXPENSE);
+      formData.set("fromMoneySourceId", card.id);
+      formData.set("frequency", RenewalFrequency.MONTHLY);
+      formData.set("nextDueDate", "2026-07-30");
+      formData.set("countTowardFeeWaiverPresent", "1");
+      for (const value of values) {
+        formData.append("countTowardFeeWaiver", value);
+      }
+      const before = await Promise.all([
+        prisma.recurringPayment.count({
+          where: { userId: fixtures.context.userA.id, title }
+        }),
+        prisma.activityLog.count({
+          where: {
+            userId: fixtures.context.userA.id,
+            action: "RENEWAL_CREATED"
+          }
+        })
+      ]);
+
+      await expect(createRenewal(formData)).resolves.toEqual({
+        ok: false,
+        error: "Enter a valid renewal."
+      });
+      await expect(
+        Promise.all([
+          prisma.recurringPayment.count({
+            where: { userId: fixtures.context.userA.id, title }
+          }),
+          prisma.activityLog.count({
+            where: {
+              userId: fixtures.context.userA.id,
+              action: "RENEWAL_CREATED"
+            }
+          })
+        ])
+      ).resolves.toEqual(before);
+    }
+  );
+
+  it.each(invalidCheckboxCases)(
+    "rejects $name on update without renewal or activity mutation",
+    async ({ name, values }) => {
+      const card = await createOwnedCard(`Invalid update ${name}`);
+      const renewal = await createDirectRenewal(fixtures.context.userA.id, {
+        fromMoneySourceId: card.id,
+        countTowardFeeWaiver: true
+      });
+      const formData = new FormData();
+      formData.set("countTowardFeeWaiverPresent", "1");
+      for (const value of values) {
+        formData.append("countTowardFeeWaiver", value);
+      }
+      const beforeActivity = await prisma.activityLog.count({
+        where: { entityId: renewal.id }
+      });
+
+      await expect(updateRenewal(renewal.id, formData)).resolves.toEqual({
+        ok: false,
+        error: "Enter a valid renewal."
+      });
+      await expect(
+        prisma.recurringPayment.findUniqueOrThrow({
+          where: { id: renewal.id }
+        })
+      ).resolves.toEqual(renewal);
+      await expect(
+        prisma.activityLog.count({ where: { entityId: renewal.id } })
+      ).resolves.toBe(beforeActivity);
+    }
+  );
+
   it.each([TransactionType.REFUND, TransactionType.ADJUSTMENT])(
     "rejects %s on create and update without renewal or activity writes",
     async (transactionType) => {
