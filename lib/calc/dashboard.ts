@@ -2,18 +2,15 @@ import {
   AdjustmentDirection,
   AdjustmentTarget,
   MoneySourceType,
+  Prisma,
   QualityRating,
   TransactionType
 } from "@prisma/client";
 import { calculateTrackedBalance } from "@/lib/calc/balance";
 import { calculateCreditCardState } from "@/lib/calc/credit-card";
+import { decimal, percent, type DecimalInput } from "@/lib/money";
 
-type DecimalLike = {
-  toNumber?: () => number;
-  toString?: () => string;
-};
-
-type RequiredDashboardAmount = number | string | DecimalLike;
+type RequiredDashboardAmount = DecimalInput;
 type DashboardAmount = RequiredDashboardAmount | null | undefined;
 
 export type DashboardTransaction = {
@@ -54,7 +51,7 @@ export type DashboardRenewal = {
 
 export type DashboardQualityBucket = {
   count: number;
-  amount: number;
+  amount: Prisma.Decimal;
 };
 
 export type DashboardQualityBreakdown = Record<
@@ -62,33 +59,13 @@ export type DashboardQualityBreakdown = Record<
   DashboardQualityBucket
 >;
 
-function toNumber(value: DashboardAmount) {
-  if (value === null || value === undefined) {
-    return 0;
-  }
-
-  if (typeof value === "number") {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    return Number(value);
-  }
-
-  if (value.toNumber) {
-    return value.toNumber();
-  }
-
-  return Number(value.toString?.() ?? 0);
-}
-
 function emptyQualityBreakdown(): DashboardQualityBreakdown {
   return {
-    A: { count: 0, amount: 0 },
-    B: { count: 0, amount: 0 },
-    C: { count: 0, amount: 0 },
-    D: { count: 0, amount: 0 },
-    S: { count: 0, amount: 0 }
+    A: { count: 0, amount: decimal(0) },
+    B: { count: 0, amount: decimal(0) },
+    C: { count: 0, amount: decimal(0) },
+    D: { count: 0, amount: decimal(0) },
+    S: { count: 0, amount: decimal(0) }
   };
 }
 
@@ -98,20 +75,20 @@ export function calculateNetSavings(transactions: DashboardTransaction[]) {
   );
   const totalIncome = transactions.reduce((total, transaction) => {
     return transaction.type === TransactionType.INCOME
-      ? total + toNumber(transaction.amount)
+      ? total.plus(decimal(transaction.amount))
       : total;
-  }, 0);
+  }, decimal(0));
   const totalExpense = expenseTransactions.reduce(
-    (total, transaction) => total + toNumber(transaction.amount),
-    0
+    (total, transaction) => total.plus(decimal(transaction.amount)),
+    decimal(0)
   );
-  const netSavings = totalIncome - totalExpense;
+  const netSavings = totalIncome.minus(totalExpense);
 
   return {
     totalIncome,
     totalExpense,
     netSavings,
-    savingRate: totalIncome > 0 ? (netSavings / totalIncome) * 100 : 0
+    savingRate: totalIncome.gt(0) ? percent(netSavings, totalIncome) : decimal(0)
   };
 }
 
@@ -124,15 +101,14 @@ export function calculateEstimatedNetPosition(
       return total;
     }
 
-    return total + calculateTrackedBalance(source, transactions);
-  }, 0);
+    return total.plus(calculateTrackedBalance(source, transactions));
+  }, decimal(0));
   const cardDebtTotal = moneySources.reduce((total, source) => {
     if (source.type !== MoneySourceType.CREDIT_CARD) {
       return total;
     }
 
-    return (
-      total +
+    return total.plus(
       calculateCreditCardState(
         {
           id: source.id,
@@ -143,9 +119,9 @@ export function calculateEstimatedNetPosition(
         transactions
       ).outstandingDebt
     );
-  }, 0);
+  }, decimal(0));
 
-  return nonCardBalanceTotal - cardDebtTotal;
+  return nonCardBalanceTotal.minus(cardDebtTotal);
 }
 
 export function getDashboardSummary(
@@ -172,28 +148,33 @@ export function getDashboardSummary(
         return breakdown;
       }
 
-      const amount = toNumber(transaction.amount);
+      const amount = decimal(transaction.amount);
       breakdown[transaction.qualityRating].count += 1;
-      breakdown[transaction.qualityRating].amount += amount;
+      breakdown[transaction.qualityRating].amount =
+        breakdown[transaction.qualityRating].amount.plus(amount);
       return breakdown;
     },
     emptyQualityBreakdown()
   );
   const ratedAmount = Object.values(qualityBreakdown).reduce(
-    (total, bucket) => total + bucket.amount,
-    0
+    (total, bucket) => total.plus(bucket.amount),
+    decimal(0)
   );
-  const highQualityAmount =
-    qualityBreakdown.S.amount + qualityBreakdown.A.amount;
-  const spendingBySource = expenseTransactions.reduce<Record<string, number>>(
+  const highQualityAmount = qualityBreakdown.S.amount.plus(
+    qualityBreakdown.A.amount
+  );
+  const spendingBySource = expenseTransactions.reduce<
+    Record<string, Prisma.Decimal>
+  >(
     (groups, transaction) => {
       if (!transaction.fromMoneySourceId) {
         return groups;
       }
 
       groups[transaction.fromMoneySourceId] =
-        (groups[transaction.fromMoneySourceId] ?? 0) +
-        toNumber(transaction.amount);
+        (groups[transaction.fromMoneySourceId] ?? decimal(0)).plus(
+          decimal(transaction.amount)
+        );
       return groups;
     },
     {}
@@ -206,8 +187,10 @@ export function getDashboardSummary(
     savingRate,
     qualityBreakdown,
     highQualityPercent:
-      ratedAmount > 0 ? (highQualityAmount / ratedAmount) * 100 : 0,
-    lowQualityAmount: qualityBreakdown.C.amount + qualityBreakdown.D.amount,
+      ratedAmount.gt(0) ? percent(highQualityAmount, ratedAmount) : decimal(0),
+    lowQualityAmount: qualityBreakdown.C.amount.plus(
+      qualityBreakdown.D.amount
+    ),
     spendingBySource,
     estimatedNetPosition: calculateEstimatedNetPosition(
       moneySources,

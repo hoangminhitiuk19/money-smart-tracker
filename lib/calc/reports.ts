@@ -1,15 +1,12 @@
 import {
+  Prisma,
   RenewalFrequency,
   QualityRating,
   TransactionType
 } from "@prisma/client";
+import { decimal, percent, type DecimalInput } from "@/lib/money";
 
-type DecimalLike = {
-  toNumber?: () => number;
-  toString?: () => string;
-};
-
-type ReportAmount = number | string | DecimalLike;
+type ReportAmount = DecimalInput;
 
 export type ReportTransaction = {
   id?: string;
@@ -49,22 +46,6 @@ export type ReportRenewal = {
 };
 
 export type ReportGroupBy = "day" | "week" | "month";
-
-function toNumber(value: ReportAmount) {
-  if (typeof value === "number") {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    return Number(value);
-  }
-
-  if (value.toNumber) {
-    return value.toNumber();
-  }
-
-  return Number(value.toString?.() ?? 0);
-}
 
 function dateKey(date: Date | string) {
   return new Date(date).toISOString().slice(0, 10);
@@ -122,7 +103,7 @@ function linkedRefunds(transactions: ReportTransaction[]) {
 
     return [
       {
-        amount: toNumber(transaction.amount),
+        amount: decimal(transaction.amount),
         expense
       }
     ];
@@ -133,10 +114,16 @@ export function getIncomeVsExpenseOverTime(
   transactions: ReportTransaction[],
   groupBy: ReportGroupBy
 ) {
-  const groups = new Map<string, { income: number; expense: number }>();
+  const groups = new Map<
+    string,
+    { income: Prisma.Decimal; expense: Prisma.Decimal }
+  >();
 
   function ensureGroup(period: string) {
-    const group = groups.get(period) ?? { income: 0, expense: 0 };
+    const group = groups.get(period) ?? {
+      income: decimal(0),
+      expense: decimal(0)
+    };
     groups.set(period, group);
     return group;
   }
@@ -152,9 +139,9 @@ export function getIncomeVsExpenseOverTime(
     const group = ensureGroup(getPeriod(transaction.transactionDate, groupBy));
 
     if (transaction.type === TransactionType.INCOME) {
-      group.income += toNumber(transaction.amount);
+      group.income = group.income.plus(decimal(transaction.amount));
     } else {
-      group.expense += toNumber(transaction.amount);
+      group.expense = group.expense.plus(decimal(transaction.amount));
     }
   }
 
@@ -162,7 +149,7 @@ export function getIncomeVsExpenseOverTime(
     const group = ensureGroup(
       getPeriod(refund.expense.transactionDate, groupBy)
     );
-    group.expense -= refund.amount;
+    group.expense = group.expense.minus(refund.amount);
   }
 
   return Array.from(groups.entries())
@@ -181,7 +168,7 @@ export function getExpenseByCategory(
   const categoryNames = new Map(
     categories.map((category) => [category.id, category.name])
   );
-  const totals = new Map<string, number>();
+  const totals = new Map<string, Prisma.Decimal>();
 
   for (const transaction of transactions) {
     if (
@@ -193,7 +180,9 @@ export function getExpenseByCategory(
 
     totals.set(
       transaction.categoryId,
-      (totals.get(transaction.categoryId) ?? 0) + toNumber(transaction.amount)
+      (totals.get(transaction.categoryId) ?? decimal(0)).plus(
+        decimal(transaction.amount)
+      )
     );
   }
 
@@ -204,7 +193,10 @@ export function getExpenseByCategory(
       continue;
     }
 
-    totals.set(categoryId, (totals.get(categoryId) ?? 0) - refund.amount);
+    totals.set(
+      categoryId,
+      (totals.get(categoryId) ?? decimal(0)).minus(refund.amount)
+    );
   }
 
   return Array.from(totals.entries())
@@ -218,7 +210,10 @@ export function getExpenseByCategory(
 export function getSpendingQualityBreakdown(
   transactions: ReportTransaction[]
 ) {
-  const totals = new Map<QualityRating, { count: number; total: number }>();
+  const totals = new Map<
+    QualityRating,
+    { count: number; total: Prisma.Decimal }
+  >();
 
   for (const transaction of transactions) {
     if (
@@ -230,10 +225,10 @@ export function getSpendingQualityBreakdown(
 
     const group = totals.get(transaction.qualityRating) ?? {
       count: 0,
-      total: 0
+      total: decimal(0)
     };
     group.count += 1;
-    group.total += toNumber(transaction.amount);
+    group.total = group.total.plus(decimal(transaction.amount));
     totals.set(transaction.qualityRating, group);
   }
 
@@ -244,8 +239,8 @@ export function getSpendingQualityBreakdown(
       continue;
     }
 
-    const group = totals.get(rating) ?? { count: 0, total: 0 };
-    group.total -= refund.amount;
+    const group = totals.get(rating) ?? { count: 0, total: decimal(0) };
+    group.total = group.total.minus(refund.amount);
     totals.set(rating, group);
   }
 
@@ -263,7 +258,7 @@ export function getSpendingBySource(
   sources: ReportMoneySource[]
 ) {
   const sourceNames = new Map(sources.map((source) => [source.id, source.name]));
-  const totals = new Map<string, number>();
+  const totals = new Map<string, Prisma.Decimal>();
 
   for (const transaction of transactions) {
     if (
@@ -275,8 +270,9 @@ export function getSpendingBySource(
 
     totals.set(
       transaction.fromMoneySourceId,
-      (totals.get(transaction.fromMoneySourceId) ?? 0) +
-        toNumber(transaction.amount)
+      (totals.get(transaction.fromMoneySourceId) ?? decimal(0)).plus(
+        decimal(transaction.amount)
+      )
     );
   }
 
@@ -287,7 +283,10 @@ export function getSpendingBySource(
       continue;
     }
 
-    totals.set(sourceId, (totals.get(sourceId) ?? 0) - refund.amount);
+    totals.set(
+      sourceId,
+      (totals.get(sourceId) ?? decimal(0)).minus(refund.amount)
+    );
   }
 
   return Array.from(totals.entries())
@@ -307,11 +306,14 @@ export function getProjectProfitLoss(
   );
   const totals = new Map<
     string,
-    { totalIncome: number; totalExpense: number }
+    { totalIncome: Prisma.Decimal; totalExpense: Prisma.Decimal }
   >();
 
   function ensureGroup(projectId: string) {
-    const group = totals.get(projectId) ?? { totalIncome: 0, totalExpense: 0 };
+    const group = totals.get(projectId) ?? {
+      totalIncome: decimal(0),
+      totalExpense: decimal(0)
+    };
     totals.set(projectId, group);
     return group;
   }
@@ -328,9 +330,11 @@ export function getProjectProfitLoss(
     const group = ensureGroup(transaction.projectId);
 
     if (transaction.type === TransactionType.INCOME) {
-      group.totalIncome += toNumber(transaction.amount);
+      group.totalIncome = group.totalIncome.plus(decimal(transaction.amount));
     } else {
-      group.totalExpense += toNumber(transaction.amount);
+      group.totalExpense = group.totalExpense.plus(
+        decimal(transaction.amount)
+      );
     }
   }
 
@@ -341,12 +345,13 @@ export function getProjectProfitLoss(
       continue;
     }
 
-    ensureGroup(projectId).totalExpense -= refund.amount;
+    const group = ensureGroup(projectId);
+    group.totalExpense = group.totalExpense.minus(refund.amount);
   }
 
   return Array.from(totals.entries())
     .map(([projectId, totals]) => {
-      const profit = totals.totalIncome - totals.totalExpense;
+      const profit = totals.totalIncome.minus(totals.totalExpense);
 
       return {
         projectName: projectNames.get(projectId) ?? "Unknown project",
@@ -354,8 +359,8 @@ export function getProjectProfitLoss(
         totalExpense: totals.totalExpense,
         profit,
         roi:
-          totals.totalExpense > 0
-            ? (profit / totals.totalExpense) * 100
+          totals.totalExpense.gt(0)
+            ? percent(profit, totals.totalExpense)
             : null
       };
     })
@@ -365,15 +370,15 @@ export function getProjectProfitLoss(
 export function getUpcomingRenewalsTotal(renewals: ReportRenewal[]) {
   return {
     total: renewals.reduce(
-      (total, renewal) => total + toNumber(renewal.amount),
-      0
+      (total, renewal) => total.plus(decimal(renewal.amount)),
+      decimal(0)
     ),
     count: renewals.length
   };
 }
 
 export function getRecurringExpensePerMonth(renewals: ReportRenewal[]) {
-  const totals = new Map<string, number>();
+  const totals = new Map<string, Prisma.Decimal>();
 
   for (const renewal of renewals) {
     if (renewal.transactionType !== TransactionType.EXPENSE) {
@@ -381,7 +386,10 @@ export function getRecurringExpensePerMonth(renewals: ReportRenewal[]) {
     }
 
     const period = getPeriod(renewal.nextDueDate, "month");
-    totals.set(period, (totals.get(period) ?? 0) + toNumber(renewal.amount));
+    totals.set(
+      period,
+      (totals.get(period) ?? decimal(0)).plus(decimal(renewal.amount))
+    );
   }
 
   return Array.from(totals.entries())

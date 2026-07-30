@@ -3,13 +3,9 @@ import {
   AdjustmentTarget,
   TransactionType
 } from "@prisma/client";
+import { decimal, percent, type DecimalInput } from "@/lib/money";
 
-type DecimalLike = {
-  toNumber?: () => number;
-  toString?: () => string;
-};
-
-type CreditCardAmount = number | string | DecimalLike | null | undefined;
+type CreditCardAmount = DecimalInput | null | undefined;
 
 export type CreditCardSource = {
   id: string;
@@ -35,24 +31,8 @@ export type CreditCardTransaction = {
   countTowardFeeWaiver?: boolean | null;
 };
 
-function toNumber(value: CreditCardAmount) {
-  if (value === null || value === undefined) {
-    return 0;
-  }
-
-  if (typeof value === "number") {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    return Number(value);
-  }
-
-  if (value.toNumber) {
-    return value.toNumber();
-  }
-
-  return Number(value.toString?.() ?? 0);
+function amount(value: CreditCardAmount) {
+  return decimal(value ?? 0);
 }
 
 function dateValue(date: Date | string) {
@@ -78,8 +58,8 @@ export function calculateCreditCardState(
   source: CreditCardSource,
   transactions: CreditCardTransaction[]
 ) {
-  let debt = toNumber(source.initialOutstandingDebt);
-  let cardCredit = toNumber(source.initialCardCredit);
+  let debt = amount(source.initialOutstandingDebt);
+  let cardCredit = amount(source.initialCardCredit);
 
   const chronologicalTransactions = transactions
     .map((transaction, index) => ({ transaction, index }))
@@ -93,19 +73,19 @@ export function calculateCreditCardState(
     .map(({ transaction }) => transaction);
 
   for (const transaction of chronologicalTransactions) {
-    const amount = toNumber(transaction.amount);
+    const transactionAmount = amount(transaction.amount);
 
     if (
       transaction.type === TransactionType.EXPENSE &&
       transaction.fromMoneySourceId === source.id
     ) {
-      if (cardCredit > 0 && amount <= cardCredit) {
-        cardCredit -= amount;
-      } else if (cardCredit > 0 && amount > cardCredit) {
-        debt += amount - cardCredit;
-        cardCredit = 0;
+      if (cardCredit.gt(0) && transactionAmount.lte(cardCredit)) {
+        cardCredit = cardCredit.minus(transactionAmount);
+      } else if (cardCredit.gt(0) && transactionAmount.gt(cardCredit)) {
+        debt = debt.plus(transactionAmount.minus(cardCredit));
+        cardCredit = decimal(0);
       } else {
-        debt += amount;
+        debt = debt.plus(transactionAmount);
       }
     }
 
@@ -113,11 +93,11 @@ export function calculateCreditCardState(
       transaction.type === TransactionType.TRANSFER &&
       transaction.toMoneySourceId === source.id
     ) {
-      if (amount <= debt) {
-        debt -= amount;
+      if (transactionAmount.lte(debt)) {
+        debt = debt.minus(transactionAmount);
       } else {
-        cardCredit += amount - debt;
-        debt = 0;
+        cardCredit = cardCredit.plus(transactionAmount.minus(debt));
+        debt = decimal(0);
       }
     }
 
@@ -125,13 +105,13 @@ export function calculateCreditCardState(
       transaction.type === TransactionType.REFUND &&
       transaction.toMoneySourceId === source.id
     ) {
-      if (debt > 0 && amount <= debt) {
-        debt -= amount;
-      } else if (debt > 0 && amount > debt) {
-        cardCredit += amount - debt;
-        debt = 0;
+      if (debt.gt(0) && transactionAmount.lte(debt)) {
+        debt = debt.minus(transactionAmount);
+      } else if (debt.gt(0) && transactionAmount.gt(debt)) {
+        cardCredit = cardCredit.plus(transactionAmount.minus(debt));
+        debt = decimal(0);
       } else {
-        cardCredit += amount;
+        cardCredit = cardCredit.plus(transactionAmount);
       }
     }
 
@@ -142,22 +122,24 @@ export function calculateCreditCardState(
       if (transaction.adjustmentTarget === AdjustmentTarget.CREDIT_CARD_DEBT) {
         debt =
           transaction.adjustmentDirection === AdjustmentDirection.INCREASE
-            ? debt + amount
-            : debt - amount;
+            ? debt.plus(transactionAmount)
+            : debt.minus(transactionAmount);
       }
 
       if (transaction.adjustmentTarget === AdjustmentTarget.CARD_CREDIT) {
         cardCredit =
           transaction.adjustmentDirection === AdjustmentDirection.INCREASE
-            ? cardCredit + amount
-            : cardCredit - amount;
+            ? cardCredit.plus(transactionAmount)
+            : cardCredit.minus(transactionAmount);
       }
     }
   }
 
   return {
     outstandingDebt: debt,
-    availableCredit: Math.max(0, toNumber(source.creditLimit) - debt),
+    availableCredit: amount(source.creditLimit).minus(debt).gt(0)
+      ? amount(source.creditLimit).minus(debt)
+      : decimal(0),
     cardCredit
   };
 }
@@ -166,13 +148,13 @@ export function calculateFeeWaiverState(
   source: CreditCardSource,
   transactions: CreditCardTransaction[]
 ) {
-  const spendTarget = toNumber(source.annualFeeWaiverSpendTarget);
+  const spendTarget = amount(source.annualFeeWaiverSpendTarget);
 
-  if (spendTarget === 0) {
+  if (spendTarget.isZero()) {
     return {
-      eligibleSpending: 0,
-      progress: 0,
-      remaining: 0
+      eligibleSpending: decimal(0),
+      progress: decimal(0),
+      remaining: decimal(0)
     };
   }
 
@@ -192,8 +174,8 @@ export function calculateFeeWaiverState(
       eligibleExpenseIds.add(transaction.id);
     }
 
-    return total + toNumber(transaction.amount);
-  }, 0);
+    return total.plus(amount(transaction.amount));
+  }, decimal(0));
 
   const linkedRefundTotal = transactions.reduce((total, transaction) => {
     const isLinkedRefund =
@@ -203,14 +185,15 @@ export function calculateFeeWaiverState(
       transaction.relatedTransactionId !== undefined &&
       eligibleExpenseIds.has(transaction.relatedTransactionId);
 
-    return isLinkedRefund ? total + toNumber(transaction.amount) : total;
-  }, 0);
+    return isLinkedRefund ? total.plus(amount(transaction.amount)) : total;
+  }, decimal(0));
 
-  const eligibleSpending = eligibleExpenseTotal - linkedRefundTotal;
+  const eligibleSpending = eligibleExpenseTotal.minus(linkedRefundTotal);
+  const remaining = spendTarget.minus(eligibleSpending);
 
   return {
     eligibleSpending,
-    progress: (eligibleSpending / spendTarget) * 100,
-    remaining: Math.max(0, spendTarget - eligibleSpending)
+    progress: percent(eligibleSpending, spendTarget),
+    remaining: remaining.gt(0) ? remaining : decimal(0)
   };
 }

@@ -3,6 +3,11 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { getDashboardData } from "@/lib/actions/dashboard";
 import { requireAuth } from "@/lib/auth";
+import {
+  decimal,
+  presentationNumber,
+  type DecimalInput
+} from "@/lib/money";
 import { Card } from "@/components/ui/Card";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatCard } from "@/components/ui/StatCard";
@@ -109,16 +114,16 @@ function getPeriod(searchParams: SearchParams) {
   };
 }
 
-function formatMoney(amount: unknown, currency = "VND") {
+function formatMoney(amount: DecimalInput, currency = "VND") {
   return new Intl.NumberFormat("en-US", {
     currency,
     maximumFractionDigits: 2,
     style: "currency"
-  }).format(Number(amount));
+  }).format(presentationNumber(amount));
 }
 
-function formatPercent(amount: number) {
-  return `${amount.toFixed(1)}%`;
+function formatPercent(amount: DecimalInput) {
+  return `${decimal(amount).toDecimalPlaces(1).toFixed(1)}%`;
 }
 
 function formatDate(date: Date) {
@@ -353,7 +358,7 @@ async function DashboardPageContent({
                   trailing={
                     <span
                       className={
-                        summary.profit >= 0 ? "text-income" : "text-expense"
+                        summary.profit.gte(0) ? "text-income" : "text-expense"
                       }
                     >
                       {formatMoney(summary.profit)}

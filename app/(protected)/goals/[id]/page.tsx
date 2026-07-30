@@ -11,6 +11,11 @@ import { getGoal } from "@/lib/actions/goals";
 import { listMoneySources } from "@/lib/actions/money-sources";
 import { requireAuth } from "@/lib/auth";
 import { calculateGoalProgress } from "@/lib/calc/goals";
+import {
+  decimal,
+  presentationNumber,
+  type DecimalInput
+} from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -18,12 +23,12 @@ import { Card } from "@/components/ui/Card";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import GoalDetailLoading from "./loading";
 
-function formatMoney(amount: unknown, currency: string) {
+function formatMoney(amount: DecimalInput, currency: string) {
   return new Intl.NumberFormat("en-US", {
     currency,
     maximumFractionDigits: 2,
     style: "currency"
-  }).format(Number(amount));
+  }).format(presentationNumber(amount));
 }
 
 function formatDateInput(date: Date) {
@@ -127,7 +132,7 @@ async function GoalDetailPageContent({
               {formatMoney(progress.netContributed, goal.currency)} saved
             </span>
             <span className="text-slate-600">
-              {progress.progressPercent.toFixed(1)}%
+              {decimal(progress.progressPercent).toFixed(1)}%
             </span>
           </div>
           <div className="mt-2">

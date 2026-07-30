@@ -22,12 +22,16 @@ import { Card } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingSkeleton } from "@/components/ui/LoadingSkeleton";
 import { ProgressBar } from "@/components/ui/ProgressBar";
+import {
+  presentationNumber,
+  type DecimalInput
+} from "@/lib/money";
 
 type MoneyPoint = {
   period: string;
-  income?: number;
-  expense?: number;
-  total?: number;
+  income?: string;
+  expense?: string;
+  total?: string;
 };
 
 type NamedTotal = {
@@ -35,43 +39,43 @@ type NamedTotal = {
   sourceName?: string;
   rating?: string;
   count?: number;
-  total: number;
+  total: string;
 };
 
 type GoalReport = {
   id: string;
   name: string;
   currency: string;
-  targetAmount: number;
-  netContributed: number;
-  progressPercent: number;
-  remaining: number;
+  targetAmount: string;
+  netContributed: string;
+  progressPercent: string;
+  remaining: string;
 };
 
 type ProjectReport = {
   projectName: string;
-  totalIncome: number;
-  totalExpense: number;
-  profit: number;
-  roi: number | null;
+  totalIncome: string;
+  totalExpense: string;
+  profit: string;
+  roi: string | null;
 };
 
 type CreditCardDebtReport = {
   id: string;
   name: string;
   currency: string;
-  outstandingDebt: number;
-  availableCredit: number;
-  cardCredit: number;
+  outstandingDebt: string;
+  availableCredit: string;
+  cardCredit: string;
 };
 
 type FeeWaiverReport = {
   id: string;
   name: string;
   currency: string;
-  eligibleSpending: number;
-  progress: number;
-  remaining: number;
+  eligibleSpending: string;
+  progress: string;
+  remaining: string;
 };
 
 type ReportsClientProps = {
@@ -114,16 +118,16 @@ const tabs = [
 
 type TabId = (typeof tabs)[number]["id"];
 
-function formatMoney(amount: number, currency = "VND") {
+function formatMoney(amount: DecimalInput, currency = "VND") {
   return new Intl.NumberFormat("en-US", {
     currency,
     maximumFractionDigits: 0,
     style: "currency"
-  }).format(amount);
+  }).format(presentationNumber(amount));
 }
 
-function formatPercent(amount: number) {
-  return `${amount.toFixed(1)}%`;
+function formatPercent(amount: DecimalInput) {
+  return `${presentationNumber(amount).toFixed(1)}%`;
 }
 
 function reportIsEmpty(data: unknown[]) {
@@ -180,7 +184,12 @@ function CurrencyTooltip({ active, payload, label }: CurrencyTooltipProps) {
       <p className="mb-1 font-medium text-slate-950">{label}</p>
       {payload.map((item, index) => (
         <p className="text-slate-600" key={String(item.dataKey ?? item.name ?? index)}>
-          {item.name}: {formatMoney(Number(item.value))}
+          {item.name}:{" "}
+          {formatMoney(
+            String(
+              item.payload?.[`${String(item.dataKey)}Text`] ?? item.value ?? 0
+            )
+          )}
         </p>
       ))}
     </div>
@@ -192,7 +201,7 @@ function TotalTable({
   rows
 }: {
   label: string;
-  rows: Array<{ name: string; total: number; count?: number }>;
+  rows: Array<{ name: string; total: number; totalText: string; count?: number }>;
 }) {
   return (
     <div className="mt-6 overflow-x-auto">
@@ -212,7 +221,7 @@ function TotalTable({
               </td>
               <td className="px-4 py-3 text-slate-600">{row.count ?? "-"}</td>
               <td className="px-4 py-3 text-right font-semibold text-slate-950">
-                {formatMoney(row.total)}
+                {formatMoney(row.totalText)}
               </td>
             </tr>
           ))}
@@ -235,11 +244,29 @@ export function ReportsClient({
   upcomingRenewalsByMonth
 }: ReportsClientProps) {
   const [activeTab, setActiveTab] = useState<TabId>("income-expense");
+  const incomeExpenseChartData = useMemo(
+    () =>
+      incomeVsExpense.map((item) => ({
+        period: item.period,
+        income:
+          item.income === undefined
+            ? undefined
+            : presentationNumber(item.income),
+        incomeText: item.income,
+        expense:
+          item.expense === undefined
+            ? undefined
+            : presentationNumber(item.expense),
+        expenseText: item.expense
+      })),
+    [incomeVsExpense]
+  );
   const categoryChartData = useMemo(
     () =>
       expenseByCategory.map((item) => ({
         name: item.categoryName ?? "Uncategorized",
-        total: item.total
+        total: presentationNumber(item.total),
+        totalText: item.total
       })),
     [expenseByCategory]
   );
@@ -248,7 +275,8 @@ export function ReportsClient({
       qualityBreakdown.map((item) => ({
         count: item.count,
         name: item.rating ?? "Unrated",
-        total: item.total
+        total: presentationNumber(item.total),
+        totalText: item.total
       })),
     [qualityBreakdown]
   );
@@ -256,9 +284,41 @@ export function ReportsClient({
     () =>
       spendingBySource.map((item) => ({
         name: item.sourceName ?? "Unknown source",
-        total: item.total
+        total: presentationNumber(item.total),
+        totalText: item.total
       })),
     [spendingBySource]
+  );
+  const projectChartData = useMemo(
+    () =>
+      projectProfitLoss.map((project) => ({
+        ...project,
+        totalIncome: presentationNumber(project.totalIncome),
+        totalIncomeText: project.totalIncome,
+        totalExpense: presentationNumber(project.totalExpense),
+        totalExpenseText: project.totalExpense,
+        profit: presentationNumber(project.profit),
+        profitText: project.profit
+      })),
+    [projectProfitLoss]
+  );
+  const upcomingRenewalChartData = useMemo(
+    () =>
+      upcomingRenewalsByMonth.map((item) => ({
+        period: item.period,
+        total: presentationNumber(item.total ?? 0),
+        totalText: item.total
+      })),
+    [upcomingRenewalsByMonth]
+  );
+  const recurringExpenseChartData = useMemo(
+    () =>
+      recurringExpensePerMonth.map((item) => ({
+        period: item.period,
+        total: presentationNumber(item.total ?? 0),
+        totalText: item.total
+      })),
+    [recurringExpensePerMonth]
   );
 
   return (
@@ -288,10 +348,14 @@ export function ReportsClient({
         >
           <div className="h-80">
             <ResponsiveContainer height="100%" width="100%">
-              <LineChart data={incomeVsExpense}>
+              <LineChart data={incomeExpenseChartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="period" />
-                <YAxis tickFormatter={(value) => formatMoney(Number(value))} />
+                <YAxis
+                  tickFormatter={(value) =>
+                    formatMoney(presentationNumber(value))
+                  }
+                />
                 <Tooltip content={<CurrencyTooltip />} />
                 <Legend />
                 <Line
@@ -411,10 +475,14 @@ export function ReportsClient({
         >
           <div className="h-80">
             <ResponsiveContainer height="100%" width="100%">
-              <BarChart data={projectProfitLoss}>
+              <BarChart data={projectChartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="projectName" />
-                <YAxis tickFormatter={(value) => formatMoney(Number(value))} />
+                <YAxis
+                  tickFormatter={(value) =>
+                    formatMoney(presentationNumber(value))
+                  }
+                />
                 <Tooltip content={<CurrencyTooltip />} />
                 <Legend />
                 <Bar dataKey="totalIncome" fill="#16a34a" name="Income" />
@@ -470,7 +538,11 @@ export function ReportsClient({
               <BarChart data={sourceChartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="name" />
-                <YAxis tickFormatter={(value) => formatMoney(Number(value))} />
+                <YAxis
+                  tickFormatter={(value) =>
+                    formatMoney(presentationNumber(value))
+                  }
+                />
                 <Tooltip content={<CurrencyTooltip />} />
                 <Bar dataKey="total" fill="#0f766e" name="Total" />
               </BarChart>
@@ -550,10 +622,14 @@ export function ReportsClient({
         >
           <div className="h-80">
             <ResponsiveContainer height="100%" width="100%">
-              <BarChart data={upcomingRenewalsByMonth}>
+              <BarChart data={upcomingRenewalChartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="period" />
-                <YAxis tickFormatter={(value) => formatMoney(Number(value))} />
+                <YAxis
+                  tickFormatter={(value) =>
+                    formatMoney(presentationNumber(value))
+                  }
+                />
                 <Tooltip content={<CurrencyTooltip />} />
                 <Bar dataKey="total" fill="#f97316" name="Total" />
               </BarChart>
@@ -569,10 +645,14 @@ export function ReportsClient({
         >
           <div className="h-80">
             <ResponsiveContainer height="100%" width="100%">
-              <BarChart data={recurringExpensePerMonth}>
+              <BarChart data={recurringExpenseChartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="period" />
-                <YAxis tickFormatter={(value) => formatMoney(Number(value))} />
+                <YAxis
+                  tickFormatter={(value) =>
+                    formatMoney(presentationNumber(value))
+                  }
+                />
                 <Tooltip content={<CurrencyTooltip />} />
                 <Bar dataKey="total" fill="#9333ea" name="Total" />
               </BarChart>

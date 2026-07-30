@@ -9,6 +9,10 @@ import {
 } from "@/lib/actions/money-sources";
 import { requireAuth } from "@/lib/auth";
 import { calculateTrackedBalance } from "@/lib/calc/balance";
+import {
+  presentationNumber,
+  type DecimalInput
+} from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -51,12 +55,12 @@ const sourceTypeVariants = {
   OTHER: "adjustment"
 } as const;
 
-function formatMoney(amount: number, currency: string) {
+function formatMoney(amount: DecimalInput, currency: string) {
   return new Intl.NumberFormat("en-US", {
     maximumFractionDigits: 2,
     style: "currency",
     currency
-  }).format(amount);
+  }).format(presentationNumber(amount));
 }
 
 export default function AccountsPage() {

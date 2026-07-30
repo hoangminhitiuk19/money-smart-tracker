@@ -12,6 +12,11 @@ import {
 } from "@/lib/actions/reports";
 import { Suspense } from "react";
 import { requireAuth } from "@/lib/auth";
+import {
+  decimal,
+  moneyText,
+  type DecimalInput
+} from "@/lib/money";
 import { ReportsClient } from "@/components/reports/ReportsClient";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -65,42 +70,24 @@ function getDateRange(searchParams: SearchParams) {
   };
 }
 
-function toNumber(value: unknown) {
-  if (typeof value === "number") {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    return Number(value);
-  }
-
-  if (
-    value &&
-    typeof value === "object" &&
-    "toNumber" in value &&
-    typeof value.toNumber === "function"
-  ) {
-    return value.toNumber();
-  }
-
-  return Number(value?.toString?.() ?? 0);
-}
-
 function groupRenewalsByMonth(
-  renewals: Array<{ amount: unknown; nextDueDate: Date | string }>
+  renewals: Array<{ amount: DecimalInput; nextDueDate: Date | string }>
 ) {
-  const totals = new Map<string, number>();
+  const totals = new Map<string, ReturnType<typeof decimal>>();
 
   for (const renewal of renewals) {
     const dueDate = new Date(renewal.nextDueDate);
     const period = `${dueDate.getFullYear()}-${String(
       dueDate.getMonth() + 1
     ).padStart(2, "0")}`;
-    totals.set(period, (totals.get(period) ?? 0) + toNumber(renewal.amount));
+    totals.set(
+      period,
+      (totals.get(period) ?? decimal(0)).plus(decimal(renewal.amount))
+    );
   }
 
   return Array.from(totals.entries())
-    .map(([period, total]) => ({ period, total }))
+    .map(([period, total]) => ({ period, total: moneyText(total) }))
     .sort((left, right) => left.period.localeCompare(right.period));
 }
 
@@ -193,33 +180,55 @@ async function ReportsPageContent({
           id: source.id,
           name: source.name,
           currency: source.currency,
-          outstandingDebt: state.outstandingDebt,
-          availableCredit: state.availableCredit,
-          cardCredit: state.cardCredit
+          outstandingDebt: moneyText(state.outstandingDebt),
+          availableCredit: moneyText(state.availableCredit),
+          cardCredit: moneyText(state.cardCredit)
         }))}
-        expenseByCategory={expenseByCategory}
+        expenseByCategory={expenseByCategory.map((item) => ({
+          ...item,
+          total: moneyText(item.total)
+        }))}
         feeWaivers={feeWaivers.map(({ source, state }) => ({
           id: source.id,
           name: source.name,
           currency: source.currency,
-          eligibleSpending: state.eligibleSpending,
-          progress: state.progress,
-          remaining: state.remaining
+          eligibleSpending: moneyText(state.eligibleSpending),
+          progress: state.progress.toString(),
+          remaining: moneyText(state.remaining)
         }))}
         goalProgress={goalProgress.map(({ goal, progress }) => ({
           id: goal.id,
           name: goal.name,
           currency: goal.currency,
-          targetAmount: toNumber(goal.targetAmount),
-          netContributed: progress.netContributed,
-          progressPercent: progress.progressPercent,
-          remaining: progress.remaining
+          targetAmount: moneyText(goal.targetAmount),
+          netContributed: moneyText(progress.netContributed),
+          progressPercent: progress.progressPercent.toString(),
+          remaining: moneyText(progress.remaining)
         }))}
-        incomeVsExpense={incomeVsExpense}
-        projectProfitLoss={projectProfitLoss}
-        qualityBreakdown={qualityBreakdown}
-        recurringExpensePerMonth={recurringExpensePerMonth}
-        spendingBySource={spendingBySource}
+        incomeVsExpense={incomeVsExpense.map((item) => ({
+          period: item.period,
+          income: moneyText(item.income),
+          expense: moneyText(item.expense)
+        }))}
+        projectProfitLoss={projectProfitLoss.map((item) => ({
+          projectName: item.projectName,
+          totalIncome: moneyText(item.totalIncome),
+          totalExpense: moneyText(item.totalExpense),
+          profit: moneyText(item.profit),
+          roi: item.roi?.toString() ?? null
+        }))}
+        qualityBreakdown={qualityBreakdown.map((item) => ({
+          ...item,
+          total: moneyText(item.total)
+        }))}
+        recurringExpensePerMonth={recurringExpensePerMonth.map((item) => ({
+          period: item.period,
+          total: moneyText(item.total)
+        }))}
+        spendingBySource={spendingBySource.map((item) => ({
+          ...item,
+          total: moneyText(item.total)
+        }))}
         upcomingRenewalsByMonth={groupRenewalsByMonth(
           upcomingRenewals.renewals
         )}

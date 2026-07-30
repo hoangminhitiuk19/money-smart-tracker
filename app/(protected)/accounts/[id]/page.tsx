@@ -9,6 +9,11 @@ import {
   calculateCreditCardState,
   calculateFeeWaiverState
 } from "@/lib/calc/credit-card";
+import {
+  decimal,
+  presentationNumber,
+  type DecimalInput
+} from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
@@ -25,12 +30,16 @@ const typeLabels: Record<MoneySourceType, string> = {
   OTHER: "Other"
 };
 
-function formatMoney(amount: number, currency: string) {
+function formatMoney(amount: DecimalInput, currency: string) {
   return new Intl.NumberFormat("en-US", {
     maximumFractionDigits: 2,
     style: "currency",
     currency
-  }).format(amount);
+  }).format(presentationNumber(amount));
+}
+
+function formatPercent(amount: DecimalInput) {
+  return `${decimal(amount).toDecimalPlaces(0).toFixed(0)}%`;
 }
 
 function formatDate(date: Date) {
@@ -51,13 +60,6 @@ function formatPeriod(period: string | null) {
     .split("_")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
-}
-
-function amountToNumber(amount: {
-  toNumber?: () => number;
-  toString?: () => string;
-}) {
-  return amount.toNumber ? amount.toNumber() : Number(amount.toString?.() ?? 0);
 }
 
 function getMonthRange(date: Date) {
@@ -167,8 +169,8 @@ async function AccountDetailPageContent({
       transaction.transactionDate >= monthStart &&
       transaction.transactionDate < nextMonthStart;
 
-    return isPayment ? total + amountToNumber(transaction.amount) : total;
-  }, 0);
+    return isPayment ? total.plus(decimal(transaction.amount)) : total;
+  }, decimal(0));
   const expensesThisMonth = sourceTransactions.reduce((total, transaction) => {
     const isExpense =
       transaction.type === TransactionType.EXPENSE &&
@@ -176,8 +178,8 @@ async function AccountDetailPageContent({
       transaction.transactionDate >= monthStart &&
       transaction.transactionDate < nextMonthStart;
 
-    return isExpense ? total + amountToNumber(transaction.amount) : total;
-  }, 0);
+    return isExpense ? total.plus(decimal(transaction.amount)) : total;
+  }, decimal(0));
 
   return (
     <div className="mx-auto max-w-5xl space-y-8">
@@ -220,10 +222,7 @@ async function AccountDetailPageContent({
           <dl className="grid gap-x-6 md:grid-cols-2">
             <MoneyMetric
               label="Credit limit"
-              value={formatMoney(
-                amountToNumber(source.creditLimit ?? 0),
-                source.currency
-              )}
+              value={formatMoney(source.creditLimit ?? 0, source.currency)}
             />
             <MoneyMetric
               label="Tracked debt"
@@ -237,7 +236,7 @@ async function AccountDetailPageContent({
               label="Available credit"
               value={formatMoney(creditCardState.availableCredit, source.currency)}
             />
-            {creditCardState.cardCredit > 0 ? (
+            {creditCardState.cardCredit.gt(0) ? (
               <MoneyMetric
                 label="Card credit"
                 value={formatMoney(
@@ -265,7 +264,7 @@ async function AccountDetailPageContent({
                 <MoneyMetric
                   label="Annual fee"
                   value={formatMoney(
-                    amountToNumber(source.annualFeeAmount ?? 0),
+                    source.annualFeeAmount ?? 0,
                     source.annualFeeCurrency
                   )}
                 />
@@ -303,7 +302,7 @@ async function AccountDetailPageContent({
                 <MoneyMetric
                   label="Target"
                   value={`${formatMoney(
-                    amountToNumber(source.annualFeeWaiverSpendTarget ?? 0),
+                    source.annualFeeWaiverSpendTarget ?? 0,
                     source.currency
                   )}/${formatPeriod(source.annualFeeWaiverPeriod)}`}
                 />
@@ -325,7 +324,7 @@ async function AccountDetailPageContent({
                     Tracked in this app &mdash; verify with your bank
                   </span>
                   <span className="font-semibold text-slate-950">
-                    {Math.min(100, Math.max(0, feeWaiverState.progress)).toFixed(0)}%
+                    {formatPercent(feeWaiverState.progress)}
                   </span>
                 </div>
                 <div className="mt-2">
@@ -366,10 +365,7 @@ async function AccountDetailPageContent({
                       {transaction.type}
                     </td>
                     <td className="px-4 py-3 text-slate-950">
-                      {formatMoney(
-                        Number(transaction.amount),
-                        transaction.currency
-                      )}
+                      {formatMoney(transaction.amount, transaction.currency)}
                     </td>
                   </tr>
                 ))}

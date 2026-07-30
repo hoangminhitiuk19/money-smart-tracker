@@ -17,20 +17,30 @@ function contribution(
   };
 }
 
+function progressText(result: ReturnType<typeof calculateGoalProgress>) {
+  return {
+    netContributed: result.netContributed.toFixed(2),
+    progressPercent: result.progressPercent.toDecimalPlaces(8).toString(),
+    remaining: result.remaining.toFixed(2)
+  };
+}
+
 describe("calculateGoalProgress", () => {
   it("calculates progress with contributions only", () => {
     expect(
-      calculateGoalProgress(
-        [
-          contribution({ amount: 300 }),
-          contribution({ amount: 200 })
-        ],
-        1000
+      progressText(
+        calculateGoalProgress(
+          [
+            contribution({ amount: 300 }),
+            contribution({ amount: 200 })
+          ],
+          1000
+        )
       )
     ).toEqual({
-      netContributed: 500,
-      progressPercent: 50,
-      remaining: 500
+      netContributed: "500.00",
+      progressPercent: "50",
+      remaining: "500.00"
     });
   });
 
@@ -42,8 +52,8 @@ describe("calculateGoalProgress", () => {
           contribution({ amount: 125, type: ContributionType.WITHDRAWAL })
         ],
         1000
-      ).netContributed
-    ).toBe(375);
+      ).netContributed.toFixed(2)
+    ).toBe("375.00");
   });
 
   it("blocks over-contribution when linked to a transaction without manual adjustment", () => {
@@ -93,7 +103,7 @@ describe("calculateGoalProgress", () => {
           contribution({ amount: 100, type: ContributionType.WITHDRAWAL })
         ],
         1000
-      ).remaining
-    ).toBe(400);
+      ).remaining.toFixed(2)
+    ).toBe("400.00");
   });
 });

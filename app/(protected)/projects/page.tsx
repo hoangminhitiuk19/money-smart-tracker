@@ -9,6 +9,11 @@ import {
 } from "@/lib/actions/projects";
 import { requireAuth } from "@/lib/auth";
 import { calculateProjectSummary } from "@/lib/calc/projects";
+import {
+  decimal,
+  presentationNumber,
+  type DecimalInput
+} from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -27,16 +32,18 @@ const statusVariants = {
   PAUSED: "paused"
 } as const;
 
-function formatMoney(amount: number) {
+function formatMoney(amount: DecimalInput) {
   return new Intl.NumberFormat("en-US", {
     maximumFractionDigits: 2,
     style: "currency",
     currency: "VND"
-  }).format(amount);
+  }).format(presentationNumber(amount));
 }
 
-function formatRoi(roi: number | null) {
-  return roi === null ? "N/A" : `${roi.toFixed(1)}% ROI`;
+function formatRoi(roi: DecimalInput | null) {
+  return roi === null
+    ? "N/A"
+    : `${decimal(roi).toDecimalPlaces(1).toFixed(1)}% ROI`;
 }
 
 export default function ProjectsPage() {
@@ -210,7 +217,7 @@ async function ProjectsPageContent() {
                           <div>
                             <p
                               className={
-                                summary.profit >= 0
+                                summary.profit.gte(0)
                                   ? "font-semibold text-income"
                                   : "font-semibold text-expense"
                               }
