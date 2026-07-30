@@ -18,7 +18,8 @@ export type CreditCardSource = {
 };
 
 export type CreditCardTransaction = {
-  id?: string;
+  id: string;
+  createdAt: Date | string;
   type: TransactionType;
   amount: CreditCardAmount;
   transactionDate: Date | string;
@@ -61,16 +62,22 @@ export function calculateCreditCardState(
   let debt = amount(source.initialOutstandingDebt);
   let cardCredit = amount(source.initialCardCredit);
 
-  const chronologicalTransactions = transactions
-    .map((transaction, index) => ({ transaction, index }))
-    .sort((a, b) => {
-      const difference =
-        dateValue(a.transaction.transactionDate) -
-        dateValue(b.transaction.transactionDate);
+  const chronologicalTransactions = [...transactions].sort((a, b) => {
+    const transactionDateDifference =
+      dateValue(a.transactionDate) - dateValue(b.transactionDate);
 
-      return difference === 0 ? a.index - b.index : difference;
-    })
-    .map(({ transaction }) => transaction);
+    if (transactionDateDifference !== 0) {
+      return transactionDateDifference;
+    }
+
+    const createdAtDifference = dateValue(a.createdAt) - dateValue(b.createdAt);
+
+    if (createdAtDifference !== 0) {
+      return createdAtDifference;
+    }
+
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
 
   for (const transaction of chronologicalTransactions) {
     const transactionAmount = amount(transaction.amount);
@@ -158,7 +165,7 @@ export function calculateFeeWaiverState(
     };
   }
 
-  const eligibleExpenseIds = new Set<string>();
+  const eligibleExpenses = new Map<string, CreditCardTransaction>();
   const eligibleExpenseTotal = transactions.reduce((total, transaction) => {
     const isEligibleExpense =
       transaction.type === TransactionType.EXPENSE &&
@@ -170,9 +177,7 @@ export function calculateFeeWaiverState(
       return total;
     }
 
-    if (transaction.id) {
-      eligibleExpenseIds.add(transaction.id);
-    }
+    eligibleExpenses.set(transaction.id, transaction);
 
     return total.plus(amount(transaction.amount));
   }, decimal(0));
@@ -180,10 +185,9 @@ export function calculateFeeWaiverState(
   const linkedRefundTotal = transactions.reduce((total, transaction) => {
     const isLinkedRefund =
       transaction.type === TransactionType.REFUND &&
-      transaction.toMoneySourceId === source.id &&
       transaction.relatedTransactionId !== null &&
       transaction.relatedTransactionId !== undefined &&
-      eligibleExpenseIds.has(transaction.relatedTransactionId);
+      eligibleExpenses.has(transaction.relatedTransactionId);
 
     return isLinkedRefund ? total.plus(amount(transaction.amount)) : total;
   }, decimal(0));

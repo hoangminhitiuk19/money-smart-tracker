@@ -69,7 +69,9 @@ function cardTx(
   transaction: Partial<CreditCardTransaction>
 ): CreditCardTransaction {
   return {
+    id: "card-transaction",
     amount: 100,
+    createdAt: new Date("2026-07-10T00:00:01.000Z"),
     transactionDate: new Date("2026-07-10T00:00:00.000Z"),
     type: "EXPENSE",
     ...transaction
@@ -110,7 +112,9 @@ function dashboardTx(
   transaction: Partial<DashboardTransaction>
 ): DashboardTransaction {
   return {
+    id: "dashboard-transaction",
     amount: 100,
+    createdAt: new Date("2026-07-10T00:00:01.000Z"),
     transactionDate: new Date("2026-07-10T00:00:00.000Z"),
     type: "EXPENSE",
     ...transaction

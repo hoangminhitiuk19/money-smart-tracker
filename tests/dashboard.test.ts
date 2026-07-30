@@ -6,6 +6,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getDashboardData } from "@/lib/actions/dashboard";
 import {
+  calculateAccountProjection,
   getDashboardSummary,
   type DashboardMoneySource,
   type DashboardTransaction
@@ -47,7 +48,9 @@ function tx(
   transaction: Partial<DashboardTransaction>
 ): DashboardTransaction {
   return {
+    id: "dashboard-transaction",
     amount: 100,
+    createdAt: new Date("2026-07-10T00:00:01.000Z"),
     transactionDate: new Date("2026-07-10T00:00:00.000Z"),
     type: TransactionType.EXPENSE,
     ...transaction
@@ -268,6 +271,44 @@ describe("getDashboardSummary", () => {
         ]
       }).estimatedNetPosition.toFixed(2)
     ).toBe("1000.00");
+  });
+});
+
+describe("calculateAccountProjection", () => {
+  it("uses tracked debt as the card primary amount and keeps card credit separate", () => {
+    const result = calculateAccountProjection(
+      source({
+        id: "card",
+        type: MoneySourceType.CREDIT_CARD,
+        openingBalance: 9999,
+        creditLimit: 2000,
+        initialOutstandingDebt: 85,
+        initialCardCredit: 15
+      }),
+      []
+    );
+
+    expect(result.trackedAmount.toFixed(2)).toBe("85.00");
+    expect(result.cardCredit?.toFixed(2)).toBe("15.00");
+    expect(result.creditCardState?.availableCredit.toFixed(2)).toBe("1915.00");
+  });
+
+  it("retains the generic tracked balance for non-card sources", () => {
+    const result = calculateAccountProjection(
+      source({ id: "bank", openingBalance: 100 }),
+      [
+        tx({
+          id: "bank-income",
+          amount: 25,
+          type: TransactionType.INCOME,
+          toMoneySourceId: "bank"
+        })
+      ]
+    );
+
+    expect(result.trackedAmount.toFixed(2)).toBe("125.00");
+    expect(result.cardCredit).toBeNull();
+    expect(result.creditCardState).toBeNull();
   });
 });
 

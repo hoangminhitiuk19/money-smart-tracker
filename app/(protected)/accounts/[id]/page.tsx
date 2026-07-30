@@ -4,11 +4,8 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { getMoneySource } from "@/lib/actions/money-sources";
 import { requireAuth } from "@/lib/auth";
-import { calculateTrackedBalance } from "@/lib/calc/balance";
-import {
-  calculateCreditCardState,
-  calculateFeeWaiverState
-} from "@/lib/calc/credit-card";
+import { calculateFeeWaiverState } from "@/lib/calc/credit-card";
+import { calculateAccountProjection } from "@/lib/calc/dashboard";
 import {
   clampedPresentationPercent,
   decimal,
@@ -132,7 +129,15 @@ async function AccountDetailPageContent({
     OR: [
       { fromMoneySourceId: source.id },
       { toMoneySourceId: source.id },
-      { adjustedMoneySourceId: source.id }
+      { adjustedMoneySourceId: source.id },
+      {
+        relatedTransaction: {
+          is: {
+            type: TransactionType.EXPENSE,
+            fromMoneySourceId: source.id
+          }
+        }
+      }
     ]
   };
 
@@ -146,6 +151,7 @@ async function AccountDetailPageContent({
       amount: true,
       currency: true,
       transactionDate: true,
+      createdAt: true,
       fromMoneySourceId: true,
       toMoneySourceId: true,
       adjustedMoneySourceId: true,
@@ -156,15 +162,14 @@ async function AccountDetailPageContent({
     }
   });
 
-  const trackedBalance = calculateTrackedBalance(source, sourceTransactions);
   const recentTransactions = [...sourceTransactions]
     .sort((a, b) => b.transactionDate.getTime() - a.transactionDate.getTime())
     .slice(0, 10);
   const { start: monthStart, end: nextMonthStart } = getMonthRange(new Date());
   const isCreditCard = source.type === MoneySourceType.CREDIT_CARD;
-  const creditCardState = isCreditCard
-    ? calculateCreditCardState(source, sourceTransactions)
-    : null;
+  const projection = calculateAccountProjection(source, sourceTransactions);
+  const trackedBalance = projection.trackedAmount;
+  const creditCardState = projection.creditCardState;
   const feeWaiverState = isCreditCard
     ? calculateFeeWaiverState(source, sourceTransactions)
     : null;
@@ -212,14 +217,15 @@ async function AccountDetailPageContent({
 
       <div className="rounded-xl bg-slate-900 p-6 shadow-sm">
         <p className="text-sm font-medium text-slate-400">
-          Tracked in this app
+          {isCreditCard ? "Tracked debt" : "Tracked in this app"}
         </p>
         <p className="mt-3 text-3xl font-bold tracking-tight text-white">
           {formatMoney(trackedBalance, source.currency)}
         </p>
         <p className="mt-3 text-xs text-slate-500">
-          This is based on opening balance plus app transactions. It may differ
-          from your official provider statement.
+          {isCreditCard
+            ? "Tracked estimate from your records. It may differ from your official card statement."
+            : "This is based on opening balance plus app transactions. It may differ from your official provider statement."}
         </p>
       </div>
 

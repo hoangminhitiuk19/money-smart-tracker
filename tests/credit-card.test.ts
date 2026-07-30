@@ -1,4 +1,8 @@
-import { TransactionType } from "@prisma/client";
+import {
+  AdjustmentDirection,
+  AdjustmentTarget,
+  TransactionType
+} from "@prisma/client";
 import { describe, expect, it } from "vitest";
 import {
   calculateCreditCardState,
@@ -30,6 +34,7 @@ function tx(
   return {
     id: "tx-1",
     amount: 100,
+    createdAt: new Date("2026-02-01T00:00:01.000Z"),
     transactionDate: new Date("2026-02-01T00:00:00.000Z"),
     type: TransactionType.EXPENSE,
     fromMoneySourceId: source.id,
@@ -213,6 +218,61 @@ describe("calculateCreditCardState", () => {
     ).toBe("1000.00");
   });
 
+  it.each([
+    {
+      name: "createdAt",
+      adjustmentCreatedAt: new Date("2026-07-10T09:00:01.000Z"),
+      paymentCreatedAt: new Date("2026-07-10T09:00:02.000Z")
+    },
+    {
+      name: "id when createdAt is tied",
+      adjustmentCreatedAt: new Date("2026-07-10T09:00:01.000Z"),
+      paymentCreatedAt: new Date("2026-07-10T09:00:01.000Z")
+    }
+  ])("orders same-day card events by $name instead of caller order", ({
+    adjustmentCreatedAt,
+    paymentCreatedAt
+  }) => {
+    const transactionDate = new Date("2026-07-10T09:00:00.000Z");
+    const transactions = [
+      {
+        ...tx({
+          id: "b-payment",
+          amount: 315,
+          type: TransactionType.TRANSFER,
+          fromMoneySourceId: "bank-1",
+          toMoneySourceId: source.id,
+          transactionDate
+        }),
+        createdAt: paymentCreatedAt
+      },
+      {
+        ...tx({
+          id: "a-adjustment",
+          amount: 100,
+          type: TransactionType.ADJUSTMENT,
+          fromMoneySourceId: null,
+          adjustedMoneySourceId: source.id,
+          adjustmentDirection: AdjustmentDirection.INCREASE,
+          adjustmentTarget: AdjustmentTarget.CREDIT_CARD_DEBT,
+          transactionDate
+        }),
+        createdAt: adjustmentCreatedAt
+      }
+    ];
+    const originalOrder = transactions.map((transaction) => transaction.id);
+
+    const state = calculateCreditCardState(
+      card({ initialOutstandingDebt: 300 }),
+      transactions
+    );
+
+    expect(state.outstandingDebt.toFixed(2)).toBe("85.00");
+    expect(state.cardCredit.toFixed(2)).toBe("0.00");
+    expect(transactions.map((transaction) => transaction.id)).toEqual(
+      originalOrder
+    );
+  });
 });
 
 describe("calculateFeeWaiverState", () => {
@@ -250,6 +310,22 @@ describe("calculateFeeWaiverState", () => {
         })
       ]).eligibleSpending.toFixed(2)
     ).toBe("220.00");
+  });
+
+  it("deducts a linked eligible refund even when it is deposited into a bank", () => {
+    expect(
+      calculateFeeWaiverState(source, [
+        tx({ id: "expense-1", amount: 300, countTowardFeeWaiver: true }),
+        tx({
+          id: "refund-to-bank",
+          amount: 90,
+          type: TransactionType.REFUND,
+          fromMoneySourceId: null,
+          toMoneySourceId: "bank-1",
+          relatedTransactionId: "expense-1"
+        })
+      ]).eligibleSpending.toFixed(2)
+    ).toBe("210.00");
   });
 
   it("excludes non-eligible transactions", () => {

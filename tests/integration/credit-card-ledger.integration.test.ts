@@ -1,0 +1,198 @@
+import { randomUUID } from "node:crypto";
+import {
+  AdjustmentDirection,
+  AdjustmentTarget,
+  MoneySourceType,
+  TransactionType
+} from "@prisma/client";
+import { afterAll, describe, expect, it } from "vitest";
+import {
+  calculateCreditCardState,
+  calculateFeeWaiverState
+} from "@/lib/calc/credit-card";
+import { prisma } from "@/lib/prisma";
+import {
+  cleanupAuditContext,
+  createAuditContext
+} from "@/tests/integration/helpers/audit-context";
+import {
+  REFERENCE_AMOUNTS,
+  REFERENCE_DATES,
+  REFERENCE_EXPECTED_LEDGER
+} from "@/tests/integration/helpers/reference-ledger";
+
+afterAll(async () => {
+  await prisma.$disconnect();
+});
+
+describe("credit-card reference ledger", () => {
+  it("reconciles deterministic debt, credit, available credit, and waiver spending from PostgreSQL", async () => {
+    const context = await createAuditContext(
+      `credit-card-ledger-${randomUUID()}`
+    );
+    const fixturePrefix = `credit-card-ledger-${randomUUID()}`;
+    const bankId = `${fixturePrefix}-bank`;
+    const cardId = `${fixturePrefix}-card`;
+    const eligibleExpenseId = `${fixturePrefix}-eligible-expense`;
+    const excludedExpenseId = `${fixturePrefix}-excluded-expense`;
+    const refundId = `${fixturePrefix}-bank-refund`;
+    const debtAdjustmentId = `${fixturePrefix}-a-debt-adjustment`;
+    const paymentId = `${fixturePrefix}-b-payment`;
+    const creditAdjustmentId = `${fixturePrefix}-credit-adjustment`;
+    const transactionIds = [
+      eligibleExpenseId,
+      excludedExpenseId,
+      refundId,
+      debtAdjustmentId,
+      paymentId,
+      creditAdjustmentId
+    ];
+
+    try {
+      const [, card] = await prisma.$transaction([
+        prisma.moneySource.create({
+          data: {
+            id: bankId,
+            userId: context.userA.id,
+            name: "Reference ledger bank",
+            type: MoneySourceType.BANK_ACCOUNT
+          }
+        }),
+        prisma.moneySource.create({
+          data: {
+            id: cardId,
+            userId: context.userA.id,
+            name: "Reference ledger card",
+            type: MoneySourceType.CREDIT_CARD,
+            creditLimit: "2000.00",
+            initialOutstandingDebt: "300.00",
+            initialCardCredit: "500.00",
+            annualFeeWaiverEnabled: true,
+            annualFeeWaiverSpendTarget: REFERENCE_AMOUNTS.feeWaiverTarget,
+            waiverPeriodStartDate: REFERENCE_DATES.ledgerStart,
+            waiverPeriodEndDate: REFERENCE_DATES.periodEndInclusive
+          }
+        })
+      ]);
+      await prisma.transaction.create({
+        data: {
+          id: eligibleExpenseId,
+          userId: context.userA.id,
+          type: TransactionType.EXPENSE,
+          amount: "300.00",
+          title: "Reference eligible card expense",
+          transactionDate: REFERENCE_DATES.cardExpense,
+          createdAt: new Date("2026-07-10T08:59:59.000Z"),
+          fromMoneySourceId: cardId,
+          countTowardFeeWaiver: true
+        }
+      });
+      await prisma.$transaction([
+        prisma.transaction.create({
+          data: {
+            id: debtAdjustmentId,
+            userId: context.userA.id,
+            type: TransactionType.ADJUSTMENT,
+            amount: "100.00",
+            title: "Reference debt adjustment",
+            transactionDate: REFERENCE_DATES.cardExpense,
+            createdAt: REFERENCE_DATES.sameDayFirstCreatedAt,
+            adjustedMoneySourceId: cardId,
+            adjustmentDirection: AdjustmentDirection.INCREASE,
+            adjustmentTarget: AdjustmentTarget.CREDIT_CARD_DEBT
+          }
+        }),
+        prisma.transaction.create({
+          data: {
+            id: paymentId,
+            userId: context.userA.id,
+            type: TransactionType.TRANSFER,
+            amount: "315.00",
+            title: "Reference card payment",
+            transactionDate: REFERENCE_DATES.cardExpense,
+            createdAt: REFERENCE_DATES.sameDaySecondCreatedAt,
+            fromMoneySourceId: bankId,
+            toMoneySourceId: cardId
+          }
+        }),
+        prisma.transaction.create({
+          data: {
+            id: excludedExpenseId,
+            userId: context.userA.id,
+            type: TransactionType.EXPENSE,
+            amount: "140.00",
+            title: "Reference excluded card expense",
+            transactionDate: new Date("2026-07-11T09:00:00.000Z"),
+            createdAt: new Date("2026-07-11T09:00:01.000Z"),
+            fromMoneySourceId: cardId,
+            countTowardFeeWaiver: false
+          }
+        }),
+        prisma.transaction.create({
+          data: {
+            id: refundId,
+            userId: context.userA.id,
+            type: TransactionType.REFUND,
+            amount: REFERENCE_AMOUNTS.linkedRefund,
+            title: "Reference refund to bank",
+            transactionDate: new Date("2026-07-12T09:00:00.000Z"),
+            createdAt: new Date("2026-07-12T09:00:01.000Z"),
+            toMoneySourceId: bankId,
+            relatedTransactionId: eligibleExpenseId
+          }
+        }),
+        prisma.transaction.create({
+          data: {
+            id: creditAdjustmentId,
+            userId: context.userA.id,
+            type: TransactionType.ADJUSTMENT,
+            amount: "45.00",
+            title: "Reference card credit adjustment",
+            transactionDate: new Date("2026-07-13T09:00:00.000Z"),
+            createdAt: new Date("2026-07-13T09:00:01.000Z"),
+            adjustedMoneySourceId: cardId,
+            adjustmentDirection: AdjustmentDirection.DECREASE,
+            adjustmentTarget: AdjustmentTarget.CARD_CREDIT
+          }
+        })
+      ]);
+
+      const transactions = await prisma.transaction.findMany({
+        where: {
+          userId: context.userA.id,
+          id: { in: transactionIds }
+        },
+        orderBy: [
+          { transactionDate: "desc" },
+          { createdAt: "desc" },
+          { id: "desc" }
+        ]
+      });
+      const originalOrder = transactions.map((transaction) => transaction.id);
+
+      const state = calculateCreditCardState(card, transactions);
+      const waiver = calculateFeeWaiverState(card, transactions);
+
+      expect(state.outstandingDebt.toFixed(2)).toBe(
+        REFERENCE_EXPECTED_LEDGER.outstandingDebt
+      );
+      expect(state.cardCredit.toFixed(2)).toBe(
+        REFERENCE_EXPECTED_LEDGER.cardCredit
+      );
+      expect(state.availableCredit.toFixed(2)).toBe(
+        REFERENCE_EXPECTED_LEDGER.availableCredit
+      );
+      expect(waiver.eligibleSpending.toFixed(2)).toBe(
+        REFERENCE_EXPECTED_LEDGER.eligibleSpending
+      );
+      expect(waiver.remaining.toFixed(2)).toBe(
+        REFERENCE_EXPECTED_LEDGER.feeWaiverRemaining
+      );
+      expect(transactions.map((transaction) => transaction.id)).toEqual(
+        originalOrder
+      );
+    } finally {
+      await cleanupAuditContext(context);
+    }
+  }, 20_000);
+});

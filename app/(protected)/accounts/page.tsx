@@ -7,7 +7,7 @@ import {
   toggleMoneySourceActiveFormAction
 } from "@/lib/actions/money-sources";
 import { requireAuth } from "@/lib/auth";
-import { calculateTrackedBalance } from "@/lib/calc/balance";
+import { calculateAccountProjection } from "@/lib/calc/dashboard";
 import {
   presentationNumber,
   type DecimalInput
@@ -84,10 +84,13 @@ async function AccountsPageContent() {
         id: true,
         type: true,
         amount: true,
+        transactionDate: true,
+        createdAt: true,
         fromMoneySourceId: true,
         toMoneySourceId: true,
         adjustedMoneySourceId: true,
-        adjustmentDirection: true
+        adjustmentDirection: true,
+        adjustmentTarget: true
       }
     })
   ]);
@@ -142,7 +145,10 @@ async function AccountsPageContent() {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {moneySources.map((source) => {
-                  const balance = calculateTrackedBalance(source, transactions);
+                  const projection = calculateAccountProjection(
+                    source,
+                    transactions
+                  );
                   const toggleAction = toggleMoneySourceActiveFormAction.bind(
                     null,
                     source.id,
@@ -183,9 +189,25 @@ async function AccountsPageContent() {
                       </td>
                       <td className="px-4 py-3">
                         <div className="font-medium text-slate-950">
-                          {formatMoney(balance, source.currency)}
+                          {formatMoney(
+                            projection.trackedAmount,
+                            source.currency
+                          )}
                         </div>
-                        <div className="text-xs text-slate-500">Tracked</div>
+                        <div className="text-xs text-slate-500">
+                          {source.type === MoneySourceType.CREDIT_CARD
+                            ? "Tracked debt"
+                            : "Tracked"}
+                        </div>
+                        {projection.cardCredit?.gt(0) ? (
+                          <div className="mt-1 text-xs font-medium text-emerald-700">
+                            Card credit:{" "}
+                            {formatMoney(
+                              projection.cardCredit,
+                              source.currency
+                            )}
+                          </div>
+                        ) : null}
                       </td>
                       <td className="px-4 py-3">
                         <Badge

@@ -14,7 +14,8 @@ type RequiredDashboardAmount = DecimalInput;
 type DashboardAmount = RequiredDashboardAmount | null | undefined;
 
 export type DashboardTransaction = {
-  id?: string;
+  id: string;
+  createdAt: Date | string;
   type: TransactionType;
   amount: RequiredDashboardAmount;
   transactionDate: Date | string;
@@ -92,6 +93,35 @@ export function calculateNetSavings(transactions: DashboardTransaction[]) {
   };
 }
 
+export function calculateAccountProjection(
+  source: DashboardMoneySource,
+  transactions: DashboardTransaction[]
+) {
+  if (source.type === MoneySourceType.CREDIT_CARD) {
+    const creditCardState = calculateCreditCardState(
+      {
+        id: source.id,
+        creditLimit: source.creditLimit,
+        initialCardCredit: source.initialCardCredit ?? 0,
+        initialOutstandingDebt: source.initialOutstandingDebt ?? 0
+      },
+      transactions
+    );
+
+    return {
+      trackedAmount: creditCardState.outstandingDebt,
+      cardCredit: creditCardState.cardCredit,
+      creditCardState
+    };
+  }
+
+  return {
+    trackedAmount: calculateTrackedBalance(source, transactions),
+    cardCredit: null,
+    creditCardState: null
+  };
+}
+
 export function calculateEstimatedNetPosition(
   moneySources: DashboardMoneySource[],
   transactions: DashboardTransaction[]
@@ -109,15 +139,7 @@ export function calculateEstimatedNetPosition(
     }
 
     return total.plus(
-      calculateCreditCardState(
-        {
-          id: source.id,
-          creditLimit: source.creditLimit,
-          initialCardCredit: source.initialCardCredit ?? 0,
-          initialOutstandingDebt: source.initialOutstandingDebt ?? 0
-        },
-        transactions
-      ).outstandingDebt
+      calculateAccountProjection(source, transactions).trackedAmount
     );
   }, decimal(0));
 
