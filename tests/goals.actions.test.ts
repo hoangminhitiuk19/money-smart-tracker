@@ -30,6 +30,9 @@ vi.mock("@/lib/security/rate-limit", () => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    $transaction: vi.fn(async (operation: any) =>
+      operation((await import("@/lib/prisma")).prisma)
+    ),
     savingGoal: {
       create: vi.fn(async ({ data }: any) => ({
         id: "new-goal",
@@ -67,11 +70,22 @@ describe("goal mutation rate limiting", () => {
 
     const result = await createGoal({
       name: "Emergency fund",
-      targetAmount: 1000000,
+      targetAmount: "1000000.00",
       status: GoalStatus.ACTIVE
     });
 
     expect(result).toEqual({ ok: false, error: RATE_LIMIT_MESSAGE });
     expect(prisma.savingGoal.create).not.toHaveBeenCalled();
+  });
+
+  it("creates a goal and its activity inside one database transaction", async () => {
+    const result = await createGoal({
+      name: "Emergency fund",
+      targetAmount: "1000000.00",
+      status: GoalStatus.ACTIVE
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function));
   });
 });

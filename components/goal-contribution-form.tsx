@@ -54,7 +54,7 @@ export function GoalContributionForm({
 
     startTransition(async () => {
       const result = await createContribution({
-        amount: Number(formData.get("amount")),
+        amount: String(formData.get("amount")),
         contributionDate: String(formData.get("contributionDate")),
         fromMoneySourceId: emptyToUndefined(
           String(formData.get("fromMoneySourceId") ?? "")

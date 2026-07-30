@@ -24,9 +24,43 @@ const optionalDateSchema = z.preprocess((value) => {
   return value;
 }, z.coerce.date().optional());
 
+const maxDecimal18WithScale2 = new Prisma.Decimal("9999999999999999.99");
+const positiveDecimalSchema = z
+  .union([z.string(), z.instanceof(Prisma.Decimal)])
+  .transform((value, context) => {
+    const text = typeof value === "string" ? value.trim() : value.toString();
+    let amount: Prisma.Decimal;
+
+    try {
+      amount = new Prisma.Decimal(text);
+    } catch {
+      context.addIssue({
+        code: "custom",
+        message: "Enter a valid decimal amount."
+      });
+      return z.NEVER;
+    }
+
+    if (
+      !text ||
+      !amount.isFinite() ||
+      !amount.greaterThan(0) ||
+      amount.decimalPlaces() > 2 ||
+      amount.greaterThan(maxDecimal18WithScale2)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Amount must be a positive Decimal(18,2) value."
+      });
+      return z.NEVER;
+    }
+
+    return text;
+  });
+
 const goalSchema = z.object({
   name: z.string().trim().min(1),
-  targetAmount: z.coerce.number().positive(),
+  targetAmount: positiveDecimalSchema,
   currency: z.string().trim().min(1).default("VND"),
   deadline: optionalDateSchema,
   description: optionalTextSchema,
@@ -95,8 +129,12 @@ function cleanGoalUpdateData(data: GoalUpdateData) {
   };
 }
 
-async function verifyGoalOwnership(id: string, userId: string) {
-  const goal = await prisma.savingGoal.findFirst({
+async function verifyGoalOwnership(
+  db: Prisma.TransactionClient,
+  id: string,
+  userId: string
+) {
+  const goal = await db.savingGoal.findFirst({
     where: { id, userId }
   });
 
@@ -108,12 +146,13 @@ async function verifyGoalOwnership(id: string, userId: string) {
 }
 
 async function logActivity(
+  db: Prisma.TransactionClient,
   userId: string,
   action: "GOAL_CREATED" | "GOAL_UPDATED" | "GOAL_DELETED",
   entityId: string,
   metadata?: Prisma.InputJsonObject
 ) {
-  await prisma.activityLog.create({
+  await db.activityLog.create({
     data: {
       userId,
       action,
@@ -138,18 +177,20 @@ export async function createGoal(
     return { ok: false, error: "Enter a valid saving goal." };
   }
 
-  const goal = await prisma.savingGoal.create({
-    data: {
-      ...cleanGoalCreateData(parsed.data),
-      userId: user.id
-    },
-    select: { id: true, name: true, status: true, targetAmount: true }
-  });
+  await prisma.$transaction(async (tx) => {
+    const goal = await tx.savingGoal.create({
+      data: {
+        ...cleanGoalCreateData(parsed.data),
+        userId: user.id
+      },
+      select: { id: true, name: true, status: true, targetAmount: true }
+    });
 
-  await logActivity(user.id, "GOAL_CREATED", goal.id, {
-    name: goal.name,
-    status: goal.status,
-    targetAmount: goal.targetAmount.toString()
+    await logActivity(tx, user.id, "GOAL_CREATED", goal.id, {
+      name: goal.name,
+      status: goal.status,
+      targetAmount: goal.targetAmount.toString()
+    });
   });
 
   revalidatePath("/goals");
@@ -175,19 +216,19 @@ export async function updateGoal(
     return { ok: false, error: "Enter a valid saving goal." };
   }
 
-  await verifyGoalOwnership(id, user.id);
+  await prisma.$transaction(async (tx) => {
+    await verifyGoalOwnership(tx, id, user.id);
+    await tx.savingGoal.updateMany({
+      where: { id, userId: user.id },
+      data: cleanGoalUpdateData(parsed.data)
+    });
+    const goal = await verifyGoalOwnership(tx, id, user.id);
 
-  await prisma.savingGoal.updateMany({
-    where: { id, userId: user.id },
-    data: cleanGoalUpdateData(parsed.data)
-  });
-
-  const goal = await verifyGoalOwnership(id, user.id);
-
-  await logActivity(user.id, "GOAL_UPDATED", goal.id, {
-    name: goal.name,
-    status: goal.status,
-    targetAmount: goal.targetAmount.toString()
+    await logActivity(tx, user.id, "GOAL_UPDATED", goal.id, {
+      name: goal.name,
+      status: goal.status,
+      targetAmount: goal.targetAmount.toString()
+    });
   });
 
   revalidatePath("/goals");
@@ -205,15 +246,16 @@ export async function deleteGoal(id: string): Promise<GoalActionResult> {
   if (!rateLimit.allowed) {
     return { ok: false, error: RATE_LIMIT_MESSAGE };
   }
-  const goal = await verifyGoalOwnership(id, user.id);
+  await prisma.$transaction(async (tx) => {
+    const goal = await verifyGoalOwnership(tx, id, user.id);
+    await tx.savingGoal.deleteMany({
+      where: { id, userId: user.id }
+    });
 
-  await prisma.savingGoal.deleteMany({
-    where: { id, userId: user.id }
-  });
-
-  await logActivity(user.id, "GOAL_DELETED", id, {
-    name: goal.name,
-    status: goal.status
+    await logActivity(tx, user.id, "GOAL_DELETED", id, {
+      name: goal.name,
+      status: goal.status
+    });
   });
 
   revalidatePath("/goals");
@@ -238,5 +280,5 @@ export async function listGoals() {
 
 export async function getGoal(id: string) {
   const user = await requireAuth();
-  return verifyGoalOwnership(id, user.id);
+  return verifyGoalOwnership(prisma, id, user.id);
 }

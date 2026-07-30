@@ -106,4 +106,13 @@ describe("calculateGoalProgress", () => {
       ).remaining.toFixed(2)
     ).toBe("400.00");
   });
+
+  it("floors remaining at zero when net contributions exceed the target", () => {
+    expect(
+      calculateGoalProgress(
+        [contribution({ amount: "1000.01" })],
+        "1000.00"
+      ).remaining.toFixed(2)
+    ).toBe("0.00");
+  });
 });
