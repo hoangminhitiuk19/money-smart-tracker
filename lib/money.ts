@@ -35,3 +35,7 @@ export function moneyText(value: DecimalInput): string {
 export function presentationNumber(value: DecimalInput): number {
   return Number(decimal(value).toString());
 }
+
+export function clampedPresentationPercent(value: DecimalInput): number {
+  return Math.min(100, Math.max(0, presentationNumber(value)));
+}

@@ -10,6 +10,7 @@ import {
   calculateFeeWaiverState
 } from "@/lib/calc/credit-card";
 import {
+  clampedPresentationPercent,
   decimal,
   presentationNumber,
   type DecimalInput
@@ -39,7 +40,7 @@ function formatMoney(amount: DecimalInput, currency: string) {
 }
 
 function formatPercent(amount: DecimalInput) {
-  return `${decimal(amount).toDecimalPlaces(0).toFixed(0)}%`;
+  return `${clampedPresentationPercent(amount).toFixed(0)}%`;
 }
 
 function formatDate(date: Date) {
