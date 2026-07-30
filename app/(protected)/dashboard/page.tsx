@@ -248,7 +248,8 @@ async function DashboardPageContent({
             {formatMoney(dashboard.summary.estimatedNetPosition)}
           </p>
           <p className="mt-3 text-xs text-slate-500">
-            Estimated from your records &mdash; not official bank data
+            Current tracked estimate &middot; Estimated from your records
+            &mdash; not official bank data
           </p>
         </div>
 
@@ -256,25 +257,25 @@ async function DashboardPageContent({
           <StatCard
             accentColor="#16a34a"
             icon={<TrendUpIcon className="h-5 w-5" />}
-            label="Total income"
+            label="Total income · Selected period"
             value={formatMoney(dashboard.summary.totalIncome)}
           />
           <StatCard
             accentColor="#dc2626"
             icon={<TrendDownIcon className="h-5 w-5" />}
-            label="Total expense"
+            label="Total expense · Selected period"
             value={formatMoney(dashboard.summary.totalExpense)}
           />
           <StatCard
             accentColor="#2563eb"
             icon={<WalletIcon className="h-5 w-5" />}
-            label="Net savings"
+            label="Net savings · Selected period"
             value={formatMoney(dashboard.summary.netSavings)}
           />
           <StatCard
             accentColor="#7c3aed"
             icon={<TrendUpIcon className="h-5 w-5" />}
-            label="Saving rate"
+            label="Saving rate · Selected period"
             value={formatPercent(dashboard.summary.savingRate)}
           />
         </div>
@@ -379,7 +380,7 @@ async function DashboardPageContent({
                 <SectionRow
                   icon={<CreditCardIcon className="h-4 w-4" />}
                   key={source.id}
-                  subtitle={`Available ${formatMoney(state.availableCredit, source.currency)} · Tracked estimate`}
+                  subtitle={`Available ${formatMoney(state.availableCredit, source.currency)} · Current tracked estimate`}
                   title={source.name}
                   trailing={
                     <span className="text-expense">

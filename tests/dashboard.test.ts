@@ -3,7 +3,10 @@ import {
   QualityRating,
   TransactionType
 } from "@prisma/client";
+import type { ReactElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import DashboardPage from "@/app/(protected)/dashboard/page";
 import { getDashboardData } from "@/lib/actions/dashboard";
 import {
   calculateAccountProjection,
@@ -83,6 +86,23 @@ function summary({
     [],
     today
   );
+}
+
+type DashboardContentElement = ReactElement<{
+  searchParams: Record<string, string | string[] | undefined>;
+}> & {
+  type: (props: {
+    searchParams: Record<string, string | string[] | undefined>;
+  }) => Promise<ReactElement>;
+};
+
+async function renderDashboardMarkup() {
+  const shell = (await DashboardPage({
+    searchParams: Promise.resolve({ period: "month" })
+  })) as ReactElement<{ children: DashboardContentElement }>;
+  const contentElement = shell.props.children;
+  const content = await contentElement.type(contentElement.props);
+  return renderToStaticMarkup(content);
 }
 
 describe("getDashboardSummary", () => {
@@ -272,6 +292,52 @@ describe("getDashboardSummary", () => {
       }).estimatedNetPosition.toFixed(2)
     ).toBe("1000.00");
   });
+
+  it("includes only the exact asset whitelist and excludes OTHER from net position", () => {
+    expect(
+      summary({
+        moneySources: [
+          source({
+            id: "cash",
+            openingBalance: 100,
+            type: MoneySourceType.CASH
+          }),
+          source({
+            id: "bank",
+            openingBalance: 200,
+            type: MoneySourceType.BANK_ACCOUNT
+          }),
+          source({
+            id: "debit",
+            openingBalance: 300,
+            type: MoneySourceType.DEBIT_CARD
+          }),
+          source({
+            id: "wallet",
+            openingBalance: 400,
+            type: MoneySourceType.E_WALLET
+          }),
+          source({
+            id: "investment",
+            openingBalance: 500,
+            type: MoneySourceType.INVESTMENT
+          }),
+          source({
+            id: "other",
+            openingBalance: 999,
+            type: MoneySourceType.OTHER
+          }),
+          source({
+            id: "card",
+            initialCardCredit: 0,
+            initialOutstandingDebt: 100,
+            openingBalance: 0,
+            type: MoneySourceType.CREDIT_CARD
+          })
+        ]
+      }).estimatedNetPosition.toFixed(2)
+    ).toBe("1400.00");
+  });
 });
 
 describe("calculateAccountProjection", () => {
@@ -326,5 +392,35 @@ describe("getDashboardData date filtering", () => {
       },
       orderBy: { transactionDate: "desc" }
     });
+    expect(dashboardMocks.transactionFindMany).toHaveBeenNthCalledWith(2, {
+      where: { userId: "dashboard-user" },
+      orderBy: { transactionDate: "desc" }
+    });
+  });
+});
+
+describe("dashboard horizon labels", () => {
+  it("labels selected-period metrics and current tracked state", async () => {
+    dashboardMocks.moneySourceFindMany
+      .mockResolvedValueOnce([
+        {
+          id: "dashboard-card",
+          userId: "dashboard-user",
+          name: "Dashboard card",
+          type: MoneySourceType.CREDIT_CARD,
+          currency: "VND",
+          openingBalance: 0,
+          creditLimit: 1000,
+          initialOutstandingDebt: 0,
+          initialCardCredit: 0,
+          annualFeeWaiverEnabled: false
+        }
+      ])
+      .mockResolvedValueOnce([]);
+
+    const markup = await renderDashboardMarkup();
+
+    expect(markup.match(/Selected period/g) ?? []).toHaveLength(4);
+    expect(markup.match(/Current tracked estimate/g) ?? []).toHaveLength(2);
   });
 });

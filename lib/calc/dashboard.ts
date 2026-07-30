@@ -60,6 +60,14 @@ export type DashboardQualityBreakdown = Record<
   DashboardQualityBucket
 >;
 
+const NET_POSITION_ASSET_TYPES = new Set<MoneySourceType>([
+  MoneySourceType.CASH,
+  MoneySourceType.BANK_ACCOUNT,
+  MoneySourceType.DEBIT_CARD,
+  MoneySourceType.E_WALLET,
+  MoneySourceType.INVESTMENT
+]);
+
 function emptyQualityBreakdown(): DashboardQualityBreakdown {
   return {
     A: { count: 0, amount: decimal(0) },
@@ -127,7 +135,7 @@ export function calculateEstimatedNetPosition(
   transactions: DashboardTransaction[]
 ) {
   const nonCardBalanceTotal = moneySources.reduce((total, source) => {
-    if (source.type === MoneySourceType.CREDIT_CARD) {
+    if (!NET_POSITION_ASSET_TYPES.has(source.type)) {
       return total;
     }
 
@@ -152,7 +160,8 @@ export function getDashboardSummary(
   projects: DashboardProject[],
   moneySources: DashboardMoneySource[],
   renewals: DashboardRenewal[],
-  today: Date | string
+  today: Date | string,
+  ledgerTransactions: DashboardTransaction[] = transactions
 ) {
   void goals;
   void projects;
@@ -216,7 +225,7 @@ export function getDashboardSummary(
     spendingBySource,
     estimatedNetPosition: calculateEstimatedNetPosition(
       moneySources,
-      transactions
+      ledgerTransactions
     )
   };
 }

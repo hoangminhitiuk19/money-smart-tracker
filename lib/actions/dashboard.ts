@@ -47,7 +47,8 @@ export async function getDashboardData(
   const cardFeeWindowEnd = getThirtyDaysFrom(today);
 
   const [
-    transactions,
+    periodTransactions,
+    ledgerTransactions,
     goals,
     projects,
     moneySources,
@@ -61,6 +62,10 @@ export async function getDashboardData(
       },
       orderBy: { transactionDate: "desc" }
     }),
+    prisma.transaction.findMany({
+      where: { userId },
+      orderBy: { transactionDate: "desc" }
+    }),
     prisma.savingGoal.findMany({
       where: {
         userId,
@@ -68,7 +73,9 @@ export async function getDashboardData(
       },
       orderBy: [{ deadline: "asc" }, { name: "asc" }],
       include: {
-        goalContributions: true
+        goalContributions: {
+          where: { userId }
+        }
       }
     }),
     prisma.financialProject.findMany({
@@ -110,18 +117,19 @@ export async function getDashboardData(
     isUpcomingRenewal(renewal, renewalToday)
   );
   const summary = getDashboardSummary(
-    transactions,
+    periodTransactions,
     goals,
     projects,
     moneySources,
     upcomingRenewals,
-    today
+    today,
+    ledgerTransactions
   );
   const creditCards = moneySources
     .filter((source) => source.type === MoneySourceType.CREDIT_CARD)
     .map((source) => ({
       source,
-      state: calculateCreditCardState(source, transactions)
+      state: calculateCreditCardState(source, ledgerTransactions)
     }));
   const feeWaivers = moneySources
     .filter(
@@ -131,7 +139,7 @@ export async function getDashboardData(
     )
     .map((source) => ({
       source,
-      state: calculateFeeWaiverState(source, transactions)
+      state: calculateFeeWaiverState(source, ledgerTransactions)
     }));
   const goalProgress = goals.map((goal) => ({
     goal,
@@ -140,7 +148,9 @@ export async function getDashboardData(
   const projectSummaries = projects.map((project) => ({
     project,
     summary: calculateProjectSummary(
-      transactions.filter((transaction) => transaction.projectId === project.id)
+      periodTransactions.filter(
+        (transaction) => transaction.projectId === project.id
+      )
     )
   }));
 
@@ -150,7 +160,7 @@ export async function getDashboardData(
       endDate: periodEnd
     },
     summary,
-    transactions,
+    transactions: periodTransactions,
     goals: goalProgress,
     projects: projectSummaries,
     moneySources,
