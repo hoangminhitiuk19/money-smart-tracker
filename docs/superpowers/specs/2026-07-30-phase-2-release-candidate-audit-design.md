@@ -134,6 +134,32 @@ events, and CSV rows. Currency math uses the same decimal precision promised by
 the schema, while the expected values remain independent of production
 calculation helpers.
 
+## Approved Domain Decisions
+
+The planning audit exposed specification ambiguities. The user approved these
+rules on 2026-07-30:
+
+- Dashboard period filters apply to income, expense, savings, spending quality,
+  and charts. Current-state values such as balances, card debt, net position,
+  goal progress, fee-waiver cycles, and upcoming items use their complete or
+  domain-specific time horizon.
+- Expense categories carry a configurable fee-waiver default. The seeded
+  Annual Fee category defaults to excluded. Each transaction remains manually
+  overridable.
+- Same-day card events are ordered by `transactionDate`, then `createdAt`, then
+  `id`.
+- Only `CONTRIBUTION` goal records may link to an `INCOME` transaction.
+  Withdrawals have no transaction link.
+- A manual-override contribution bypasses the immediate allocation ceiling but
+  remains part of the total considered by later normal contributions.
+- Monthly and yearly renewal calculations clamp to the final valid day of a
+  shorter target month.
+- Mark-paid and skip actions require an `ACTIVE` renewal.
+- Deleting a renewal preserves historical generated transactions and clears
+  their renewal link.
+- Financial arithmetic uses Prisma Decimal-compatible operations internally so
+  `Decimal(18,2)` values do not lose cents through JavaScript binary numbers.
+
 ## Defect Workflow
 
 Financial-result, security, ownership, data-integrity, and missing-required-test
