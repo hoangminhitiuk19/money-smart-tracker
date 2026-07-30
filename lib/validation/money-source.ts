@@ -15,6 +15,7 @@ const nullableTextSchema = z
   .transform((value) => (value === "" ? null : value));
 
 const currencySchema = z.string().trim().min(1);
+const maxDecimal18WithScale2 = new Prisma.Decimal("9999999999999999.99");
 
 const decimalValueSchema = z
   .union([z.string(), z.number(), z.instanceof(Prisma.Decimal)])
@@ -30,12 +31,24 @@ const decimalValueSchema = z
       return z.NEVER;
     }
 
+    let decimalValue: Prisma.Decimal;
     try {
-      new Prisma.Decimal(text);
+      decimalValue = new Prisma.Decimal(text);
     } catch {
       context.addIssue({
         code: "custom",
         message: "Enter a valid decimal amount."
+      });
+      return z.NEVER;
+    }
+
+    if (
+      decimalValue.decimalPlaces() > 2 ||
+      decimalValue.abs().greaterThan(maxDecimal18WithScale2)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Amount must fit a Decimal(18,2) value."
       });
       return z.NEVER;
     }

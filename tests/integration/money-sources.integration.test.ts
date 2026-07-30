@@ -5,13 +5,16 @@ import {
   MoneySourceType,
   WaiverPeriod
 } from "@prisma/client";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   cleanupAuditContext,
   createAuditContext,
   type AuditContext
 } from "@/tests/integration/helpers/audit-context";
-import { createMoneySource } from "@/lib/actions/money-sources";
+import {
+  createMoneySource,
+  updateMoneySource
+} from "@/lib/actions/money-sources";
 import { prisma } from "@/lib/prisma";
 
 const authState = vi.hoisted(() => ({ userId: "" }));
@@ -40,6 +43,17 @@ vi.mock("@/lib/security/rate-limit", () => ({
 }));
 
 const contexts: AuditContext[] = [];
+const moneyFieldCases = [
+  "openingBalance",
+  "creditLimit",
+  "initialOutstandingDebt",
+  "initialCardCredit",
+  "annualFeeAmount",
+  "annualFeeWaiverSpendTarget"
+].flatMap((field) => [
+  { field, value: "0.001" },
+  { field, value: "99999999999999999.99" }
+]);
 
 afterAll(async () => {
   await Promise.all(contexts.map(cleanupAuditContext));
@@ -143,4 +157,104 @@ describe("money source action persistence", () => {
       })
     ).resolves.toBe(1);
   }, 20_000);
+});
+
+describe("money source Decimal(18,2) action rejection", () => {
+  let context: AuditContext;
+
+  beforeAll(async () => {
+    context = await createAuditContext(
+      `money-source-decimal-${randomUUID()}`
+    );
+    contexts.push(context);
+  }, 20_000);
+
+  it.each(moneyFieldCases)(
+    "rejects create $field=$value before database or activity writes",
+    async ({ field, value }) => {
+      authState.userId = context.userA.id;
+      const where = { userId: context.userA.id };
+      const [moneySourcesBefore, activitiesBefore] = await Promise.all([
+        prisma.moneySource.count({ where }),
+        prisma.activityLog.count({ where })
+      ]);
+
+      const result = await createMoneySource({
+        name: `Invalid create ${field} ${value}`,
+        type: MoneySourceType.CREDIT_CARD,
+        openingBalance: "25.00",
+        creditLimit: "2000.00",
+        initialOutstandingDebt: "300.00",
+        initialCardCredit: "100.00",
+        hasAnnualFee: true,
+        annualFeeAmount: "250.00",
+        annualFeeFrequency: FeeFrequency.YEARLY,
+        annualFeeChargeDate: "2026-12-01",
+        annualFeeWaiverEnabled: true,
+        annualFeeWaiverSpendTarget: "1000.00",
+        annualFeeWaiverPeriod: WaiverPeriod.YEARLY,
+        waiverPeriodStartDate: "2026-01-01",
+        waiverPeriodEndDate: "2026-12-31",
+        [field]: value
+      });
+
+      expect(result).toEqual({
+        ok: false,
+        error: "Enter a valid account or wallet."
+      });
+      await expect(
+        Promise.all([
+          prisma.moneySource.count({ where }),
+          prisma.activityLog.count({ where })
+        ])
+      ).resolves.toEqual([moneySourcesBefore, activitiesBefore]);
+    },
+    20_000
+  );
+
+  it.each(moneyFieldCases)(
+    "rejects update $field=$value before database or activity writes",
+    async ({ field, value }) => {
+      authState.userId = context.userA.id;
+      const source = await prisma.moneySource.create({
+        data: {
+          userId: context.userA.id,
+          name: `Invalid update ${field} ${value}`,
+          type: MoneySourceType.CREDIT_CARD,
+          openingBalance: "25.00",
+          creditLimit: "2000.00",
+          initialOutstandingDebt: "300.00",
+          initialCardCredit: "100.00",
+          hasAnnualFee: true,
+          annualFeeAmount: "250.00",
+          annualFeeFrequency: FeeFrequency.YEARLY,
+          annualFeeChargeDate: new Date("2026-12-01T00:00:00.000Z"),
+          annualFeeWaiverEnabled: true,
+          annualFeeWaiverSpendTarget: "1000.00",
+          annualFeeWaiverPeriod: WaiverPeriod.YEARLY,
+          waiverPeriodStartDate: new Date("2026-01-01T00:00:00.000Z"),
+          waiverPeriodEndDate: new Date("2026-12-31T00:00:00.000Z")
+        }
+      });
+      const activitiesBefore = await prisma.activityLog.count({
+        where: { userId: context.userA.id, entityId: source.id }
+      });
+
+      const result = await updateMoneySource(source.id, { [field]: value });
+
+      expect(result).toEqual({
+        ok: false,
+        error: "Enter a valid account or wallet."
+      });
+      await expect(
+        Promise.all([
+          prisma.moneySource.findUniqueOrThrow({ where: { id: source.id } }),
+          prisma.activityLog.count({
+            where: { userId: context.userA.id, entityId: source.id }
+          })
+        ])
+      ).resolves.toEqual([source, activitiesBefore]);
+    },
+    20_000
+  );
 });

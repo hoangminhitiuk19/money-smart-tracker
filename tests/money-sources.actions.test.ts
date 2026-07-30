@@ -75,6 +75,18 @@ type FakeMoneySource = {
 
 let moneySources: FakeMoneySource[];
 
+const moneyFieldCases = [
+  "openingBalance",
+  "creditLimit",
+  "initialOutstandingDebt",
+  "initialCardCredit",
+  "annualFeeAmount",
+  "annualFeeWaiverSpendTarget"
+].flatMap((field) => [
+  { field, value: "0.001" },
+  { field, value: "99999999999999999.99" }
+]);
+
 function completeCreditCardInput() {
   return {
     name: "Audit Card",
@@ -439,4 +451,39 @@ describe("credit-card configuration", () => {
       })
     );
   });
+
+  it.each(moneyFieldCases)(
+    "rejects create $field=$value outside Decimal(18,2) without any writes",
+    async ({ field, value }) => {
+      const result = await createMoneySource({
+        ...completeCreditCardInput(),
+        [field]: value
+      });
+
+      expect(result).toEqual({
+        ok: false,
+        error: "Enter a valid account or wallet."
+      });
+      expect(moneySources).toHaveLength(1);
+      expect(prisma.moneySource.create).not.toHaveBeenCalled();
+      expect(prisma.activityLog.create).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(moneyFieldCases)(
+    "rejects update $field=$value outside Decimal(18,2) without any writes",
+    async ({ field, value }) => {
+      moneySources.push(fakeCreditCard());
+
+      const result = await updateMoneySource("ms-card", { [field]: value });
+
+      expect(result).toEqual({
+        ok: false,
+        error: "Enter a valid account or wallet."
+      });
+      expect(moneySources).toHaveLength(2);
+      expect(prisma.moneySource.updateMany).not.toHaveBeenCalled();
+      expect(prisma.activityLog.create).not.toHaveBeenCalled();
+    }
+  );
 });
