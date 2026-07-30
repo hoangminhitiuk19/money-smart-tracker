@@ -40,8 +40,9 @@
   - `createAuditContext(runId: string): Promise<AuditContext>`
   - `cleanupAuditContext(context: AuditContext): Promise<void>`
   - `REFERENCE_DATES`, `REFERENCE_AMOUNTS`, and literal expected ledger values.
-- `AuditContext` exposes User A/User B IDs and owned category, source, goal,
-  project, renewal, and transaction IDs without exposing passwords.
+- `AuditContext` exposes only User A/User B IDs and emails without passwords.
+  Later domain suites create their own owned records through the public server
+  actions and retain those returned IDs locally.
 
 - [ ] **Step 1: Write the traceability matrix**
 
@@ -50,7 +51,7 @@ Create a table with columns:
 ```markdown
 | Rule | Implementation | Unit evidence | DB evidence | Status | Disposition |
 | --- | --- | --- | --- | --- | --- |
-| §6.4 inclusive end date | `lib/date-range.ts` | `tests/date-range.test.ts` | `tests/integration/transactions.integration.test.ts` | Missing | Task 3 |
+| §6.4 inclusive end date | `lib/date-range.ts` | `tests/date-range.test.ts` | `tests/integration/date-ranges.integration.test.ts` | Missing | Task 3 |
 ```
 
 Populate every rule in specification §§6–22 and every required test in §28.
@@ -75,6 +76,9 @@ it("creates two isolated audit users and removes only this run", async () => {
 });
 ```
 
+Create the helper modules with exported stubs that throw
+`new Error("Not implemented")` so Vitest can collect and execute the test.
+
 - [ ] **Step 3: Run the integration test to verify RED**
 
 Run:
@@ -83,7 +87,8 @@ Run:
 npx --yes --package=node@22 --call='npm run test:integration -- tests/integration/audit-harness.integration.test.ts'
 ```
 
-Expected: FAIL because the helper modules do not exist.
+Expected: FAIL at the deliberate `Not implemented` boundary. A module-resolution
+or test-collection error is not acceptable RED evidence.
 
 - [ ] **Step 4: Implement the fixture boundary**
 
@@ -1359,7 +1364,7 @@ git commit -m "fix: apply persisted display settings"
 - Modify: `docs/quality/phase-2-traceability.md`
 
 **Interfaces:**
-- Consumes all Task 1 fixture IDs and literal expected values.
+- Consumes Task 1's two-user context and literal reference-ledger values.
 - Produces the complete backend evidence used by the release gate.
 
 - [ ] **Step 1: Add cross-user action attempts**
@@ -1447,14 +1452,14 @@ Run sequentially:
 ```bash
 npx --yes --package=node@22 --call='npm ci'
 npx --yes --package=node@22 --call='./node_modules/.bin/prisma validate'
+npx --yes --package=node@22 --call='npm run prisma:deploy'
+npx --yes --package=node@22 --call='./node_modules/.bin/prisma migrate status'
 npx --yes --package=node@22 --call='npm run lint'
 npx --yes --package=node@22 --call='npm run typecheck'
 npx --yes --package=node@22 --call='npm run test:run'
 npx --yes --package=node@22 --call='npm run test:integration'
 npx --yes --package=node@22 --call='npm audit --omit=dev --audit-level=high'
 npx --yes --package=node@22 --call='npm run build'
-npx --yes --package=node@22 --call='npm run prisma:deploy'
-npx --yes --package=node@22 --call='./node_modules/.bin/prisma migrate status'
 git diff --check
 git status --short
 ```
