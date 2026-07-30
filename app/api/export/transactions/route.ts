@@ -3,6 +3,10 @@ import { requireAuth } from "@/lib/auth";
 import { parseTransactionDateRange } from "@/lib/date-range";
 import { prisma } from "@/lib/prisma";
 import { checkExport, RATE_LIMIT_MESSAGE } from "@/lib/security/rate-limit";
+import {
+  sanitizeTransactionRead,
+  transactionReadInclude
+} from "@/lib/transaction-read";
 
 const columns = [
   "Date",
@@ -70,16 +74,14 @@ export async function GET(request: Request) {
       transactionDate: dateRange.range
     },
     orderBy: [{ transactionDate: "desc" }, { createdAt: "desc" }],
-    include: {
-      category: true,
-      fromMoneySource: true,
-      toMoneySource: true,
-      project: true
-    }
+    include: transactionReadInclude
   });
+  const safeTransactions = transactions.map((transaction) =>
+    sanitizeTransactionRead(transaction, user.id)
+  );
   const csv = [
     columns.join(","),
-    ...transactions.map((transaction) =>
+    ...safeTransactions.map((transaction) =>
       csvRow([
         transaction.transactionDate,
         transaction.type,
@@ -105,7 +107,7 @@ export async function GET(request: Request) {
       entityType: "Transaction",
       metadata: {
         exportedAt: now.toISOString(),
-        rowCount: transactions.length
+        rowCount: safeTransactions.length
       }
     }
   });

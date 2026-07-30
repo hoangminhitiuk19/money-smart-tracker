@@ -400,4 +400,57 @@ describe("dashboard data horizons", () => {
     expect(serializedUpcoming).not.toContain("Foreign renewal source");
     expect(serializedUpcoming).not.toContain("Foreign renewal project");
   }, 20_000);
+
+  it("includes annual-fee UTC day 0 and day 30 but excludes day 31", async () => {
+    authState.userId = context.userA.id;
+    const now = new Date();
+    const year = now.getUTCFullYear();
+    const month = now.getUTCMonth();
+    const day = now.getUTCDate();
+    const [dayZero, dayThirty, dayThirtyOne] = await prisma.$transaction([
+      prisma.moneySource.create({
+        data: {
+          userId: context.userA.id,
+          name: `Annual fee day 0 ${randomUUID()}`,
+          type: MoneySourceType.CREDIT_CARD,
+          hasAnnualFee: true,
+          annualFeeAmount: "10.00",
+          annualFeeChargeDate: new Date(
+            Date.UTC(year, month, day, 23, 59, 59, 999)
+          )
+        }
+      }),
+      prisma.moneySource.create({
+        data: {
+          userId: context.userA.id,
+          name: `Annual fee day 30 ${randomUUID()}`,
+          type: MoneySourceType.CREDIT_CARD,
+          hasAnnualFee: true,
+          annualFeeAmount: "20.00",
+          annualFeeChargeDate: new Date(
+            Date.UTC(year, month, day + 30, 23, 59, 59, 999)
+          )
+        }
+      }),
+      prisma.moneySource.create({
+        data: {
+          userId: context.userA.id,
+          name: `Annual fee day 31 ${randomUUID()}`,
+          type: MoneySourceType.CREDIT_CARD,
+          hasAnnualFee: true,
+          annualFeeAmount: "30.00",
+          annualFeeChargeDate: new Date(
+            Date.UTC(year, month, day + 31, 0, 0, 0, 0)
+          )
+        }
+      })
+    ]);
+
+    const result = await getDashboardData("2026-07-01", "2026-07-31");
+    const feeIds = result.cardFees.upcoming.map(({ id }) => id);
+
+    expect(feeIds).toContain(dayZero.id);
+    expect(feeIds).toContain(dayThirty.id);
+    expect(feeIds).not.toContain(dayThirtyOne.id);
+  }, 20_000);
 });

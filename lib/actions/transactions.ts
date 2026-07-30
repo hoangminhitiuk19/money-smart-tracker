@@ -26,6 +26,10 @@ import {
   checkAuthenticatedMutation,
   RATE_LIMIT_MESSAGE
 } from "@/lib/security/rate-limit";
+import {
+  sanitizeTransactionRead,
+  transactionReadInclude
+} from "@/lib/transaction-read";
 
 const nullableTextSchema = z
   .union([z.string(), z.null()])
@@ -815,7 +819,16 @@ export async function deleteTransaction(
 
 export async function getTransaction(id: string) {
   const user = await requireAuth();
-  return verifyTransactionOwnership(prisma, id, user.id);
+  const transaction = await prisma.transaction.findFirst({
+    where: { id, userId: user.id },
+    include: transactionReadInclude
+  });
+
+  if (!transaction) {
+    throw new Error("Transaction not found.");
+  }
+
+  return sanitizeTransactionRead(transaction, user.id);
 }
 
 function buildTransactionSearchWhere(
@@ -895,19 +908,15 @@ export async function searchTransactions(filters: TransactionFilters = {}) {
       orderBy: [{ transactionDate: "desc" }, { createdAt: "desc" }],
       skip: (page - 1) * pageSize,
       take: pageSize,
-      include: {
-        category: true,
-        fromMoneySource: true,
-        toMoneySource: true,
-        adjustedMoneySource: true,
-        project: true
-      }
+      include: transactionReadInclude
     }),
     prisma.transaction.count({ where })
   ]);
 
   return {
-    transactions,
+    transactions: transactions.map((transaction) =>
+      sanitizeTransactionRead(transaction, user.id)
+    ),
     total: totalCount,
     page,
     pageSize

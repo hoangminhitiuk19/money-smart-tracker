@@ -91,11 +91,18 @@ describe("GET /api/export/transactions", () => {
         title: "Coffee",
         amount: { toString: () => "4.50" },
         currency: "USD",
-        category: { name: "Food" },
+        category: { id: "category-1", userId: "user-1", name: "Food" },
         qualityRating: "A",
-        fromMoneySource: { name: "Cash" },
+        fromMoneySource: {
+          id: "source-1",
+          userId: "user-1",
+          name: "Cash"
+        },
         toMoneySource: null,
+        adjustedMoneySource: null,
         project: null,
+        relatedTransaction: null,
+        recurringPayment: null,
         description: "Morning coffee",
         countTowardFeeWaiver: true,
         createdAt: new Date("2026-01-02T03:04:06.000Z")
@@ -125,7 +132,10 @@ describe("GET /api/export/transactions", () => {
         category: true,
         fromMoneySource: true,
         toMoneySource: true,
-        project: true
+        adjustedMoneySource: true,
+        project: true,
+        relatedTransaction: true,
+        recurringPayment: true
       }
     });
     expect(prisma.activityLog.create).toHaveBeenCalledWith({

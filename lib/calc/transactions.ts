@@ -6,6 +6,7 @@ import {
   QualityRating,
   TransactionType
 } from "@prisma/client";
+import { decimal, type DecimalInput } from "@/lib/money";
 
 export type TransactionValidationInput = {
   type: TransactionType;
@@ -141,10 +142,14 @@ export function validateTransactionFields(input: TransactionValidationInput) {
 }
 
 export function adjustmentDirectionEffect(
-  amount: number,
+  amount: DecimalInput,
   direction: AdjustmentDirection
 ) {
-  return direction === AdjustmentDirection.INCREASE ? amount : -amount;
+  const value = decimal(amount);
+
+  return direction === AdjustmentDirection.INCREASE
+    ? value
+    : value.negated();
 }
 
 export function getCountTowardFeeWaiverDefault(

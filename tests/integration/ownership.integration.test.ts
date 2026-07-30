@@ -84,6 +84,7 @@ import {
   createAuditContext,
   type AuditContext
 } from "@/tests/integration/helpers/audit-context";
+import { parseCsv } from "@/tests/integration/helpers/csv";
 
 const authState = vi.hoisted(() => ({ userId: "" }));
 
@@ -665,6 +666,138 @@ describe("two-user ownership boundary", () => {
 
     await expect(snapshotUserState(fixtures.context.userA.id)).resolves.toEqual(
       before
+    );
+  }, 30_000);
+
+  it("sanitizes poisoned to-one transaction relations on every read path", async () => {
+    authState.userId = fixtures.context.userA.id;
+    const poisonTitle = `${fixtures.prefix} poisoned read relation`;
+    const foreignRenewal = await prisma.recurringPayment.create({
+      data: {
+        userId: fixtures.context.userB.id,
+        title: `${fixtures.prefix} foreign transaction renewal`,
+        amount: "1.00",
+        transactionType: TransactionType.EXPENSE,
+        frequency: RenewalFrequency.MONTHLY,
+        nextDueDate: new Date("2026-08-25T00:00:00.000Z"),
+        fromMoneySourceId: fixtures.bankBId
+      }
+    });
+    const poisoned = await prisma.transaction.create({
+      data: {
+        userId: fixtures.context.userA.id,
+        type: TransactionType.ADJUSTMENT,
+        amount: "1.00",
+        title: poisonTitle,
+        transactionDate: new Date("2026-07-25T00:00:00.000Z"),
+        categoryId: fixtures.categoryBId,
+        fromMoneySourceId: fixtures.bankBId,
+        toMoneySourceId: fixtures.bankB2Id,
+        adjustedMoneySourceId: fixtures.bankBId,
+        adjustmentDirection: AdjustmentDirection.INCREASE,
+        projectId: fixtures.projectBId,
+        relatedTransactionId: fixtures.transactionBId,
+        recurringPaymentId: foreignRenewal.id
+      }
+    });
+
+    const [direct, searched, listed, validSearch, exportResponse] =
+      await Promise.all([
+        getTransaction(poisoned.id),
+        searchTransactions({ q: poisonTitle }),
+        listTransactions({ q: poisonTitle }),
+        searchTransactions({ q: `${fixtures.prefix} expense A` }),
+        exportTransactions(
+          new Request(
+            "http://localhost/api/export/transactions?startDate=2026-07-01&endDate=2026-07-31"
+          )
+        )
+      ]);
+
+    for (const transaction of [
+      direct,
+      searched.transactions[0],
+      listed.transactions[0]
+    ]) {
+      expect(transaction).toMatchObject({
+        id: poisoned.id,
+        categoryId: null,
+        fromMoneySourceId: null,
+        toMoneySourceId: null,
+        adjustedMoneySourceId: null,
+        projectId: null,
+        relatedTransactionId: null,
+        recurringPaymentId: null,
+        category: null,
+        fromMoneySource: null,
+        toMoneySource: null,
+        adjustedMoneySource: null,
+        project: null,
+        relatedTransaction: null,
+        recurringPayment: null
+      });
+      expect(JSON.stringify(transaction)).not.toContain(fixtures.categoryBId);
+      expect(JSON.stringify(transaction)).not.toContain(fixtures.bankBId);
+      expect(JSON.stringify(transaction)).not.toContain(fixtures.bankB2Id);
+      expect(JSON.stringify(transaction)).not.toContain(fixtures.projectBId);
+      expect(JSON.stringify(transaction)).not.toContain(
+        fixtures.transactionBId
+      );
+      expect(JSON.stringify(transaction)).not.toContain(foreignRenewal.id);
+      expect(JSON.stringify(transaction)).not.toContain(
+        `${fixtures.prefix} category B`
+      );
+      expect(JSON.stringify(transaction)).not.toContain(
+        `${fixtures.prefix} bank B`
+      );
+      expect(JSON.stringify(transaction)).not.toContain(
+        `${fixtures.prefix} project B`
+      );
+      expect(JSON.stringify(transaction)).not.toContain(
+        `${fixtures.prefix} foreign transaction renewal`
+      );
+    }
+
+    expect(searched.transactions).toHaveLength(1);
+    expect(listed.transactions).toHaveLength(1);
+    expect(validSearch.transactions).toHaveLength(1);
+    expect(validSearch.transactions[0]).toMatchObject({
+      id: fixtures.transactionAId,
+      categoryId: fixtures.categoryAId,
+      fromMoneySourceId: fixtures.bankAId,
+      projectId: fixtures.projectAId,
+      category: {
+        id: fixtures.categoryAId,
+        name: `${fixtures.prefix} category A`
+      },
+      fromMoneySource: {
+        id: fixtures.bankAId,
+        name: `${fixtures.prefix} bank A`
+      },
+      project: {
+        id: fixtures.projectAId,
+        name: `${fixtures.prefix} project A`
+      }
+    });
+
+    const exportRecords = parseCsv(await exportResponse.text());
+    const poisonedCsvRow = exportRecords.find(
+      (record) => record[2] === poisonTitle
+    );
+    expect(exportResponse.status).toBe(200);
+    expect(poisonedCsvRow).toBeDefined();
+    expect(poisonedCsvRow?.[5]).toBe("");
+    expect(poisonedCsvRow?.[7]).toBe("");
+    expect(poisonedCsvRow?.[8]).toBe("");
+    expect(poisonedCsvRow?.[9]).toBe("");
+    expect(JSON.stringify(exportRecords)).not.toContain(
+      `${fixtures.prefix} category B`
+    );
+    expect(JSON.stringify(exportRecords)).not.toContain(
+      `${fixtures.prefix} bank B`
+    );
+    expect(JSON.stringify(exportRecords)).not.toContain(
+      `${fixtures.prefix} project B`
     );
   }, 30_000);
 });

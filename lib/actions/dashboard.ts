@@ -22,15 +22,21 @@ function normalizeEndDate(date: Date | string) {
 }
 
 function getToday() {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return today;
+  const now = new Date();
+
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  );
 }
 
-function getThirtyDaysFrom(date: Date) {
-  const result = new Date(date);
-  result.setDate(result.getDate() + 30);
-  return result;
+function getAnnualFeeWindowExclusiveEnd(utcToday: Date) {
+  return new Date(
+    Date.UTC(
+      utcToday.getUTCFullYear(),
+      utcToday.getUTCMonth(),
+      utcToday.getUTCDate() + 31
+    )
+  );
 }
 
 export async function getDashboardData(
@@ -44,7 +50,7 @@ export async function getDashboardData(
   const periodEnd = normalizeEndDate(endDate);
   const today = getToday();
   const renewalToday = new Date();
-  const cardFeeWindowEnd = getThirtyDaysFrom(today);
+  const cardFeeWindowExclusiveEnd = getAnnualFeeWindowExclusiveEnd(today);
 
   const [
     periodTransactions,
@@ -108,7 +114,7 @@ export async function getDashboardData(
         hasAnnualFee: true,
         annualFeeChargeDate: {
           gte: today,
-          lte: cardFeeWindowEnd
+          lt: cardFeeWindowExclusiveEnd
         }
       },
       orderBy: { annualFeeChargeDate: "asc" }

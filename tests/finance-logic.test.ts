@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 import {
   calculateTrackedBalance,
@@ -879,12 +880,24 @@ describe("finance logic requirements", () => {
     ).toBe(false);
   });
 
-  it("adjustmentDirectionEffect - INCREASE adds to balance", () => {
-    expect(adjustmentDirectionEffect(75, "INCREASE")).toBe(75);
+  it("adjustmentDirectionEffect - INCREASE preserves an exact Decimal(18,2)", () => {
+    const result = adjustmentDirectionEffect(
+      new Prisma.Decimal("90071992547409.99"),
+      "INCREASE"
+    );
+
+    expect(result).toBeInstanceOf(Prisma.Decimal);
+    expect(result.toFixed(2)).toBe("90071992547409.99");
   });
 
-  it("adjustmentDirectionEffect - DECREASE subtracts from balance", () => {
-    expect(adjustmentDirectionEffect(75, "DECREASE")).toBe(-75);
+  it("adjustmentDirectionEffect - DECREASE preserves an exact Decimal(18,2)", () => {
+    const result = adjustmentDirectionEffect(
+      new Prisma.Decimal("90071992547409.99"),
+      "DECREASE"
+    );
+
+    expect(result).toBeInstanceOf(Prisma.Decimal);
+    expect(result.toFixed(2)).toBe("-90071992547409.99");
   });
 
   it("calculateNetSavings - normal case", () => {

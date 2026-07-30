@@ -415,6 +415,26 @@ describe("getDashboardData date filtering", () => {
       orderBy: { transactionDate: "desc" }
     });
   });
+
+  it("queries annual fees from UTC day 0 through all of UTC day 30", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T12:34:56.000Z"));
+
+    await getDashboardData("2026-07-01", "2026-07-31");
+
+    expect(dashboardMocks.moneySourceFindMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        userId: "dashboard-user",
+        type: MoneySourceType.CREDIT_CARD,
+        hasAnnualFee: true,
+        annualFeeChargeDate: {
+          gte: new Date("2026-07-15T00:00:00.000Z"),
+          lt: new Date("2026-08-15T00:00:00.000Z")
+        }
+      },
+      orderBy: { annualFeeChargeDate: "asc" }
+    });
+  });
 });
 
 describe("dashboard card visibility", () => {
