@@ -126,6 +126,35 @@ async function getTransactionsInRange(
   });
 }
 
+async function getEffectiveReportTransactions(
+  userId: string,
+  filters: ReportFilters
+) {
+  const selectedTransactions = await getTransactionsInRange(userId, filters);
+  const reportTransactions = selectedTransactions.filter(
+    ({ type }) =>
+      type === TransactionType.INCOME || type === TransactionType.EXPENSE
+  );
+  const selectedExpenseIds = reportTransactions.flatMap((transaction) =>
+    transaction.type === TransactionType.EXPENSE ? [transaction.id] : []
+  );
+
+  if (selectedExpenseIds.length === 0) {
+    return reportTransactions;
+  }
+
+  const linkedRefunds = await prisma.transaction.findMany({
+    where: {
+      userId,
+      type: TransactionType.REFUND,
+      relatedTransactionId: { in: selectedExpenseIds }
+    },
+    orderBy: [{ transactionDate: "asc" }, { createdAt: "asc" }]
+  });
+
+  return [...reportTransactions, ...linkedRefunds];
+}
+
 export async function loadReportFilterOptions() {
   const scopedUserId = await getSessionUserId();
   const [categories, moneySources, projects, savingGoals] = await Promise.all([
@@ -159,7 +188,10 @@ export async function loadIncomeVsExpenseOverTime(
 ) {
   const scopedUserId = await getSessionUserId();
   const parsed = parseReportFilters(filters);
-  const transactions = await getTransactionsInRange(scopedUserId, parsed);
+  const transactions = await getEffectiveReportTransactions(
+    scopedUserId,
+    parsed
+  );
 
   return getIncomeVsExpenseOverTime(transactions, parsed.groupBy ?? "month");
 }
@@ -169,7 +201,7 @@ export async function loadExpenseByCategory(
 ) {
   const scopedUserId = await getSessionUserId();
   const [transactions, categories] = await Promise.all([
-    getTransactionsInRange(scopedUserId, filters),
+    getEffectiveReportTransactions(scopedUserId, filters),
     prisma.category.findMany({
       where: { userId: scopedUserId },
       orderBy: { name: "asc" }
@@ -183,7 +215,10 @@ export async function loadSpendingQualityBreakdown(
   filters: ReportFilters = {}
 ) {
   const scopedUserId = await getSessionUserId();
-  const transactions = await getTransactionsInRange(scopedUserId, filters);
+  const transactions = await getEffectiveReportTransactions(
+    scopedUserId,
+    filters
+  );
 
   return getSpendingQualityBreakdown(transactions);
 }
@@ -234,7 +269,7 @@ export async function loadProjectProfitLoss(filters: ReportFilters = {}) {
       },
       orderBy: [{ status: "asc" }, { name: "asc" }]
     }),
-    getTransactionsInRange(scopedUserId, parsed)
+    getEffectiveReportTransactions(scopedUserId, parsed)
   ]);
 
   return getProjectProfitLoss(transactions, projects);
@@ -246,7 +281,7 @@ export async function loadSpendingBySource(
   const scopedUserId = await getSessionUserId();
   const parsed = parseReportFilters(filters);
   const [transactions, sources] = await Promise.all([
-    getTransactionsInRange(scopedUserId, parsed),
+    getEffectiveReportTransactions(scopedUserId, parsed),
     prisma.moneySource.findMany({
       where: {
         userId: scopedUserId,
@@ -271,7 +306,20 @@ export async function loadCreditCardDebtReport(filters: ReportFilters = {}) {
       },
       orderBy: [{ isActive: "desc" }, { name: "asc" }]
     }),
-    getTransactionsInRange(scopedUserId, parsed)
+    prisma.transaction.findMany({
+      where: {
+        userId: scopedUserId,
+        ...(parsed.endDate
+          ? {
+              transactionDate: transactionDateRange(
+                undefined,
+                parsed.endDate
+              )
+            }
+          : {})
+      },
+      orderBy: [{ transactionDate: "asc" }, { createdAt: "asc" }]
+    })
   ]);
 
   return creditCards.map((source) => ({
@@ -293,7 +341,10 @@ export async function loadFeeWaiverReport(filters: ReportFilters = {}) {
       },
       orderBy: [{ isActive: "desc" }, { name: "asc" }]
     }),
-    getTransactionsInRange(scopedUserId, parsed)
+    prisma.transaction.findMany({
+      where: { userId: scopedUserId },
+      orderBy: [{ transactionDate: "asc" }, { createdAt: "asc" }]
+    })
   ]);
 
   return creditCards.map((source) => ({

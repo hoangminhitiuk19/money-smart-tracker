@@ -111,3 +111,77 @@ multiple-lockfile workspace-root warning.
   behavior changed.
 
 No unresolved Task 13 issue remains.
+
+## Fix Round 1 — Effective Refund Hydration and Card Horizons
+
+Review identified two query-horizon defects in the initial implementation.
+Effective-expense views selected refunds with the report's own dimensions and
+date range, which omitted later refunds and refunds paid to a different source.
+The debt and fee-waiver views also reused the ordinary report predicate even
+though both are stateful calculations with different chronology requirements.
+
+### TDD Evidence
+
+The new focused action regressions were RED with 4 failures and 4 passes:
+
+- none of the five effective-expense loaders issued a second, same-user query
+  for refunds linked to the selected expense population;
+- card debt still used the combined global predicate instead of full owned
+  chronology through the selected inclusive end date; and
+- fee-waiver spending still used the report month and unrelated dimensions
+  instead of each card's complete configured waiver period.
+
+The expanded PostgreSQL reconciliation was also RED with 5 failures and 1
+pass. Effective totals remained `440.00`, category A remained `300.00`, the
+combined-filter case remained `300.00`, project expense remained `600000.00`,
+and debt was `300.00` instead of the required effective/as-of values.
+
+### Implementation
+
+- Effective-expense loaders now first select only the filtered INCOME and
+  EXPENSE population, then hydrate only authenticated-user REFUND rows whose
+  `relatedTransactionId` belongs to a selected expense. Refund date,
+  destination source, category, quality, project, and goal dimensions do not
+  incorrectly remove a valid linked refund.
+- Card debt queries the full authenticated ledger through the selected
+  inclusive end date. The selected card remains a root-card filter; start date
+  and unrelated report dimensions no longer truncate the state calculation.
+- Fee-waiver reporting queries the authenticated ledger without report-month
+  truncation. The existing calculator applies each selected card's configured
+  waiver-period bounds and source eligibility.
+- The public `ReportFilters` and URL contract are unchanged.
+
+### Isolation and Boundary Coverage
+
+The real-database fixtures now prove:
+
+- a selected July expense is reduced from `300.00` to `210.00` by its linked
+  August refund in all five effective-expense views, even when every applicable
+  report dimension is selected and the refund has a different destination;
+- an unrelated owned `777.00` refund and a cross-user `9999.00` linked-refund
+  sentinel are excluded;
+- card debt includes June state transitions, returns `85.00` as of July 31,
+  and excludes a future `999.00` adjustment; and
+- fee-waiver eligible spending is `210.00` across the card's configured
+  January–December period despite July and unrelated global filters.
+
+### Verification
+
+All applicable commands used Node 22.
+
+- Focused report calculation, action, and rendered UI suites: 28/28 passed.
+- Focused PostgreSQL report reconciliation: 6/6 passed.
+- Full unit/render suite: 32 files, 407/407 passed.
+- Full PostgreSQL integration suite: 13 files, 93/93 passed.
+- Typecheck: passed.
+- ESLint: passed with zero warnings.
+- Prisma validation: schema valid.
+- `git diff --check`: passed.
+- Production build: passed; all application routes compiled and all 19 static
+  pages generated.
+
+The build emitted only the repository's known isolated-worktree
+multiple-lockfile workspace-root warning. Generated `next-env.d.ts` and
+`tsconfig.tsbuildinfo` changes were restored before commit. No schema,
+migration, dashboard, settings, global style, or unrelated domain behavior
+changed.

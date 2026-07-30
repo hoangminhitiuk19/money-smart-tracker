@@ -88,31 +88,67 @@ describe("report action filters", () => {
       lt: new Date("2026-08-01T00:00:00.000Z")
     }
   };
+  const selectedExpense = {
+    id: "expense-a",
+    amount: "300.00",
+    categoryId: "category-a",
+    createdAt: new Date("2026-07-10T09:00:01.000Z"),
+    fromMoneySourceId: "source-a",
+    projectId: "project-a",
+    qualityRating: QualityRating.A,
+    relatedTransactionId: null,
+    transactionDate: new Date("2026-07-10T09:00:00.000Z"),
+    type: TransactionType.EXPENSE
+  };
+  const linkedRefundWhere = {
+    userId: "authenticated-user",
+    type: TransactionType.REFUND,
+    relatedTransactionId: { in: ["expense-a"] }
+  };
 
-  it("builds one combined authenticated transaction predicate", async () => {
+  it("hydrates only same-user refunds linked to the selected expense population", async () => {
+    reportMocks.transactionFindMany
+      .mockResolvedValueOnce([selectedExpense])
+      .mockResolvedValueOnce([]);
+
     await loadIncomeVsExpenseOverTime(combinedFilters);
 
-    expect(reportMocks.transactionFindMany).toHaveBeenCalledWith({
+    expect(reportMocks.transactionFindMany).toHaveBeenNthCalledWith(1, {
       where: combinedTransactionWhere,
+      orderBy: [{ transactionDate: "asc" }, { createdAt: "asc" }]
+    });
+    expect(reportMocks.transactionFindMany).toHaveBeenNthCalledWith(2, {
+      where: linkedRefundWhere,
       orderBy: [{ transactionDate: "asc" }, { createdAt: "asc" }]
     });
   });
 
-  it("reuses the combined predicate for every transaction-derived view", async () => {
-    await loadExpenseByCategory(combinedFilters);
-    await loadSpendingQualityBreakdown(combinedFilters);
-    await loadProjectProfitLoss(combinedFilters);
-    await loadSpendingBySource(combinedFilters);
-    await loadCreditCardDebtReport(combinedFilters);
-    await loadFeeWaiverReport(combinedFilters);
+  it("uses selected-expense refund hydration for every effective-expense view", async () => {
+    const loaders = [
+      loadExpenseByCategory,
+      loadSpendingQualityBreakdown,
+      loadProjectProfitLoss,
+      loadSpendingBySource
+    ];
 
-    expect(reportMocks.transactionFindMany).toHaveBeenCalledTimes(6);
-    for (const [query] of reportMocks.transactionFindMany.mock.calls) {
-      expect(query).toEqual({
+    for (const loader of loaders) {
+      reportMocks.transactionFindMany.mockClear();
+      reportMocks.transactionFindMany
+        .mockResolvedValueOnce([selectedExpense])
+        .mockResolvedValueOnce([]);
+
+      await loader(combinedFilters);
+
+      expect(reportMocks.transactionFindMany).toHaveBeenNthCalledWith(1, {
         where: combinedTransactionWhere,
         orderBy: [{ transactionDate: "asc" }, { createdAt: "asc" }]
       });
+      expect(reportMocks.transactionFindMany).toHaveBeenNthCalledWith(2, {
+        where: linkedRefundWhere,
+        orderBy: [{ transactionDate: "asc" }, { createdAt: "asc" }]
+      });
     }
+
     expect(reportMocks.financialProjectFindMany).toHaveBeenCalledWith({
       where: { userId: "authenticated-user", id: "project-a" },
       orderBy: [{ status: "asc" }, { name: "asc" }]
@@ -125,6 +161,46 @@ describe("report action filters", () => {
         })
       })
     );
+  });
+
+  it("uses only source and inclusive as-of end for card debt chronology", async () => {
+    await loadCreditCardDebtReport(combinedFilters);
+
+    expect(reportMocks.moneySourceFindMany).toHaveBeenCalledWith({
+      where: {
+        userId: "authenticated-user",
+        type: "CREDIT_CARD",
+        id: "source-a"
+      },
+      orderBy: [{ isActive: "desc" }, { name: "asc" }]
+    });
+    expect(reportMocks.transactionFindMany).toHaveBeenCalledWith({
+      where: {
+        userId: "authenticated-user",
+        transactionDate: {
+          lt: new Date("2026-08-01T00:00:00.000Z")
+        }
+      },
+      orderBy: [{ transactionDate: "asc" }, { createdAt: "asc" }]
+    });
+  });
+
+  it("uses the complete owned ledger for configured fee-waiver periods", async () => {
+    await loadFeeWaiverReport(combinedFilters);
+
+    expect(reportMocks.moneySourceFindMany).toHaveBeenCalledWith({
+      where: {
+        userId: "authenticated-user",
+        type: "CREDIT_CARD",
+        annualFeeWaiverEnabled: true,
+        id: "source-a"
+      },
+      orderBy: [{ isActive: "desc" }, { name: "asc" }]
+    });
+    expect(reportMocks.transactionFindMany).toHaveBeenCalledWith({
+      where: { userId: "authenticated-user" },
+      orderBy: [{ transactionDate: "asc" }, { createdAt: "asc" }]
+    });
   });
 
   it("applies goal, source, and inclusive dates to goal progress", async () => {

@@ -50,9 +50,11 @@ let bankId: string;
 let cardId: string;
 let categoryAId: string;
 let categoryCId: string;
+let filterGoalId: string;
 let goalId: string;
 let ledgerProjectId: string;
 let projectId: string;
+let waiverCardId: string;
 
 const julyFilters = {
   startDate: "2026-07-01",
@@ -67,11 +69,13 @@ beforeAll(async () => {
   const [
     bank,
     card,
+    waiverCard,
     categoryA,
     categoryC,
     ledgerProject,
     project,
     goal,
+    filterGoal,
     userBSource,
     userBCard,
     userBProject,
@@ -91,11 +95,19 @@ beforeAll(async () => {
         type: MoneySourceType.CREDIT_CARD,
         creditLimit: "2000.00",
         initialOutstandingDebt: "300.00",
-        initialCardCredit: "500.00",
+        initialCardCredit: "500.00"
+      }
+    }),
+    prisma.moneySource.create({
+      data: {
+        userId: context.userA.id,
+        name: "Reference waiver card",
+        type: MoneySourceType.CREDIT_CARD,
+        creditLimit: "1000.00",
         annualFeeWaiverEnabled: true,
         annualFeeWaiverSpendTarget: REFERENCE_AMOUNTS.feeWaiverTarget,
-        waiverPeriodStartDate: REFERENCE_DATES.ledgerStart,
-        waiverPeriodEndDate: REFERENCE_DATES.periodEndInclusive
+        waiverPeriodStartDate: new Date("2026-01-01T00:00:00.000Z"),
+        waiverPeriodEndDate: new Date("2026-12-31T00:00:00.000Z")
       }
     }),
     prisma.category.create({
@@ -129,6 +141,13 @@ beforeAll(async () => {
         userId: context.userA.id,
         name: "Reference saving goal",
         targetAmount: "1000.00"
+      }
+    }),
+    prisma.savingGoal.create({
+      data: {
+        userId: context.userA.id,
+        name: "Reference expense filter goal",
+        targetAmount: "10.00"
       }
     }),
     prisma.moneySource.create({
@@ -168,13 +187,16 @@ beforeAll(async () => {
 
   bankId = bank.id;
   cardId = card.id;
+  waiverCardId = waiverCard.id;
   categoryAId = categoryA.id;
   categoryCId = categoryC.id;
+  filterGoalId = filterGoal.id;
   goalId = goal.id;
   ledgerProjectId = ledgerProject.id;
   projectId = project.id;
 
-  const [eligibleExpense, projectExpense] = await prisma.$transaction([
+  const [eligibleExpense, projectExpense, waiverExpense] =
+    await prisma.$transaction([
     prisma.transaction.create({
       data: {
         userId: context.userA.id,
@@ -200,6 +222,17 @@ beforeAll(async () => {
         fromMoneySourceId: bankId,
         projectId
       }
+    }),
+    prisma.transaction.create({
+      data: {
+        userId: context.userA.id,
+        type: TransactionType.EXPENSE,
+        amount: "300.00",
+        title: "Reference prior-period waiver expense",
+        transactionDate: new Date("2026-06-01T09:00:00.000Z"),
+        fromMoneySourceId: waiverCard.id,
+        countTowardFeeWaiver: true
+      }
     })
   ]);
 
@@ -221,8 +254,8 @@ beforeAll(async () => {
         type: TransactionType.ADJUSTMENT,
         amount: "100.00",
         title: "Reference debt adjustment",
-        transactionDate: REFERENCE_DATES.cardExpense,
-        createdAt: REFERENCE_DATES.sameDayFirstCreatedAt,
+        transactionDate: new Date("2026-06-10T09:00:00.000Z"),
+        createdAt: new Date("2026-06-10T09:00:01.000Z"),
         adjustedMoneySourceId: cardId,
         adjustmentDirection: AdjustmentDirection.INCREASE,
         adjustmentTarget: AdjustmentTarget.CREDIT_CARD_DEBT,
@@ -235,8 +268,8 @@ beforeAll(async () => {
         type: TransactionType.TRANSFER,
         amount: "315.00",
         title: "Reference card payment",
-        transactionDate: REFERENCE_DATES.cardExpense,
-        createdAt: REFERENCE_DATES.sameDaySecondCreatedAt,
+        transactionDate: new Date("2026-06-11T09:00:00.000Z"),
+        createdAt: new Date("2026-06-11T09:00:01.000Z"),
         fromMoneySourceId: bankId,
         toMoneySourceId: cardId,
         projectId: ledgerProjectId
@@ -262,12 +295,11 @@ beforeAll(async () => {
         userId: context.userA.id,
         type: TransactionType.REFUND,
         amount: REFERENCE_AMOUNTS.linkedRefund,
-        title: "Reference linked refund",
-        transactionDate: new Date("2026-07-12T09:00:00.000Z"),
-        createdAt: new Date("2026-07-12T09:00:01.000Z"),
+        title: "Reference later cross-destination refund",
+        transactionDate: new Date("2026-08-02T09:00:00.000Z"),
+        createdAt: new Date("2026-08-02T09:00:01.000Z"),
         toMoneySourceId: bankId,
-        relatedTransactionId: eligibleExpense.id,
-        projectId: ledgerProjectId
+        relatedTransactionId: eligibleExpense.id
       }
     }),
     prisma.transaction.create({
@@ -301,10 +333,52 @@ beforeAll(async () => {
         type: TransactionType.REFUND,
         amount: REFERENCE_AMOUNTS.projectRefund,
         title: "Reference project refund",
-        transactionDate: new Date("2026-07-22T09:00:00.000Z"),
+        transactionDate: new Date("2026-08-03T09:00:00.000Z"),
         toMoneySourceId: bankId,
-        relatedTransactionId: projectExpense.id,
-        projectId
+        relatedTransactionId: projectExpense.id
+      }
+    }),
+    prisma.transaction.create({
+      data: {
+        userId: context.userA.id,
+        type: TransactionType.REFUND,
+        amount: REFERENCE_AMOUNTS.linkedRefund,
+        title: "Reference waiver-period refund",
+        transactionDate: new Date("2026-08-05T09:00:00.000Z"),
+        toMoneySourceId: bankId,
+        relatedTransactionId: waiverExpense.id
+      }
+    }),
+    prisma.transaction.create({
+      data: {
+        userId: context.userA.id,
+        type: TransactionType.REFUND,
+        amount: "777.00",
+        title: "Unrelated owned refund sentinel",
+        transactionDate: new Date("2026-08-06T09:00:00.000Z"),
+        toMoneySourceId: bankId
+      }
+    }),
+    prisma.transaction.create({
+      data: {
+        userId: context.userA.id,
+        type: TransactionType.ADJUSTMENT,
+        amount: "999.00",
+        title: "Future debt sentinel",
+        transactionDate: new Date("2026-08-10T09:00:00.000Z"),
+        adjustedMoneySourceId: cardId,
+        adjustmentDirection: AdjustmentDirection.INCREASE,
+        adjustmentTarget: AdjustmentTarget.CREDIT_CARD_DEBT
+      }
+    }),
+    prisma.goalContribution.create({
+      data: {
+        userId: context.userA.id,
+        savingGoalId: filterGoalId,
+        transactionId: eligibleExpense.id,
+        amount: "1.00",
+        type: ContributionType.CONTRIBUTION,
+        contributionDate: new Date("2026-07-10T09:00:00.000Z")
       }
     }),
     prisma.goalContribution.create({
@@ -365,6 +439,17 @@ beforeAll(async () => {
         transactionDate: new Date("2026-07-01T00:00:00.000Z"),
         toMoneySourceId: userBSource.id,
         projectId: userBProject.id
+      }
+    }),
+    prisma.transaction.create({
+      data: {
+        userId: context.userB.id,
+        type: TransactionType.REFUND,
+        amount: "9999.00",
+        title: "User B cross-owner refund sentinel",
+        transactionDate: new Date("2026-08-02T09:00:00.000Z"),
+        toMoneySourceId: userBSource.id,
+        relatedTransactionId: eligibleExpense.id
       }
     }),
     prisma.transaction.create({
@@ -477,6 +562,50 @@ describe("report reference reconciliation", () => {
     ]);
   }, 20_000);
 
+  it("hydrates a later cross-destination refund for every combined expense filter", async () => {
+    const filters = {
+      ...julyFilters,
+      type: TransactionType.EXPENSE,
+      categoryId: categoryAId,
+      qualityRating: QualityRating.A,
+      moneySourceId: cardId,
+      projectId: ledgerProjectId,
+      savingGoalId: filterGoalId
+    };
+    const [incomeExpense, categories, qualities, sources, projects, rawExpense] =
+      await Promise.all([
+        loadIncomeVsExpenseOverTime(filters),
+        loadExpenseByCategory(filters),
+        loadSpendingQualityBreakdown(filters),
+        loadSpendingBySource(filters),
+        loadProjectProfitLoss(filters),
+        prisma.transaction.aggregate({
+          where: {
+            userId: context.userA.id,
+            type: TransactionType.EXPENSE,
+            categoryId: categoryAId,
+            qualityRating: QualityRating.A,
+            fromMoneySourceId: cardId,
+            projectId: ledgerProjectId,
+            goalContributions: { some: { savingGoalId: filterGoalId } },
+            transactionDate: {
+              gte: REFERENCE_DATES.ledgerStart,
+              lt: REFERENCE_DATES.nextPeriodStart
+            }
+          },
+          _sum: { amount: true }
+        })
+      ]);
+
+    expect(rawExpense._sum.amount?.toFixed(2)).toBe("300.00");
+    expect(incomeExpense[0]?.income.toFixed(2)).toBe("0.00");
+    expect(incomeExpense[0]?.expense.toFixed(2)).toBe("210.00");
+    expect(categories[0]?.total.toFixed(2)).toBe("210.00");
+    expect(qualities[0]?.total.toFixed(2)).toBe("210.00");
+    expect(sources[0]?.total.toFixed(2)).toBe("210.00");
+    expect(projects[0]?.totalExpense.toFixed(2)).toBe("210.00");
+  }, 20_000);
+
   it("reconciles selected goal progress and project raw-versus-effective cost", async () => {
     const [goals, projects] = await Promise.all([
       loadGoalProgressReport({
@@ -501,10 +630,26 @@ describe("report reference reconciliation", () => {
     expect(projects[0]?.roi?.toFixed(2)).toBe("80.00");
   }, 20_000);
 
-  it("reconciles tracked card debt 85.00 and fee-waiver spending 210.00", async () => {
+  it("uses debt as-of chronology and the complete configured waiver period", async () => {
     const [debt, waivers] = await Promise.all([
-      loadCreditCardDebtReport(julyFilters),
-      loadFeeWaiverReport(julyFilters)
+      loadCreditCardDebtReport({
+        ...julyFilters,
+        type: TransactionType.INCOME,
+        categoryId: categoryCId,
+        qualityRating: QualityRating.D,
+        moneySourceId: cardId,
+        projectId,
+        savingGoalId: goalId
+      }),
+      loadFeeWaiverReport({
+        ...julyFilters,
+        type: TransactionType.INCOME,
+        categoryId: categoryCId,
+        qualityRating: QualityRating.D,
+        moneySourceId: waiverCardId,
+        projectId,
+        savingGoalId: goalId
+      })
     ]);
 
     expect(debt).toHaveLength(1);
@@ -513,7 +658,7 @@ describe("report reference reconciliation", () => {
       REFERENCE_EXPECTED_LEDGER.outstandingDebt
     );
     expect(waivers).toHaveLength(1);
-    expect(waivers[0]?.source.id).toBe(cardId);
+    expect(waivers[0]?.source.id).toBe(waiverCardId);
     expect(waivers[0]?.state.eligibleSpending.toFixed(2)).toBe(
       REFERENCE_EXPECTED_LEDGER.eligibleSpending
     );
