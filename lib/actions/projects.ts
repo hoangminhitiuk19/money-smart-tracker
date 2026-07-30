@@ -56,8 +56,12 @@ function parseProjectUpdateInput(data: ProjectUpdateInput | FormData) {
   return projectUpdateSchema.safeParse(data);
 }
 
-async function verifyProjectOwnership(id: string, userId: string) {
-  const project = await prisma.financialProject.findFirst({
+async function verifyProjectOwnership(
+  db: Prisma.TransactionClient,
+  id: string,
+  userId: string
+) {
+  const project = await db.financialProject.findFirst({
     where: { id, userId }
   });
 
@@ -69,12 +73,13 @@ async function verifyProjectOwnership(id: string, userId: string) {
 }
 
 async function logActivity(
+  db: Prisma.TransactionClient,
   userId: string,
   action: "PROJECT_CREATED" | "PROJECT_UPDATED" | "PROJECT_DELETED",
   entityId: string,
   metadata?: Prisma.InputJsonObject
 ) {
-  await prisma.activityLog.create({
+  await db.activityLog.create({
     data: {
       userId,
       action,
@@ -99,17 +104,19 @@ export async function createProject(
     return { ok: false, error: "Enter a valid project." };
   }
 
-  const project = await prisma.financialProject.create({
-    data: {
-      ...parsed.data,
-      userId: user.id
-    },
-    select: { id: true, name: true, status: true }
-  });
+  await prisma.$transaction(async (tx) => {
+    const project = await tx.financialProject.create({
+      data: {
+        ...parsed.data,
+        userId: user.id
+      },
+      select: { id: true, name: true, status: true }
+    });
 
-  await logActivity(user.id, "PROJECT_CREATED", project.id, {
-    name: project.name,
-    status: project.status
+    await logActivity(tx, user.id, "PROJECT_CREATED", project.id, {
+      name: project.name,
+      status: project.status
+    });
   });
 
   revalidatePath("/projects");
@@ -135,17 +142,18 @@ export async function updateProject(
     return { ok: false, error: "Enter a valid project." };
   }
 
-  await verifyProjectOwnership(id, user.id);
+  await prisma.$transaction(async (tx) => {
+    await verifyProjectOwnership(tx, id, user.id);
+    await tx.financialProject.updateMany({
+      where: { id, userId: user.id },
+      data: parsed.data
+    });
+    const project = await verifyProjectOwnership(tx, id, user.id);
 
-  await prisma.financialProject.updateMany({
-    where: { id, userId: user.id },
-    data: parsed.data,
-  });
-  const project = await verifyProjectOwnership(id, user.id);
-
-  await logActivity(user.id, "PROJECT_UPDATED", project.id, {
-    name: project.name,
-    status: project.status
+    await logActivity(tx, user.id, "PROJECT_UPDATED", project.id, {
+      name: project.name,
+      status: project.status
+    });
   });
 
   revalidatePath("/projects");
@@ -163,15 +171,16 @@ export async function deleteProject(id: string): Promise<ProjectActionResult> {
   if (!rateLimit.allowed) {
     return { ok: false, error: RATE_LIMIT_MESSAGE };
   }
-  const project = await verifyProjectOwnership(id, user.id);
+  await prisma.$transaction(async (tx) => {
+    const project = await verifyProjectOwnership(tx, id, user.id);
+    await tx.financialProject.deleteMany({
+      where: { id, userId: user.id }
+    });
 
-  await prisma.financialProject.deleteMany({
-    where: { id, userId: user.id }
-  });
-
-  await logActivity(user.id, "PROJECT_DELETED", id, {
-    name: project.name,
-    status: project.status
+    await logActivity(tx, user.id, "PROJECT_DELETED", id, {
+      name: project.name,
+      status: project.status
+    });
   });
 
   revalidatePath("/projects");
@@ -193,5 +202,5 @@ export async function listProjects() {
 
 export async function getProject(id: string) {
   const user = await requireAuth();
-  return verifyProjectOwnership(id, user.id);
+  return verifyProjectOwnership(prisma, id, user.id);
 }

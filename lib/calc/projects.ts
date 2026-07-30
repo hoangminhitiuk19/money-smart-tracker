@@ -9,6 +9,11 @@ export type ProjectSummaryTransaction = {
   projectId?: string | null;
 };
 
+/**
+ * Calculates the raw project summary from specification §10.
+ * Refunds are intentionally excluded here; project reports apply linked
+ * refunds as effective expense under specification §16.1.
+ */
 export function calculateProjectSummary(
   transactions: ProjectSummaryTransaction[]
 ) {

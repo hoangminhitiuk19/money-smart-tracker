@@ -74,12 +74,12 @@ no database evidence exists yet.
 | §9.2 Manual contribution bypasses the immediate ceiling | `lib/calc/goals.ts` | `tests/goals.test.ts`; `tests/finance-logic.test.ts` exact success assertions | — | Covered | Task 8 follow-on allocation |
 | §9.2 Contribution without a transaction link skips the ceiling | `lib/calc/goals.ts` | `tests/goals.test.ts`; `tests/finance-logic.test.ts` exact success assertions | — | Covered | Task 8 integration |
 | §9.2 Goal, transaction, and source references are same-user owned | contribution action | — | — | Missing | Task 8/15 |
-| §10.1 Project fields/defaults match the specified record contract | Prisma schema, project action | — | — | Missing | Task 9/15 |
-| §10.1 Projects are scoped to the authenticated user | project action | action tests use one mocked user only | — | Missing | Task 15 |
+| §10.1 Project fields/defaults match the specified record contract | Prisma schema, project action | — | `tests/integration/projects.integration.test.ts` checks session owner, nullable description, ACTIVE default, and timestamps on persisted create | Covered | Task 9 |
+| §10.1 Projects are scoped to the authenticated user | project action | action tests use one mocked user only | `tests/integration/projects.integration.test.ts` checks foreign read/list/update/delete isolation and unchanged foreign state | Covered | Task 9 |
 | §10.2 Project income and expense totals use their respective transaction types | `lib/calc/projects.ts` | `tests/projects.test.ts` exact totals | — | Covered | Task 2 Decimal regression |
 | §10.2 Profit is income minus expense | `lib/calc/projects.ts` | `tests/projects.test.ts` exact profit | — | Covered | Task 2 Decimal regression |
-| §10.2 Zero project expense displays ROI as N/A | `lib/calc/projects.ts` | `tests/projects.test.ts` exact `null` ROI | — | Covered | Task 9 integration |
-| §10.3 Published project example computes 600,000 expense, 900,000 income, 300,000 profit, and 50% ROI | `lib/calc/projects.ts` | — | — | Missing | Task 9 |
+| §10.2 Zero project expense displays ROI as N/A | `lib/calc/projects.ts` | `tests/projects.test.ts` exact `null` ROI | — | Covered | Task 9 |
+| §10.3 Published project example computes 600,000 expense, 900,000 income, 300,000 profit, and 50% ROI | `lib/calc/projects.ts` | `tests/projects.test.ts` asserts all four literal Decimal results | — | Covered | Task 9 |
 | §11.1 Money-source enum includes every specified source type | Prisma `MoneySourceType` | — | — | Missing | Task 4 |
 | §11.2 Non-card source fields/defaults match the specified record contract | Prisma schema, money-source action | — | — | Missing | Task 4/5/15 |
 | §11.3 Non-card formula includes income, transfers, refund, expense, and adjustments | `lib/calc/balance.ts` | `tests/balance.test.ts` exact component assertions | — | Covered | Task 2 Decimal regression |
@@ -120,7 +120,7 @@ no database evidence exists yet.
 | §15.3 Net position includes only CASH/BANK/DEBIT/E-WALLET/INVESTMENT minus card debt | `lib/calc/dashboard.ts` | `tests/dashboard.test.ts` exact source exclusion/position assertions | — | Covered | Task 12 ledger |
 | §15.3 Net-position label says it is estimated/not official bank data | dashboard UI | — | — | Missing | Task 17 |
 | §16.1 Dashboard total expense and savings rate use raw expense | dashboard calc/action | `tests/dashboard.test.ts` raw total/net assertions | — | Covered | Task 12 |
-| §16.1 Each listed report uses effective expense and attributes linked refunds to original records | `lib/calc/reports.ts` | `tests/reports.test.ts` selected report attribution assertions | — | Missing | Task 13 |
+| §16.1 Each listed report uses effective expense and attributes linked refunds to original records | `lib/calc/reports.ts` | `tests/reports.test.ts` proves project report expense 500,000, profit 400,000, and ROI 80% after a linked 100,000 refund; other selected report attribution assertions also exist | — | Missing | Task 9 proves project report; Task 13 completes cross-report reconciliation |
 | §16.1 Unlinked refunds are not subtracted from a category/project | `lib/calc/reports.ts` | `tests/reports.test.ts` unlinked-refund assertions | — | Covered | Task 13 |
 | §16.2 Income-versus-expense report | `lib/calc/reports.ts` | `tests/reports.test.ts` exact rows | — | Covered | Task 13 integration |
 | §16.2 Expense-by-category report | `lib/calc/reports.ts` | `tests/reports.test.ts` exact rows | — | Covered | Task 13 integration |
@@ -149,7 +149,7 @@ no database evidence exists yet.
 | §20.2 Every listed action writes its specified metadata shape | action modules | category/export tests cover a subset | — | Missing | Task 11 |
 | §20.3 Log list paginates at 50 | activity-log action/page | — | — | Missing | Task 11/17 |
 | §20.3 MVP retains logs for 90 days | activity-log retention boundary | — | — | Missing | Task 11 |
-| §20.3 Mutations write logs server-side, not through a client call | action modules | selected mocked action-log assertions only | — | Missing | Task 11/15 |
+| §20.3 Mutations write logs server-side, not through a client call | action modules | selected mocked action-log assertions only | `tests/integration/projects.integration.test.ts` proves project CRUD/activity commit together and all three mutations roll back on forced activity failure | Missing | Task 9 proves projects; Task 11/15 complete remaining mutations |
 | §21 Default currency setting | settings action/page | — | — | Missing | Task 14 |
 | §21 Date and number format settings | settings action/page | — | — | Missing | Task 14 |
 | §21 Default dashboard period setting | settings action/page | — | — | Missing | Task 14 |

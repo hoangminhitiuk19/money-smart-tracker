@@ -8,6 +8,17 @@ import {
 } from "@/lib/security/rate-limit";
 
 const mockUser = { id: "user-1", email: "user@test.com", name: "Test User" };
+const projectMocks = vi.hoisted(() => ({
+  activityCreate: vi.fn(async () => ({})),
+  projectCreate: vi.fn(async ({ data }: any) => ({
+    id: "new-project",
+    name: data.name,
+    status: data.status
+  })),
+  rootActivityCreate: vi.fn(),
+  rootProjectCreate: vi.fn(),
+  transaction: vi.fn()
+}));
 
 vi.mock("@/lib/auth", () => ({
   requireAuth: vi.fn(async () => mockUser)
@@ -28,20 +39,32 @@ vi.mock("@/lib/security/rate-limit", () => ({
   RATE_LIMIT_MESSAGE: "Too many requests. Please try again shortly."
 }));
 
-vi.mock("@/lib/prisma", () => ({
-  prisma: {
+vi.mock("@/lib/prisma", () => {
+  const transactionClient = {
     financialProject: {
-      create: vi.fn(async ({ data }: any) => ({
-        id: "new-project",
-        name: data.name,
-        status: data.status
-      }))
+      create: projectMocks.projectCreate
     },
     activityLog: {
-      create: vi.fn(async () => ({}))
+      create: projectMocks.activityCreate
     }
-  }
-}));
+  };
+
+  projectMocks.transaction.mockImplementation(async (callback) =>
+    callback(transactionClient)
+  );
+
+  return {
+    prisma: {
+      $transaction: projectMocks.transaction,
+      financialProject: {
+        create: projectMocks.rootProjectCreate
+      },
+      activityLog: {
+        create: projectMocks.rootActivityCreate
+      }
+    }
+  };
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -71,5 +94,22 @@ describe("project mutation rate limiting", () => {
 
     expect(result).toEqual({ ok: false, error: RATE_LIMIT_MESSAGE });
     expect(prisma.financialProject.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("project mutation transaction boundary", () => {
+  it("runs project creation and activity logging through one transaction client", async () => {
+    await expect(
+      createProject({
+        name: "Kitchen remodel",
+        status: ProjectStatus.ACTIVE
+      })
+    ).resolves.toEqual({ ok: true });
+
+    expect(projectMocks.transaction).toHaveBeenCalledTimes(1);
+    expect(projectMocks.projectCreate).toHaveBeenCalledTimes(1);
+    expect(projectMocks.activityCreate).toHaveBeenCalledTimes(1);
+    expect(projectMocks.rootProjectCreate).not.toHaveBeenCalled();
+    expect(projectMocks.rootActivityCreate).not.toHaveBeenCalled();
   });
 });

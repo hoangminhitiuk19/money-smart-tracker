@@ -7,6 +7,7 @@ import { loadIncomeVsExpenseOverTime } from "@/lib/actions/reports";
 import {
   getExpenseByCategory,
   getIncomeVsExpenseOverTime,
+  getProjectProfitLoss,
   getSpendingBySource,
   getSpendingQualityBreakdown,
   type ReportTransaction
@@ -301,6 +302,42 @@ describe("getSpendingBySource", () => {
 
   it("returns an empty array for no transactions", () => {
     expect(getSpendingBySource([], sources)).toEqual([]);
+  });
+});
+
+describe("getProjectProfitLoss", () => {
+  it("uses linked-refund effective expense without changing raw project-summary semantics", () => {
+    const rows = getProjectProfitLoss(
+      [
+        tx({
+          id: "project-expense-fruit",
+          amount: "500000.00",
+          projectId: "drink-project"
+        }),
+        tx({
+          id: "project-expense-cups",
+          amount: "100000.00",
+          projectId: "drink-project"
+        }),
+        tx({
+          amount: "900000.00",
+          projectId: "drink-project",
+          type: TransactionType.INCOME
+        }),
+        tx({
+          amount: "100000.00",
+          relatedTransactionId: "project-expense-fruit",
+          type: TransactionType.REFUND
+        })
+      ],
+      [{ id: "drink-project", name: "Drink Investment" }]
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.totalIncome.toFixed(2)).toBe("900000.00");
+    expect(rows[0]?.totalExpense.toFixed(2)).toBe("500000.00");
+    expect(rows[0]?.profit.toFixed(2)).toBe("400000.00");
+    expect(rows[0]?.roi?.toFixed(2)).toBe("80.00");
   });
 });
 

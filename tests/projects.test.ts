@@ -26,6 +26,19 @@ function summaryText(result: ReturnType<typeof calculateProjectSummary>) {
 }
 
 describe("calculateProjectSummary", () => {
+  it("keeps the published project example raw and exact", () => {
+    const summary = calculateProjectSummary([
+      tx({ amount: "500000.00", type: TransactionType.EXPENSE }),
+      tx({ amount: "100000.00", type: TransactionType.EXPENSE }),
+      tx({ amount: "900000.00", type: TransactionType.INCOME })
+    ]);
+
+    expect(summary.totalIncome.toFixed(2)).toBe("900000.00");
+    expect(summary.totalExpense.toFixed(2)).toBe("600000.00");
+    expect(summary.profit.toFixed(2)).toBe("300000.00");
+    expect(summary.roi?.toFixed(2)).toBe("50.00");
+  });
+
   it("subtracts decimal cents exactly", () => {
     expect(
       calculateProjectSummary([
