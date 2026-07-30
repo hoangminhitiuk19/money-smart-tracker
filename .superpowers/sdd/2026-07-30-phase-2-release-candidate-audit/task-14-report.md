@@ -108,3 +108,47 @@ schema, so no migration was created. Generated `next-env.d.ts` and
   authenticated browser session was run for this server-rendered task.
 
 No unresolved Task 14 issue remains.
+
+## Fix Round 1 — Persisted Report Filter Dates
+
+Review found that the report filter form correctly preserved ISO
+`YYYY-MM-DD` values for URL submission, but the visible active-filter context
+repeated those raw values instead of applying the user's persisted date
+format.
+
+### TDD Evidence
+
+- The rendered report regression was RED with 1 failure and 3 existing passes.
+  With `dateFormat: "DD/MM/YYYY"`, the date inputs retained
+  `2026-07-01`/`2026-07-31`, while the active-filter chips incorrectly showed
+  those same raw ISO strings instead of `01/07/2026`/`31/07/2026`.
+- After the minimal change, the rendered report suite passed 4/4 and the
+  focused Task 14 suite passed 51/51.
+
+### Implementation
+
+- `ReportFilterPanel` now receives the already-loaded `formatSettings` and
+  applies `formatUserDate` only when constructing the visible `From` and
+  `Through` filter labels.
+- Filter state, GET query names, URL values, and date-input values remain the
+  original ISO strings, preserving the existing parsing and shareable-URL
+  contract.
+
+### Verification
+
+All applicable commands used Node 22.
+
+- Focused Task 14 suites: 7 files, 51/51 passed.
+- Full unit/render suite: 36 files, 437/437 passed.
+- Full PostgreSQL integration suite: 13 files, 93/93 passed.
+- Typecheck: passed.
+- ESLint: passed with zero warnings.
+- Prisma validation: schema valid.
+- `git diff --check`: passed.
+- Production build: passed; all application routes compiled and all 19 static
+  pages generated.
+
+The build emitted only the repository's known isolated-worktree
+multiple-lockfile workspace-root warning. Generated `next-env.d.ts` and
+`tsconfig.tsbuildinfo` changes were restored before commit. No unresolved
+Fix Round 1 issue remains.

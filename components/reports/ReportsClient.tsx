@@ -30,6 +30,7 @@ import {
   type DecimalInput
 } from "@/lib/money";
 import {
+  formatUserDate,
   formatUserMoney,
   type UserFormatSettings
 } from "@/lib/user-format";
@@ -288,14 +289,26 @@ function selectedOptionName(options: FilterOption[], selectedId?: string) {
 
 function ReportFilterPanel({
   filters,
+  formatSettings,
   options
 }: {
   filters: ReportFilterState;
+  formatSettings: UserFormatSettings;
   options: ReportFilterOptions;
 }) {
   const activeFilters = [
-    filters.startDate ? { label: "From", value: filters.startDate } : null,
-    filters.endDate ? { label: "Through", value: filters.endDate } : null,
+    filters.startDate
+      ? {
+          label: "From",
+          value: formatUserDate(filters.startDate, formatSettings)
+        }
+      : null,
+    filters.endDate
+      ? {
+          label: "Through",
+          value: formatUserDate(filters.endDate, formatSettings)
+        }
+      : null,
     filters.type ? { label: "Type", value: filters.type } : null,
     filters.categoryId
       ? {
@@ -621,7 +634,11 @@ export function ReportsClient({
 
   return (
     <section className="space-y-5">
-      <ReportFilterPanel filters={filters} options={filterOptions} />
+      <ReportFilterPanel
+        filters={filters}
+        formatSettings={formatSettings}
+        options={filterOptions}
+      />
 
       <nav
         aria-label="Report views"

@@ -212,4 +212,23 @@ describe("reports filter URL state", () => {
     });
     expect(reportPageMocks.getUserSettings).toHaveBeenCalledTimes(1);
   });
+
+  it("formats visible date filters while preserving ISO date input values", async () => {
+    reportPageMocks.getUserSettings.mockResolvedValueOnce({
+      settings: {
+        defaultCurrency: "USD",
+        dateFormat: "DD/MM/YYYY",
+        numberFormat: "1.000.000",
+        defaultDashboardPeriod: "Year"
+      },
+      user: { id: "report-user" }
+    });
+
+    const markup = await renderReportsMarkup();
+
+    expect(markup).toContain('type="date" name="startDate" value="2026-07-01"');
+    expect(markup).toContain('type="date" name="endDate" value="2026-07-31"');
+    expect(markup).toContain("From</span> 01/07/2026");
+    expect(markup).toContain("Through</span> 31/07/2026");
+  });
 });
