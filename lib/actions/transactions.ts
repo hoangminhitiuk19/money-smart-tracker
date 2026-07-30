@@ -14,6 +14,7 @@ import {
   getCountTowardFeeWaiverDefault,
   validateTransactionFields
 } from "@/lib/calc/transactions";
+import { transactionDateRange } from "@/lib/date-range";
 import { prisma } from "@/lib/prisma";
 import {
   checkAuthenticatedMutation,
@@ -526,15 +527,16 @@ function buildTransactionSearchWhere(
   if (filters.moneySourceId) {
     where.OR = [
       { fromMoneySourceId: filters.moneySourceId },
-      { toMoneySourceId: filters.moneySourceId }
+      { toMoneySourceId: filters.moneySourceId },
+      { adjustedMoneySourceId: filters.moneySourceId }
     ];
   }
 
   if (filters.startDate || filters.endDate) {
-    where.transactionDate = {
-      gte: filters.startDate ? new Date(filters.startDate) : undefined,
-      lte: filters.endDate ? new Date(filters.endDate) : undefined
-    };
+    where.transactionDate = transactionDateRange(
+      filters.startDate,
+      filters.endDate
+    );
   }
 
   if (q) {

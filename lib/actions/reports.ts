@@ -21,6 +21,7 @@ import {
   getUpcomingRenewalsTotal,
   type ReportGroupBy
 } from "@/lib/calc/reports";
+import { transactionDateRange } from "@/lib/date-range";
 import { prisma } from "@/lib/prisma";
 
 function normalizeDate(date: Date | string) {
@@ -47,10 +48,7 @@ async function getTransactionsInRange(
   return prisma.transaction.findMany({
     where: {
       userId,
-      transactionDate: {
-        gte: normalizeDate(startDate),
-        lte: normalizeDate(endDate)
-      }
+      transactionDate: transactionDateRange(startDate, endDate)
     },
     orderBy: [{ transactionDate: "asc" }, { createdAt: "asc" }]
   });

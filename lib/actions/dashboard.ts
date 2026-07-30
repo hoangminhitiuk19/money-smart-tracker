@@ -9,6 +9,7 @@ import {
 import { getDashboardSummary } from "@/lib/calc/dashboard";
 import { calculateGoalProgress } from "@/lib/calc/goals";
 import { calculateProjectSummary } from "@/lib/calc/projects";
+import { transactionDateRange } from "@/lib/date-range";
 import { prisma } from "@/lib/prisma";
 
 function normalizeStartDate(date: Date | string) {
@@ -67,10 +68,7 @@ export async function getDashboardData(
     prisma.transaction.findMany({
       where: {
         userId,
-        transactionDate: {
-          gte: periodStart,
-          lte: periodEnd
-        }
+        transactionDate: transactionDateRange(startDate, endDate)
       },
       orderBy: { transactionDate: "desc" }
     }),

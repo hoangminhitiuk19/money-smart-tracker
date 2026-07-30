@@ -2,7 +2,8 @@ import {
   QualityRating,
   TransactionType
 } from "@prisma/client";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { loadIncomeVsExpenseOverTime } from "@/lib/actions/reports";
 import {
   getExpenseByCategory,
   getIncomeVsExpenseOverTime,
@@ -10,6 +11,22 @@ import {
   getSpendingQualityBreakdown,
   type ReportTransaction
 } from "@/lib/calc/reports";
+
+const reportMocks = vi.hoisted(() => ({
+  requireAuth: vi.fn(),
+  transactionFindMany: vi.fn()
+}));
+
+vi.mock("@/lib/auth", () => ({ requireAuth: reportMocks.requireAuth }));
+vi.mock("@/lib/prisma", () => ({
+  prisma: { transaction: { findMany: reportMocks.transactionFindMany } }
+}));
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  reportMocks.requireAuth.mockResolvedValue({ id: "report-user" });
+  reportMocks.transactionFindMany.mockResolvedValue([]);
+});
 
 const categories = [
   { id: "food", name: "Food" },
@@ -284,5 +301,22 @@ describe("getSpendingBySource", () => {
 
   it("returns an empty array for no transactions", () => {
     expect(getSpendingBySource([], sources)).toEqual([]);
+  });
+});
+
+describe("report transaction date filtering", () => {
+  it("queries through the UTC start of the day after an inclusive end date", async () => {
+    await loadIncomeVsExpenseOverTime("2026-07-01", "2026-07-30", "day");
+
+    expect(reportMocks.transactionFindMany).toHaveBeenCalledWith({
+      where: {
+        userId: "report-user",
+        transactionDate: {
+          gte: new Date("2026-07-01T00:00:00.000Z"),
+          lt: new Date("2026-07-31T00:00:00.000Z")
+        }
+      },
+      orderBy: [{ transactionDate: "asc" }, { createdAt: "asc" }]
+    });
   });
 });

@@ -3,12 +3,43 @@ import {
   QualityRating,
   TransactionType
 } from "@prisma/client";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getDashboardData } from "@/lib/actions/dashboard";
 import {
   getDashboardSummary,
   type DashboardMoneySource,
   type DashboardTransaction
 } from "@/lib/calc/dashboard";
+
+const dashboardMocks = vi.hoisted(() => ({
+  requireAuth: vi.fn(),
+  transactionFindMany: vi.fn(),
+  savingGoalFindMany: vi.fn(),
+  financialProjectFindMany: vi.fn(),
+  moneySourceFindMany: vi.fn(),
+  recurringPaymentFindMany: vi.fn()
+}));
+
+vi.mock("@/lib/auth", () => ({ requireAuth: dashboardMocks.requireAuth }));
+vi.mock("@/lib/prisma", () => ({
+  prisma: {
+    transaction: { findMany: dashboardMocks.transactionFindMany },
+    savingGoal: { findMany: dashboardMocks.savingGoalFindMany },
+    financialProject: { findMany: dashboardMocks.financialProjectFindMany },
+    moneySource: { findMany: dashboardMocks.moneySourceFindMany },
+    recurringPayment: { findMany: dashboardMocks.recurringPaymentFindMany }
+  }
+}));
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  dashboardMocks.requireAuth.mockResolvedValue({ id: "dashboard-user" });
+  dashboardMocks.transactionFindMany.mockResolvedValue([]);
+  dashboardMocks.savingGoalFindMany.mockResolvedValue([]);
+  dashboardMocks.financialProjectFindMany.mockResolvedValue([]);
+  dashboardMocks.moneySourceFindMany.mockResolvedValue([]);
+  dashboardMocks.recurringPaymentFindMany.mockResolvedValue([]);
+});
 
 const today = new Date("2026-07-15T00:00:00.000Z");
 
@@ -237,5 +268,22 @@ describe("getDashboardSummary", () => {
         ]
       }).estimatedNetPosition.toFixed(2)
     ).toBe("1000.00");
+  });
+});
+
+describe("getDashboardData date filtering", () => {
+  it("queries through the UTC start of the day after an inclusive end date", async () => {
+    await getDashboardData("2026-07-01", "2026-07-30");
+
+    expect(dashboardMocks.transactionFindMany).toHaveBeenCalledWith({
+      where: {
+        userId: "dashboard-user",
+        transactionDate: {
+          gte: new Date("2026-07-01T00:00:00.000Z"),
+          lt: new Date("2026-07-31T00:00:00.000Z")
+        }
+      },
+      orderBy: { transactionDate: "desc" }
+    });
   });
 });

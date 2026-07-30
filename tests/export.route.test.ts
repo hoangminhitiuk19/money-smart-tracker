@@ -119,7 +119,7 @@ describe("GET /api/export/transactions", () => {
     );
     expect(checkExport).toHaveBeenCalledWith("user-1");
     expect(prisma.transaction.findMany).toHaveBeenCalledWith({
-      where: { userId: "user-1", transactionDate: undefined },
+      where: { userId: "user-1", transactionDate: {} },
       orderBy: [{ transactionDate: "desc" }, { createdAt: "desc" }],
       include: {
         category: true,
@@ -136,5 +136,25 @@ describe("GET /api/export/transactions", () => {
         metadata: expect.objectContaining({ rowCount: 1 })
       })
     });
+  });
+
+  it("queries through the UTC start of the day after an inclusive end date", async () => {
+    await GET(
+      new Request(
+        "http://localhost/api/export/transactions?startDate=2026-07-01&endDate=2026-07-30"
+      )
+    );
+
+    expect(prisma.transaction.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          userId: "user-1",
+          transactionDate: {
+            gte: new Date("2026-07-01T00:00:00.000Z"),
+            lt: new Date("2026-07-31T00:00:00.000Z")
+          }
+        }
+      })
+    );
   });
 });

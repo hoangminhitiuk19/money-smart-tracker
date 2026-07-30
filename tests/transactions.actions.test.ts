@@ -1,6 +1,10 @@
 import { MoneySourceType, QualityRating, TransactionType } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createTransaction, updateTransaction } from "@/lib/actions/transactions";
+import {
+  createTransaction,
+  searchTransactions,
+  updateTransaction
+} from "@/lib/actions/transactions";
 import { prisma } from "@/lib/prisma";
 import {
   checkAuthenticatedMutation,
@@ -36,6 +40,22 @@ let moneySources: FakeMoneySource[];
 let recurringPayments: FakeRecurringPayment[];
 let transactions: FakeTransaction[];
 
+function matchesTransactionWhere(transaction: FakeTransaction, where: any) {
+  if (transaction.userId !== where.userId) {
+    return false;
+  }
+
+  if (where.OR) {
+    return where.OR.some((sourceFilter: Record<string, string>) =>
+      Object.entries(sourceFilter).every(
+        ([field, value]) => transaction[field] === value
+      )
+    );
+  }
+
+  return true;
+}
+
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     category: { findFirst: vi.fn(async () => null) },
@@ -59,7 +79,13 @@ vi.mock("@/lib/prisma", () => ({
         }
 
         return { count: target ? 1 : 0 };
-      })
+      }),
+      findMany: vi.fn(async ({ where }: any) =>
+        transactions.filter((transaction) => matchesTransactionWhere(transaction, where))
+      ),
+      count: vi.fn(async ({ where }: any) =>
+        transactions.filter((transaction) => matchesTransactionWhere(transaction, where)).length
+      )
     },
     moneySource: {
       findMany: vi.fn(async ({ where }: any) =>
@@ -188,6 +214,25 @@ describe("createTransaction recurringPaymentId ownership", () => {
     expect(result.ok).toBe(true);
     expect(prisma.recurringPayment.findFirst).toHaveBeenCalled();
     expect(prisma.transaction.create).toHaveBeenCalled();
+  });
+});
+
+describe("searchTransactions money source filtering", () => {
+  it("returns an adjustment whose adjusted source matches the filter", async () => {
+    transactions = [
+      {
+        id: "adjustment-1",
+        userId: "user-1",
+        type: TransactionType.ADJUSTMENT,
+        adjustedMoneySourceId: "ms-a"
+      }
+    ];
+
+    const result = await searchTransactions({ moneySourceId: "ms-a" });
+
+    expect(result.transactions.map((transaction) => transaction.id)).toEqual([
+      "adjustment-1"
+    ]);
   });
 });
 

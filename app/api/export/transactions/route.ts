@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
+import { transactionDateRange } from "@/lib/date-range";
 import { prisma } from "@/lib/prisma";
 import { checkExport, RATE_LIMIT_MESSAGE } from "@/lib/security/rate-limit";
 
@@ -19,7 +20,7 @@ const columns = [
   "Created At"
 ];
 
-function parseDateParam(value: string | null, boundary: "start" | "end") {
+function parseDateParam(value: string | null) {
   if (!value) {
     return undefined;
   }
@@ -30,13 +31,7 @@ function parseDateParam(value: string | null, boundary: "start" | "end") {
     return undefined;
   }
 
-  if (boundary === "start") {
-    date.setHours(0, 0, 0, 0);
-  } else {
-    date.setHours(23, 59, 59, 999);
-  }
-
-  return date;
+  return value;
 }
 
 function csvCell(value: unknown) {
@@ -73,19 +68,13 @@ export async function GET(request: Request) {
   }
 
   const url = new URL(request.url);
-  const startDate = parseDateParam(url.searchParams.get("startDate"), "start");
-  const endDate = parseDateParam(url.searchParams.get("endDate"), "end");
+  const startDate = parseDateParam(url.searchParams.get("startDate"));
+  const endDate = parseDateParam(url.searchParams.get("endDate"));
   const now = new Date();
   const transactions = await prisma.transaction.findMany({
     where: {
       userId: user.id,
-      transactionDate:
-        startDate || endDate
-          ? {
-              gte: startDate,
-              lte: endDate
-            }
-          : undefined
+      transactionDate: transactionDateRange(startDate, endDate)
     },
     orderBy: [{ transactionDate: "desc" }, { createdAt: "desc" }],
     include: {
