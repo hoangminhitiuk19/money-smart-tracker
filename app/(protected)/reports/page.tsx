@@ -6,10 +6,13 @@ import {
   loadIncomeVsExpenseOverTime,
   loadProjectProfitLoss,
   loadRecurringExpensePerMonth,
+  loadReportFilterOptions,
   loadSpendingBySource,
   loadSpendingQualityBreakdown,
-  loadUpcomingRenewalsTotal
+  loadUpcomingRenewalsTotal,
+  type ReportFilters
 } from "@/lib/actions/reports";
+import { QualityRating, TransactionType } from "@prisma/client";
 import { Suspense } from "react";
 import { requireAuth } from "@/lib/auth";
 import {
@@ -18,9 +21,8 @@ import {
   type DecimalInput
 } from "@/lib/money";
 import { ReportsClient } from "@/components/reports/ReportsClient";
-import { Button } from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { parseTransactionDateRange } from "@/lib/date-range";
 import ReportsLoading from "./loading";
 
 type SearchParams = Record<string, string | string[] | undefined>;
@@ -30,43 +32,66 @@ function getParam(searchParams: SearchParams, key: string) {
   return Array.isArray(value) ? value[0] : value;
 }
 
-function startOfDay(date: Date) {
-  const result = new Date(date);
-  result.setHours(0, 0, 0, 0);
-  return result;
-}
-
-function endOfDay(date: Date) {
-  const result = new Date(date);
-  result.setHours(23, 59, 59, 999);
-  return result;
-}
-
 function inputDateValue(date: Date) {
-  return date.toISOString().slice(0, 10);
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0")
+  ].join("-");
 }
 
-function parseDateInput(value: string | undefined) {
+function validDateParam(value: string | undefined) {
   if (!value) {
-    return null;
+    return undefined;
   }
 
-  const date = new Date(`${value}T00:00:00`);
-  return Number.isNaN(date.getTime()) ? null : date;
+  return parseTransactionDateRange(value).ok ? value : undefined;
 }
 
-function getDateRange(searchParams: SearchParams) {
+function enumParam<T extends string>(
+  value: string | undefined,
+  values: readonly T[]
+) {
+  return value && values.includes(value as T) ? (value as T) : undefined;
+}
+
+function idParam(value: string | undefined) {
+  const normalized = value?.trim();
+  return normalized || undefined;
+}
+
+function getReportFilters(searchParams: SearchParams) {
   const today = new Date();
   const fallbackStart = new Date(today.getFullYear(), today.getMonth(), 1);
-  const fallbackEnd = endOfDay(
-    new Date(today.getFullYear(), today.getMonth() + 1, 0)
-  );
-  const startDate = parseDateInput(getParam(searchParams, "startDate"));
-  const endDate = parseDateInput(getParam(searchParams, "endDate"));
+  const fallbackEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+  const startDate =
+    validDateParam(getParam(searchParams, "startDate")) ??
+    inputDateValue(fallbackStart);
+  const endDate =
+    validDateParam(getParam(searchParams, "endDate")) ??
+    inputDateValue(fallbackEnd);
 
   return {
-    startDate: startDate ? startOfDay(startDate) : fallbackStart,
-    endDate: endDate ? endOfDay(endDate) : fallbackEnd
+    startDate,
+    endDate,
+    type: enumParam(
+      getParam(searchParams, "type"),
+      Object.values(TransactionType)
+    ),
+    categoryId: idParam(getParam(searchParams, "categoryId")),
+    qualityRating: enumParam(
+      getParam(searchParams, "qualityRating"),
+      Object.values(QualityRating)
+    ),
+    moneySourceId: idParam(getParam(searchParams, "moneySourceId")),
+    projectId: idParam(getParam(searchParams, "projectId")),
+    savingGoalId: idParam(getParam(searchParams, "savingGoalId")),
+    groupBy:
+      enumParam(getParam(searchParams, "groupBy"), [
+        "day",
+        "week",
+        "month"
+      ] as const) ?? "month"
   };
 }
 
@@ -77,8 +102,8 @@ function groupRenewalsByMonth(
 
   for (const renewal of renewals) {
     const dueDate = new Date(renewal.nextDueDate);
-    const period = `${dueDate.getFullYear()}-${String(
-      dueDate.getMonth() + 1
+    const period = `${dueDate.getUTCFullYear()}-${String(
+      dueDate.getUTCMonth() + 1
     ).padStart(2, "0")}`;
     totals.set(
       period,
@@ -113,8 +138,9 @@ async function ReportsPageContent({
   searchParams: SearchParams;
 }) {
   await requireAuth();
-  const { startDate, endDate } = getDateRange(searchParams);
+  const filters = getReportFilters(searchParams) satisfies ReportFilters;
   const [
+    filterOptions,
     incomeVsExpense,
     expenseByCategory,
     qualityBreakdown,
@@ -126,16 +152,17 @@ async function ReportsPageContent({
     upcomingRenewals,
     recurringExpensePerMonth
   ] = await Promise.all([
-    loadIncomeVsExpenseOverTime(startDate, endDate, "month"),
-    loadExpenseByCategory(startDate, endDate),
-    loadSpendingQualityBreakdown(startDate, endDate),
-    loadGoalProgressReport(),
-    loadProjectProfitLoss(),
-    loadSpendingBySource(startDate, endDate),
-    loadCreditCardDebtReport(),
-    loadFeeWaiverReport(),
-    loadUpcomingRenewalsTotal(12),
-    loadRecurringExpensePerMonth(startDate, endDate)
+    loadReportFilterOptions(),
+    loadIncomeVsExpenseOverTime(filters),
+    loadExpenseByCategory(filters),
+    loadSpendingQualityBreakdown(filters),
+    loadGoalProgressReport(filters),
+    loadProjectProfitLoss(filters),
+    loadSpendingBySource(filters),
+    loadCreditCardDebtReport(filters),
+    loadFeeWaiverReport(filters),
+    loadUpcomingRenewalsTotal(filters),
+    loadRecurringExpensePerMonth(filters)
   ]);
 
   return (
@@ -146,34 +173,6 @@ async function ReportsPageContent({
           Explore trends, quality, goals, cards, renewals, and recurring costs.
         </p>
       </div>
-
-      <section className="scroll-mt-6 rounded-xl border border-slate-200/70 bg-card-bg p-4 shadow-sm" id="report-range">
-        <form className="grid gap-3 md:grid-cols-[1fr_1fr_auto]" method="get">
-          <label>
-            <span className="text-sm font-medium text-slate-700">Start</span>
-            <Input
-              className="mt-1"
-              defaultValue={inputDateValue(startDate)}
-              name="startDate"
-              type="date"
-            />
-          </label>
-          <label>
-            <span className="text-sm font-medium text-slate-700">End</span>
-            <Input
-              className="mt-1"
-              defaultValue={inputDateValue(endDate)}
-              name="endDate"
-              type="date"
-            />
-          </label>
-          <div className="md:mt-6">
-            <Button className="w-full md:w-auto" type="submit">
-              Apply Range
-            </Button>
-          </div>
-        </form>
-      </section>
 
       <ReportsClient
         creditCardDebt={creditCardDebt.map(({ source, state }) => ({
@@ -196,6 +195,8 @@ async function ReportsPageContent({
           progress: state.progress.toString(),
           remaining: moneyText(state.remaining)
         }))}
+        filterOptions={filterOptions}
+        filters={filters}
         goalProgress={goalProgress.map(({ goal, progress }) => ({
           id: goal.id,
           name: goal.name,

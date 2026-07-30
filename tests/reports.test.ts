@@ -343,7 +343,11 @@ describe("getProjectProfitLoss", () => {
 
 describe("report transaction date filtering", () => {
   it("queries through the UTC start of the day after an inclusive end date", async () => {
-    await loadIncomeVsExpenseOverTime("2026-07-01", "2026-07-30", "day");
+    await loadIncomeVsExpenseOverTime({
+      startDate: "2026-07-01",
+      endDate: "2026-07-30",
+      groupBy: "day"
+    });
 
     expect(reportMocks.transactionFindMany).toHaveBeenCalledWith({
       where: {

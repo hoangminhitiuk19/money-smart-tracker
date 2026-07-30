@@ -1,5 +1,6 @@
 "use client";
 
+import { QualityRating, TransactionType } from "@prisma/client";
 import { useMemo, useState } from "react";
 import {
   Bar,
@@ -20,8 +21,10 @@ import {
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { Input } from "@/components/ui/Input";
 import { LoadingSkeleton } from "@/components/ui/LoadingSkeleton";
 import { ProgressBar } from "@/components/ui/ProgressBar";
+import { Select } from "@/components/ui/Select";
 import {
   presentationNumber,
   type DecimalInput
@@ -78,7 +81,33 @@ type FeeWaiverReport = {
   remaining: string;
 };
 
+type FilterOption = {
+  id: string;
+  name: string;
+};
+
+type ReportFilterState = {
+  startDate: string;
+  endDate: string;
+  type?: TransactionType;
+  categoryId?: string;
+  qualityRating?: QualityRating;
+  moneySourceId?: string;
+  projectId?: string;
+  savingGoalId?: string;
+  groupBy: "day" | "week" | "month";
+};
+
+type ReportFilterOptions = {
+  categories: FilterOption[];
+  moneySources: FilterOption[];
+  projects: FilterOption[];
+  savingGoals: FilterOption[];
+};
+
 type ReportsClientProps = {
+  filters: ReportFilterState;
+  filterOptions: ReportFilterOptions;
   incomeVsExpense: MoneyPoint[];
   expenseByCategory: NamedTotal[];
   qualityBreakdown: NamedTotal[];
@@ -117,6 +146,9 @@ const tabs = [
 ] as const;
 
 type TabId = (typeof tabs)[number]["id"];
+
+const transactionTypes = Object.values(TransactionType);
+const qualityRatings = Object.values(QualityRating);
 
 function formatMoney(amount: DecimalInput, currency = "VND") {
   return new Intl.NumberFormat("en-US", {
@@ -157,8 +189,11 @@ function ReportPanel({
     return (
       <EmptyState
         cta={
-          <a href="#report-range">
-            <Button variant="outline">Change Date Range</Button>
+          <a
+            className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary md:min-h-0"
+            href="#report-filters"
+          >
+            Change filters
           </a>
         }
         title={
@@ -231,10 +266,256 @@ function TotalTable({
   );
 }
 
+function selectedOptionName(options: FilterOption[], selectedId?: string) {
+  if (!selectedId) {
+    return undefined;
+  }
+
+  return options.find(({ id }) => id === selectedId)?.name ?? selectedId;
+}
+
+function ReportFilterPanel({
+  filters,
+  options
+}: {
+  filters: ReportFilterState;
+  options: ReportFilterOptions;
+}) {
+  const activeFilters = [
+    filters.startDate ? { label: "From", value: filters.startDate } : null,
+    filters.endDate ? { label: "Through", value: filters.endDate } : null,
+    filters.type ? { label: "Type", value: filters.type } : null,
+    filters.categoryId
+      ? {
+          label: "Category",
+          value: selectedOptionName(options.categories, filters.categoryId)
+        }
+      : null,
+    filters.qualityRating
+      ? { label: "Quality", value: filters.qualityRating }
+      : null,
+    filters.moneySourceId
+      ? {
+          label: "Source",
+          value: selectedOptionName(
+            options.moneySources,
+            filters.moneySourceId
+          )
+        }
+      : null,
+    filters.projectId
+      ? {
+          label: "Project",
+          value: selectedOptionName(options.projects, filters.projectId)
+        }
+      : null,
+    filters.savingGoalId
+      ? {
+          label: "Goal",
+          value: selectedOptionName(options.savingGoals, filters.savingGoalId)
+        }
+      : null,
+    filters.groupBy
+      ? {
+          label: "Group",
+          value:
+            filters.groupBy.charAt(0).toUpperCase() + filters.groupBy.slice(1)
+        }
+      : null
+  ].filter(
+    (filter): filter is { label: string; value: string } =>
+      filter !== null && filter.value !== undefined
+  );
+
+  return (
+    <section
+      className="scroll-mt-6 overflow-hidden rounded-xl border border-slate-200/70 bg-card-bg shadow-sm"
+      id="report-filters"
+    >
+      <div className="border-b border-slate-200/70 px-4 py-3 sm:px-5">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h2 className="font-semibold text-slate-950">Report filters</h2>
+            <p className="mt-0.5 text-xs text-slate-500" id="report-filter-help">
+              Use the dimensions that matter to this audit. Every selection
+              stays in the URL.
+            </p>
+          </div>
+          <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
+            {activeFilters.length} active filters
+          </span>
+        </div>
+      </div>
+
+      <form
+        aria-describedby="report-filter-help"
+        className="grid gap-3 p-4 sm:grid-cols-2 sm:p-5 lg:grid-cols-3 xl:grid-cols-5"
+        method="get"
+      >
+        <label>
+          <span className="text-xs font-medium text-slate-700">Start date</span>
+          <Input
+            className="mt-1"
+            defaultValue={filters.startDate}
+            name="startDate"
+            type="date"
+          />
+        </label>
+        <label>
+          <span className="text-xs font-medium text-slate-700">End date</span>
+          <Input
+            className="mt-1"
+            defaultValue={filters.endDate}
+            name="endDate"
+            type="date"
+          />
+        </label>
+        <label>
+          <span className="text-xs font-medium text-slate-700">
+            Transaction type
+          </span>
+          <Select className="mt-1" defaultValue={filters.type ?? ""} name="type">
+            <option value="">All types</option>
+            {transactionTypes.map((type) => (
+              <option key={type} value={type}>
+                {type}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label>
+          <span className="text-xs font-medium text-slate-700">Category</span>
+          <Select
+            className="mt-1"
+            defaultValue={filters.categoryId ?? ""}
+            name="categoryId"
+          >
+            <option value="">All categories</option>
+            {options.categories.map((category) => (
+              <option key={category.id} value={category.id}>
+                {category.name}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label>
+          <span className="text-xs font-medium text-slate-700">Quality</span>
+          <Select
+            className="mt-1"
+            defaultValue={filters.qualityRating ?? ""}
+            name="qualityRating"
+          >
+            <option value="">All ratings</option>
+            {qualityRatings.map((rating) => (
+              <option key={rating} value={rating}>
+                {rating}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label>
+          <span className="text-xs font-medium text-slate-700">
+            Account or wallet
+          </span>
+          <Select
+            className="mt-1"
+            defaultValue={filters.moneySourceId ?? ""}
+            name="moneySourceId"
+          >
+            <option value="">All sources</option>
+            {options.moneySources.map((source) => (
+              <option key={source.id} value={source.id}>
+                {source.name}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label>
+          <span className="text-xs font-medium text-slate-700">Project</span>
+          <Select
+            className="mt-1"
+            defaultValue={filters.projectId ?? ""}
+            name="projectId"
+          >
+            <option value="">All projects</option>
+            {options.projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label>
+          <span className="text-xs font-medium text-slate-700">Saving goal</span>
+          <Select
+            className="mt-1"
+            defaultValue={filters.savingGoalId ?? ""}
+            name="savingGoalId"
+          >
+            <option value="">All goals</option>
+            {options.savingGoals.map((goal) => (
+              <option key={goal.id} value={goal.id}>
+                {goal.name}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label>
+          <span className="text-xs font-medium text-slate-700">Group by</span>
+          <Select
+            className="mt-1"
+            defaultValue={filters.groupBy}
+            name="groupBy"
+          >
+            <option value="day">Day</option>
+            <option value="week">Week</option>
+            <option value="month">Month</option>
+          </Select>
+        </label>
+        <div className="flex items-end gap-2 sm:col-span-2 lg:col-span-3 xl:col-span-1">
+          <Button className="flex-1" type="submit">
+            Apply filters
+          </Button>
+          <a
+            className="inline-flex min-h-11 flex-1 items-center justify-center rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary md:min-h-0"
+            href="/reports"
+          >
+            Reset filters
+          </a>
+        </div>
+      </form>
+
+      <div
+        aria-label="Active report filters"
+        className="border-t border-slate-200/70 bg-slate-50/80 px-4 py-3 sm:px-5"
+      >
+        <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.14em] text-slate-500">
+          Active filter context
+        </p>
+        <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+          {activeFilters.map((filter) => (
+            <span
+              className="shrink-0 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 shadow-sm"
+              key={filter.label}
+            >
+              <span className="font-semibold text-slate-950">
+                {filter.label}
+              </span>{" "}
+              {filter.value}
+            </span>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function ReportsClient({
   creditCardDebt,
   expenseByCategory,
   feeWaivers,
+  filterOptions,
+  filters,
   goalProgress,
   incomeVsExpense,
   projectProfitLoss,
@@ -323,15 +604,21 @@ export function ReportsClient({
 
   return (
     <section className="space-y-5">
-      <nav className="flex gap-2 overflow-x-auto rounded-xl border border-slate-200/70 bg-card-bg p-2 shadow-sm">
+      <ReportFilterPanel filters={filters} options={filterOptions} />
+
+      <nav
+        aria-label="Report views"
+        className="flex gap-2 overflow-x-auto rounded-xl border border-slate-200/70 bg-card-bg p-2 shadow-sm"
+      >
         {tabs.map((tab) => (
           <button
             className={[
-              "min-h-11 shrink-0 rounded-md px-3 py-2 text-sm font-medium transition md:min-h-0",
+              "min-h-11 shrink-0 rounded-md px-3 py-2 text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary md:min-h-0",
               activeTab === tab.id
                 ? "bg-primary text-white"
                 : "text-slate-600 hover:bg-slate-100 hover:text-slate-950"
             ].join(" ")}
+            aria-pressed={activeTab === tab.id}
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
             type="button"
