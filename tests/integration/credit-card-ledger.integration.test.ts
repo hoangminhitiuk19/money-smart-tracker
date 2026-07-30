@@ -10,6 +10,7 @@ import {
   calculateCreditCardState,
   calculateFeeWaiverState
 } from "@/lib/calc/credit-card";
+import { buildAccountDetailTransactionScope } from "@/lib/account-transaction-scope";
 import { prisma } from "@/lib/prisma";
 import {
   cleanupAuditContext,
@@ -33,12 +34,15 @@ describe("credit-card reference ledger", () => {
     const fixturePrefix = `credit-card-ledger-${randomUUID()}`;
     const bankId = `${fixturePrefix}-bank`;
     const cardId = `${fixturePrefix}-card`;
+    const userBCardId = `${fixturePrefix}-user-b-card`;
     const eligibleExpenseId = `${fixturePrefix}-eligible-expense`;
     const excludedExpenseId = `${fixturePrefix}-excluded-expense`;
     const refundId = `${fixturePrefix}-bank-refund`;
     const debtAdjustmentId = `${fixturePrefix}-a-debt-adjustment`;
     const paymentId = `${fixturePrefix}-b-payment`;
     const creditAdjustmentId = `${fixturePrefix}-credit-adjustment`;
+    const userBExpenseId = `${fixturePrefix}-user-b-expense`;
+    const userBRefundId = `${fixturePrefix}-user-b-refund`;
     const transactionIds = [
       eligibleExpenseId,
       excludedExpenseId,
@@ -69,6 +73,21 @@ describe("credit-card reference ledger", () => {
             initialCardCredit: "500.00",
             annualFeeWaiverEnabled: true,
             annualFeeWaiverSpendTarget: REFERENCE_AMOUNTS.feeWaiverTarget,
+            waiverPeriodStartDate: REFERENCE_DATES.ledgerStart,
+            waiverPeriodEndDate: REFERENCE_DATES.periodEndInclusive
+          }
+        }),
+        prisma.moneySource.create({
+          data: {
+            id: userBCardId,
+            userId: context.userB.id,
+            name: "Adversarial user B card",
+            type: MoneySourceType.CREDIT_CARD,
+            creditLimit: "9999.00",
+            initialOutstandingDebt: "999.00",
+            initialCardCredit: "999.00",
+            annualFeeWaiverEnabled: true,
+            annualFeeWaiverSpendTarget: "9999.00",
             waiverPeriodStartDate: REFERENCE_DATES.ledgerStart,
             waiverPeriodEndDate: REFERENCE_DATES.periodEndInclusive
           }
@@ -154,14 +173,41 @@ describe("credit-card reference ledger", () => {
             adjustmentDirection: AdjustmentDirection.DECREASE,
             adjustmentTarget: AdjustmentTarget.CARD_CREDIT
           }
+        }),
+        prisma.transaction.create({
+          data: {
+            id: userBExpenseId,
+            userId: context.userB.id,
+            type: TransactionType.EXPENSE,
+            amount: "999.00",
+            title: "Adversarial user B card expense",
+            transactionDate: REFERENCE_DATES.cardExpense,
+            createdAt: new Date("2026-07-10T09:00:00.500Z"),
+            fromMoneySourceId: userBCardId,
+            countTowardFeeWaiver: true
+          }
+        }),
+        prisma.transaction.create({
+          data: {
+            id: userBRefundId,
+            userId: context.userB.id,
+            type: TransactionType.REFUND,
+            amount: "999.00",
+            title: "Adversarial cross-user refund",
+            transactionDate: new Date("2026-07-12T09:00:00.000Z"),
+            createdAt: new Date("2026-07-12T09:00:00.500Z"),
+            toMoneySourceId: cardId,
+            relatedTransactionId: eligibleExpenseId
+          }
         })
       ]);
 
       const transactions = await prisma.transaction.findMany({
-        where: {
+        where: buildAccountDetailTransactionScope({
           userId: context.userA.id,
-          id: { in: transactionIds }
-        },
+          sourceId: cardId,
+          sourceType: MoneySourceType.CREDIT_CARD
+        }),
         orderBy: [
           { transactionDate: "desc" },
           { createdAt: "desc" },
@@ -169,10 +215,43 @@ describe("credit-card reference ledger", () => {
         ]
       });
       const originalOrder = transactions.map((transaction) => transaction.id);
+      const userBTransactions = await prisma.transaction.findMany({
+        where: {
+          userId: context.userB.id,
+          id: { in: [userBExpenseId, userBRefundId] }
+        },
+        orderBy: { id: "asc" }
+      });
 
       const state = calculateCreditCardState(card, transactions);
       const waiver = calculateFeeWaiverState(card, transactions);
+      const leakedState = calculateCreditCardState(card, [
+        ...transactions,
+        ...userBTransactions
+      ]);
+      const leakedWaiver = calculateFeeWaiverState(card, [
+        ...transactions,
+        ...userBTransactions
+      ]);
 
+      expect(transactions).toHaveLength(transactionIds.length);
+      expect(
+        transactions.every(
+          (transaction) => transaction.userId === context.userA.id
+        )
+      ).toBe(true);
+      expect(transactions.map((transaction) => transaction.id)).not.toContain(
+        userBRefundId
+      );
+      expect(userBTransactions).toHaveLength(2);
+      expect(
+        userBTransactions.every(
+          (transaction) => transaction.userId === context.userB.id
+        )
+      ).toBe(true);
+      expect(leakedState.outstandingDebt.toFixed(2)).toBe("0.00");
+      expect(leakedState.cardCredit.toFixed(2)).toBe("929.00");
+      expect(leakedWaiver.eligibleSpending.toFixed(2)).toBe("-789.00");
       expect(state.outstandingDebt.toFixed(2)).toBe(
         REFERENCE_EXPECTED_LEDGER.outstandingDebt
       );

@@ -276,6 +276,25 @@ describe("calculateCreditCardState", () => {
 });
 
 describe("calculateFeeWaiverState", () => {
+  it("includes eligible spending later on a date-only waiver end date", () => {
+    expect(
+      calculateFeeWaiverState(
+        card({
+          waiverPeriodStartDate: new Date("2026-07-01T00:00:00.000Z"),
+          waiverPeriodEndDate: new Date("2026-07-31T00:00:00.000Z")
+        }),
+        [
+          tx({
+            id: "end-date-expense",
+            amount: 125,
+            countTowardFeeWaiver: true,
+            transactionDate: new Date("2026-07-31T23:59:59.999Z")
+          })
+        ]
+      ).eligibleSpending.toFixed(2)
+    ).toBe("125.00");
+  });
+
   it("calculates eligible spending correctly", () => {
     expect(
       feeWaiverStateText(

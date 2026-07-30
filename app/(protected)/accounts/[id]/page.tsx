@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { getMoneySource } from "@/lib/actions/money-sources";
+import { buildAccountDetailTransactionScope } from "@/lib/account-transaction-scope";
 import { requireAuth } from "@/lib/auth";
 import { calculateFeeWaiverState } from "@/lib/calc/credit-card";
 import { calculateAccountProjection } from "@/lib/calc/dashboard";
@@ -123,23 +124,13 @@ async function AccountDetailPageContent({
 }) {
   const user = await requireAuth();
   const source = await getMoneySource(id).catch(() => notFound());
+  const isCreditCard = source.type === MoneySourceType.CREDIT_CARD;
 
-  const transactionScope = {
+  const transactionScope = buildAccountDetailTransactionScope({
     userId: user.id,
-    OR: [
-      { fromMoneySourceId: source.id },
-      { toMoneySourceId: source.id },
-      { adjustedMoneySourceId: source.id },
-      {
-        relatedTransaction: {
-          is: {
-            type: TransactionType.EXPENSE,
-            fromMoneySourceId: source.id
-          }
-        }
-      }
-    ]
-  };
+    sourceId: source.id,
+    sourceType: source.type
+  });
 
   const sourceTransactions = await prisma.transaction.findMany({
     where: transactionScope,
@@ -166,7 +157,6 @@ async function AccountDetailPageContent({
     .sort((a, b) => b.transactionDate.getTime() - a.transactionDate.getTime())
     .slice(0, 10);
   const { start: monthStart, end: nextMonthStart } = getMonthRange(new Date());
-  const isCreditCard = source.type === MoneySourceType.CREDIT_CARD;
   const projection = calculateAccountProjection(source, sourceTransactions);
   const trackedBalance = projection.trackedAmount;
   const creditCardState = projection.creditCardState;

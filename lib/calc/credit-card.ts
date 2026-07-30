@@ -3,6 +3,7 @@ import {
   AdjustmentTarget,
   TransactionType
 } from "@prisma/client";
+import { exclusiveDayAfter, startOfDate } from "@/lib/date-range";
 import { decimal, percent, type DecimalInput } from "@/lib/money";
 
 type CreditCardAmount = DecimalInput | null | undefined;
@@ -40,19 +41,32 @@ function dateValue(date: Date | string) {
   return new Date(date).getTime();
 }
 
+function storedDateOnlyValue(date: Date | string) {
+  if (typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return date;
+  }
+
+  return new Date(date).toISOString().slice(0, 10);
+}
+
 function isWithinWaiverPeriod(
   transactionDate: Date | string,
   source: CreditCardSource
 ) {
   const value = dateValue(transactionDate);
   const start = source.waiverPeriodStartDate
-    ? dateValue(source.waiverPeriodStartDate)
+    ? startOfDate(storedDateOnlyValue(source.waiverPeriodStartDate)).getTime()
     : null;
-  const end = source.waiverPeriodEndDate
-    ? dateValue(source.waiverPeriodEndDate)
+  const exclusiveEnd = source.waiverPeriodEndDate
+    ? exclusiveDayAfter(
+        storedDateOnlyValue(source.waiverPeriodEndDate)
+      ).getTime()
     : null;
 
-  return (start === null || value >= start) && (end === null || value <= end);
+  return (
+    (start === null || value >= start) &&
+    (exclusiveEnd === null || value < exclusiveEnd)
+  );
 }
 
 export function calculateCreditCardState(
