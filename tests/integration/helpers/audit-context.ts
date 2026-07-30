@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { hash } from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 
@@ -13,8 +14,9 @@ function auditEmail(runId: string, label: "a" | "b") {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "")
     .slice(0, 40);
+  const digest = createHash("sha256").update(runId).digest("hex").slice(0, 12);
 
-  return `audit-${safeRunId || "run"}-${label}@audit.invalid`;
+  return `audit-${safeRunId || "run"}-${digest}-${label}@audit.invalid`;
 }
 
 export async function createAuditContext(runId: string): Promise<AuditContext> {

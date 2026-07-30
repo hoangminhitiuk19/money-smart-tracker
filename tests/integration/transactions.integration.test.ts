@@ -465,26 +465,62 @@ describe("transaction action persistence", () => {
 
   it("rejects same-user non-EXPENSE refund relations with zero writes", async () => {
     authState.userId = fixtures.context.userA.id;
-    const income = await prisma.transaction.create({
-      data: {
-        userId: fixtures.context.userA.id,
-        type: TransactionType.INCOME,
-        amount: "15.00",
-        title: "Standalone wrong-type relation fixture",
-        transactionDate: new Date("2026-07-21T00:00:00.000Z"),
-        toMoneySourceId: fixtures.bankAId
-      }
-    });
+    const wrongTypeRelations = await prisma.$transaction([
+      prisma.transaction.create({
+        data: {
+          userId: fixtures.context.userA.id,
+          type: TransactionType.INCOME,
+          amount: "15.00",
+          title: "Wrong-type INCOME relation fixture",
+          transactionDate: new Date("2026-07-21T00:00:00.000Z"),
+          toMoneySourceId: fixtures.bankAId
+        }
+      }),
+      prisma.transaction.create({
+        data: {
+          userId: fixtures.context.userA.id,
+          type: TransactionType.TRANSFER,
+          amount: "15.00",
+          title: "Wrong-type TRANSFER relation fixture",
+          transactionDate: new Date("2026-07-21T01:00:00.000Z"),
+          fromMoneySourceId: fixtures.bankAId,
+          toMoneySourceId: fixtures.bankBId
+        }
+      }),
+      prisma.transaction.create({
+        data: {
+          userId: fixtures.context.userA.id,
+          type: TransactionType.REFUND,
+          amount: "15.00",
+          title: "Wrong-type REFUND relation fixture",
+          transactionDate: new Date("2026-07-21T02:00:00.000Z"),
+          toMoneySourceId: fixtures.bankAId
+        }
+      }),
+      prisma.transaction.create({
+        data: {
+          userId: fixtures.context.userA.id,
+          type: TransactionType.ADJUSTMENT,
+          amount: "15.00",
+          title: "Wrong-type ADJUSTMENT relation fixture",
+          transactionDate: new Date("2026-07-21T03:00:00.000Z"),
+          adjustedMoneySourceId: fixtures.bankAId,
+          adjustmentDirection: AdjustmentDirection.INCREASE
+        }
+      })
+    ]);
 
-    await expectRejectedWithoutWrites({
-      type: TransactionType.REFUND,
-      amount: "10.00",
-      title: "Wrong-type refund relation",
-      transactionDate: "2026-07-21",
-      toMoneySourceId: fixtures.bankAId,
-      relatedTransactionId: income.id
-    });
-  });
+    for (const relation of wrongTypeRelations) {
+      await expectRejectedWithoutWrites({
+        type: TransactionType.REFUND,
+        amount: "10.00",
+        title: `Reject ${relation.type} refund relation`,
+        transactionDate: "2026-07-21",
+        toMoneySourceId: fixtures.bankAId,
+        relatedTransactionId: relation.id
+      });
+    }
+  }, 20_000);
 
   it("clears stale state on type transition and supports explicit refund unlinking", async () => {
     authState.userId = fixtures.context.userA.id;

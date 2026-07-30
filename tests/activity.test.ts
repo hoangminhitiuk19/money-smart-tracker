@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   activityRetentionCutoff,
   changedFields,
+  createActivityRetentionCleanupController,
   deleteExpiredActivity,
   retainedActivityWhere
 } from "@/lib/activity";
@@ -67,5 +68,41 @@ describe("activity retention", () => {
         createdAt: { lt: cutoff }
       }
     });
+  });
+
+  it("coalesces concurrent cleanup, cools down repeat renders, and contains cleanup failures", async () => {
+    const now = new Date("2026-07-30T12:00:00.000Z");
+    let releaseCleanup: ((count: number) => void) | undefined;
+    const cleanup = vi.fn(
+      () =>
+        new Promise<number>((resolve) => {
+          releaseCleanup = resolve;
+        })
+    );
+    const requestCleanup = createActivityRetentionCleanupController(cleanup, {
+      minimumIntervalMs: 60 * 60 * 1000
+    });
+
+    const first = requestCleanup(now);
+    const concurrent = requestCleanup(now);
+
+    expect(concurrent).toBe(first);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(cleanup).toHaveBeenCalledWith(
+      new Date("2026-05-01T12:00:00.000Z")
+    );
+    releaseCleanup?.(12);
+    await expect(first).resolves.toBe(true);
+
+    await expect(
+      requestCleanup(new Date("2026-07-30T12:30:00.000Z"))
+    ).resolves.toBe(false);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+
+    cleanup.mockRejectedValueOnce(new Error("cleanup unavailable"));
+    await expect(
+      requestCleanup(new Date("2026-07-30T13:00:00.000Z"))
+    ).resolves.toBe(false);
+    expect(cleanup).toHaveBeenCalledTimes(2);
   });
 });

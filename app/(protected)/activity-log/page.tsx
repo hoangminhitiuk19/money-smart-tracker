@@ -1,9 +1,9 @@
 import { Prisma } from "@prisma/client";
 import Link from "next/link";
+import { after } from "next/server";
 import { Suspense } from "react";
 import {
-  activityRetentionCutoff,
-  deleteExpiredActivity,
+  requestActivityRetentionCleanup,
   retainedActivityWhere
 } from "@/lib/activity";
 import { requireAuth } from "@/lib/auth";
@@ -214,8 +214,9 @@ async function ActivityLogPageContent({
   const action = getParam(searchParams, "action");
   const page = parsePositiveInt(getParam(searchParams, "page"), 1);
   const now = new Date();
-  const cutoff = activityRetentionCutoff(now);
-  await deleteExpiredActivity(prisma, cutoff);
+  after(async () => {
+    await requestActivityRetentionCleanup(now);
+  });
   const where = retainedActivityWhere(user.id, action, now);
   const [logs, total] = await Promise.all([
     prisma.activityLog.findMany({

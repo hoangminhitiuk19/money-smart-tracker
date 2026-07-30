@@ -11,6 +11,7 @@ import { prisma } from "@/lib/prisma";
 
 const ACTIVITY_RETENTION_DAYS = 90;
 const MAX_ACTIVITY_DELETE_BATCH = 500;
+const ACTIVITY_CLEANUP_MINIMUM_INTERVAL_MS = 60 * 60 * 1000;
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export function changedFields<T extends Record<string, unknown>>(
@@ -80,6 +81,47 @@ export async function deleteExpiredActivity(
   });
   return result.count;
 }
+
+type ActivityRetentionCleanup = (cutoff: Date) => Promise<number>;
+
+export function createActivityRetentionCleanupController(
+  cleanup: ActivityRetentionCleanup,
+  options: { minimumIntervalMs?: number } = {}
+) {
+  const minimumIntervalMs = Math.max(
+    0,
+    options.minimumIntervalMs ?? ACTIVITY_CLEANUP_MINIMUM_INTERVAL_MS
+  );
+  let inFlight: Promise<boolean> | null = null;
+  let nextEligibleAt = 0;
+
+  return (now = new Date()): Promise<boolean> => {
+    if (inFlight) {
+      return inFlight;
+    }
+
+    if (now.getTime() < nextEligibleAt) {
+      return Promise.resolve(false);
+    }
+
+    nextEligibleAt = now.getTime() + minimumIntervalMs;
+    const request = cleanup(activityRetentionCutoff(now))
+      .then(() => true)
+      .catch(() => false);
+    inFlight = request;
+    void request.finally(() => {
+      if (inFlight === request) {
+        inFlight = null;
+      }
+    });
+    return request;
+  };
+}
+
+export const requestActivityRetentionCleanup =
+  createActivityRetentionCleanupController((cutoff) =>
+    deleteExpiredActivity(prisma, cutoff)
+  );
 
 type TransactionCreatedRecord = Pick<
   Transaction,
