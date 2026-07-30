@@ -124,6 +124,16 @@ async function createDirectRenewal(
   });
 }
 
+async function createOwnedCard(label: string) {
+  return prisma.moneySource.create({
+    data: {
+      userId: fixtures.context.userA.id,
+      name: `${label} ${randomUUID()}`,
+      type: MoneySourceType.CREDIT_CARD
+    }
+  });
+}
+
 async function installActivityFailure(userId: string) {
   const suffix = randomUUID().replaceAll("-", "");
   const functionName = `fail_renewal_activity_${suffix}`;
@@ -247,6 +257,64 @@ describe("canonical renewal payment workflow", () => {
 });
 
 describe("renewal CRUD and activity contracts", () => {
+  it("persists false for an unchecked eligible-card create FormData checkbox", async () => {
+    const card = await createOwnedCard("Unchecked create card");
+    const title = `Unchecked create renewal ${randomUUID()}`;
+    const formData = new FormData();
+    formData.set("title", title);
+    formData.set("amount", "10.00");
+    formData.set("transactionType", TransactionType.EXPENSE);
+    formData.set("fromMoneySourceId", card.id);
+    formData.set("frequency", RenewalFrequency.MONTHLY);
+    formData.set("nextDueDate", "2026-07-30");
+    formData.set("countTowardFeeWaiverPresent", "1");
+
+    await expect(createRenewal(formData)).resolves.toEqual({ ok: true });
+    await expect(
+      prisma.recurringPayment.findFirstOrThrow({
+        where: { userId: fixtures.context.userA.id, title }
+      })
+    ).resolves.toMatchObject({ countTowardFeeWaiver: false });
+  });
+
+  it("persists false when existing true is unchecked through update FormData", async () => {
+    const card = await createOwnedCard("Unchecked update card");
+    const renewal = await createDirectRenewal(fixtures.context.userA.id, {
+      fromMoneySourceId: card.id,
+      countTowardFeeWaiver: true
+    });
+    const formData = new FormData();
+    formData.set("countTowardFeeWaiverPresent", "1");
+
+    await expect(updateRenewal(renewal.id, formData)).resolves.toEqual({
+      ok: true
+    });
+    await expect(
+      prisma.recurringPayment.findUniqueOrThrow({
+        where: { id: renewal.id }
+      })
+    ).resolves.toMatchObject({ countTowardFeeWaiver: false });
+  });
+
+  it("retains true when partial update FormData omits checkbox and sentinel", async () => {
+    const card = await createOwnedCard("Omitted update card");
+    const renewal = await createDirectRenewal(fixtures.context.userA.id, {
+      fromMoneySourceId: card.id,
+      countTowardFeeWaiver: true
+    });
+    const formData = new FormData();
+    formData.set("title", `Renamed renewal ${randomUUID()}`);
+
+    await expect(updateRenewal(renewal.id, formData)).resolves.toEqual({
+      ok: true
+    });
+    await expect(
+      prisma.recurringPayment.findUniqueOrThrow({
+        where: { id: renewal.id }
+      })
+    ).resolves.toMatchObject({ countTowardFeeWaiver: true });
+  });
+
   it.each([TransactionType.REFUND, TransactionType.ADJUSTMENT])(
     "rejects %s on create and update without renewal or activity writes",
     async (transactionType) => {

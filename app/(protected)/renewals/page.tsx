@@ -272,6 +272,11 @@ function RenewalFormFields({
       </label>
       <label className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 md:col-span-2 md:mt-6">
         <input
+          name="countTowardFeeWaiverPresent"
+          type="hidden"
+          value="1"
+        />
+        <input
           defaultChecked={renewal?.countTowardFeeWaiver ?? false}
           name="countTowardFeeWaiver"
           type="checkbox"

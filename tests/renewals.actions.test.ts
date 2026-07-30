@@ -387,3 +387,106 @@ describe("createRenewal countTowardFeeWaiver defaults", () => {
     );
   });
 });
+
+function existingRenewalWithFeeWaiver(
+  countTowardFeeWaiver: boolean
+) {
+  return {
+    id: "renewal-1",
+    userId: mockUser.id,
+    title: "Card renewal",
+    description: null,
+    amount: 30 as any,
+    currency: "VND",
+    transactionType: TransactionType.EXPENSE,
+    qualityRating: null,
+    fromMoneySourceId: "ms-credit",
+    toMoneySourceId: null,
+    categoryId: null,
+    projectId: null,
+    countTowardFeeWaiver,
+    frequency: RenewalFrequency.MONTHLY,
+    intervalCount: 1,
+    nextDueDate: new Date("2026-02-01"),
+    reminderDaysBefore: 3,
+    autoCreateTransaction: false,
+    status: RenewalStatus.ACTIVE,
+    lastGeneratedDate: null,
+    createdAt: new Date("2026-01-01"),
+    updatedAt: new Date("2026-01-01")
+  };
+}
+
+describe("renewal fee-waiver checkbox FormData contract", () => {
+  it("treats a present sentinel with an unchecked create checkbox as false", async () => {
+    const formData = new FormData();
+    formData.set("title", "Unchecked card renewal");
+    formData.set("amount", "30.00");
+    formData.set("transactionType", TransactionType.EXPENSE);
+    formData.set("fromMoneySourceId", "ms-credit");
+    formData.set("frequency", RenewalFrequency.MONTHLY);
+    formData.set("nextDueDate", "2026-02-01");
+    formData.set("countTowardFeeWaiverPresent", "1");
+
+    await expect(createRenewal(formData)).resolves.toEqual({ ok: true });
+    expect(prisma.recurringPayment.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ countTowardFeeWaiver: false })
+      })
+    );
+  });
+
+  it("treats a checked FormData checkbox as an explicit true override", async () => {
+    const formData = new FormData();
+    formData.set("title", "Checked excluded-category renewal");
+    formData.set("amount", "30.00");
+    formData.set("transactionType", TransactionType.EXPENSE);
+    formData.set("fromMoneySourceId", "ms-credit");
+    formData.set("categoryId", "category-excluded");
+    formData.set("frequency", RenewalFrequency.MONTHLY);
+    formData.set("nextDueDate", "2026-02-01");
+    formData.set("countTowardFeeWaiverPresent", "1");
+    formData.set("countTowardFeeWaiver", "on");
+
+    await expect(createRenewal(formData)).resolves.toEqual({ ok: true });
+    expect(prisma.recurringPayment.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ countTowardFeeWaiver: true })
+      })
+    );
+  });
+
+  it("treats a present sentinel with an unchecked update checkbox as false", async () => {
+    vi.mocked(prisma.recurringPayment.findFirst).mockResolvedValue(
+      existingRenewalWithFeeWaiver(true)
+    );
+    const formData = new FormData();
+    formData.set("countTowardFeeWaiverPresent", "1");
+
+    await expect(updateRenewal("renewal-1", formData)).resolves.toEqual({
+      ok: true
+    });
+    expect(prisma.recurringPayment.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ countTowardFeeWaiver: false })
+      })
+    );
+  });
+
+  it("keeps the stored value when a partial FormData update truly omits both fields", async () => {
+    vi.mocked(prisma.recurringPayment.findFirst).mockResolvedValue(
+      existingRenewalWithFeeWaiver(true)
+    );
+    const formData = new FormData();
+    formData.set("title", "Renamed card renewal");
+
+    await expect(updateRenewal("renewal-1", formData)).resolves.toEqual({
+      ok: true
+    });
+    expect(prisma.recurringPayment.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ countTowardFeeWaiver: true })
+      })
+    );
+  });
+});

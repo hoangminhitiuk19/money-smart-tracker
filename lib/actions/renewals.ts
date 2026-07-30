@@ -156,6 +156,20 @@ function formCheckboxValue(formData: FormData, key: string) {
   return formData.get(key) === "on";
 }
 
+function optionalFormCheckboxValue(
+  formData: FormData,
+  key: string,
+  presenceKey: string
+) {
+  const value = formValue(formData, key);
+
+  if (value !== undefined) {
+    return value;
+  }
+
+  return formData.has(presenceKey) ? false : undefined;
+}
+
 function nullableFormValue(formData: FormData, key: string) {
   if (!formData.has(key)) {
     return undefined;
@@ -178,7 +192,11 @@ function parseRenewalInput(data: RenewalInput | FormData) {
       currency: formValue(data, "currency") || "VND",
       transactionType: formValue(data, "transactionType"),
       qualityRating: nullableFormValue(data, "qualityRating"),
-      countTowardFeeWaiver: formValue(data, "countTowardFeeWaiver"),
+      countTowardFeeWaiver: optionalFormCheckboxValue(
+        data,
+        "countTowardFeeWaiver",
+        "countTowardFeeWaiverPresent"
+      ),
       frequency: formValue(data, "frequency"),
       intervalCount: formValue(data, "intervalCount") || 1,
       nextDueDate: formValue(data, "nextDueDate"),
@@ -205,7 +223,11 @@ function parseRenewalUpdateInput(data: RenewalUpdateInput | FormData) {
       currency: formValue(data, "currency"),
       transactionType: formValue(data, "transactionType"),
       qualityRating: nullableFormValue(data, "qualityRating"),
-      countTowardFeeWaiver: formValue(data, "countTowardFeeWaiver"),
+      countTowardFeeWaiver: optionalFormCheckboxValue(
+        data,
+        "countTowardFeeWaiver",
+        "countTowardFeeWaiverPresent"
+      ),
       frequency: formValue(data, "frequency"),
       intervalCount: formValue(data, "intervalCount"),
       nextDueDate: formValue(data, "nextDueDate"),
