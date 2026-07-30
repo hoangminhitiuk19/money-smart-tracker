@@ -2,12 +2,16 @@ import { ProjectStatus } from "@prisma/client";
 import Link from "next/link";
 import { Suspense } from "react";
 import { getDashboardData } from "@/lib/actions/dashboard";
-import { requireAuth } from "@/lib/auth";
+import { getUserSettings } from "@/lib/actions/settings";
 import {
   decimal,
-  presentationNumber,
   type DecimalInput
 } from "@/lib/money";
+import {
+  formatUserDate,
+  formatUserMoney,
+  type UserFormatSettings
+} from "@/lib/user-format";
 import { Card } from "@/components/ui/Card";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatCard } from "@/components/ui/StatCard";
@@ -47,7 +51,11 @@ function endOfDay(date: Date) {
 }
 
 function inputDateValue(date: Date) {
-  return date.toISOString().slice(0, 10);
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0")
+  ].join("-");
 }
 
 function parseDateInput(value: string | undefined) {
@@ -67,15 +75,22 @@ function getWeekStart(today: Date) {
   return date;
 }
 
-function getPeriod(searchParams: SearchParams) {
+function getPeriod(searchParams: SearchParams, defaultPeriod: string) {
   const today = new Date();
   const periodParam = getParam(searchParams, "period");
+  const persistedPeriod =
+    defaultPeriod === "Week"
+      ? "week"
+      : defaultPeriod === "Year"
+        ? "year"
+        : "month";
   const period: PeriodKey =
     periodParam === "week" ||
+    periodParam === "month" ||
     periodParam === "year" ||
     periodParam === "custom"
       ? periodParam
-      : "month";
+      : persistedPeriod;
 
   if (period === "week") {
     const startDate = getWeekStart(today);
@@ -114,24 +129,8 @@ function getPeriod(searchParams: SearchParams) {
   };
 }
 
-function formatMoney(amount: DecimalInput, currency = "VND") {
-  return new Intl.NumberFormat("en-US", {
-    currency,
-    maximumFractionDigits: 2,
-    style: "currency"
-  }).format(presentationNumber(amount));
-}
-
 function formatPercent(amount: DecimalInput) {
   return `${decimal(amount).toDecimalPlaces(1).toFixed(1)}%`;
-}
-
-function formatDate(date: Date) {
-  return date.toLocaleDateString("en-US", {
-    day: "numeric",
-    month: "short",
-    year: "numeric"
-  });
 }
 
 function periodHref(period: PeriodKey) {
@@ -163,9 +162,21 @@ async function DashboardPageContent({
 }: {
   searchParams: SearchParams;
 }) {
-  await requireAuth();
-  const { period, startDate, endDate } = getPeriod(searchParams);
+  const { settings } = await getUserSettings();
+  const formatSettings: UserFormatSettings = {
+    defaultCurrency: settings.defaultCurrency,
+    dateFormat: settings.dateFormat as UserFormatSettings["dateFormat"],
+    numberFormat: settings.numberFormat as UserFormatSettings["numberFormat"]
+  };
+  const { period, startDate, endDate } = getPeriod(
+    searchParams,
+    settings.defaultDashboardPeriod
+  );
   const dashboard = await getDashboardData(startDate, endDate);
+  const formatMoney = (amount: DecimalInput, currency = settings.defaultCurrency) =>
+    formatUserMoney(amount, currency, formatSettings);
+  const formatDate = (date: Date | string) =>
+    formatUserDate(date, formatSettings);
   const activeProjects = dashboard.projects.filter(
     ({ project }) => project.status === ProjectStatus.ACTIVE
   );
@@ -176,8 +187,8 @@ async function DashboardPageContent({
       <div>
         <PageHeader title="Dashboard" />
         <p className="text-sm text-slate-600">
-          {formatDate(dashboard.period.startDate)} to{" "}
-          {formatDate(dashboard.period.endDate)}
+          {formatDate(inputDateValue(dashboard.period.startDate))} to{" "}
+          {formatDate(inputDateValue(dashboard.period.endDate))}
         </p>
       </div>
 

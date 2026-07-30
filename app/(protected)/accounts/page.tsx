@@ -6,13 +6,14 @@ import {
   listMoneySources,
   toggleMoneySourceActiveFormAction
 } from "@/lib/actions/money-sources";
-import { requireAuth } from "@/lib/auth";
+import { getUserSettings } from "@/lib/actions/settings";
 import { calculateAccountProjection } from "@/lib/calc/dashboard";
-import {
-  presentationNumber,
-  type DecimalInput
-} from "@/lib/money";
+import { type DecimalInput } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
+import {
+  formatUserMoney,
+  type UserFormatSettings
+} from "@/lib/user-format";
 import { MoneySourceForm } from "@/components/money-source-form";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -51,14 +52,6 @@ const sourceTypeVariants = {
   OTHER: "adjustment"
 } as const;
 
-function formatMoney(amount: DecimalInput, currency: string) {
-  return new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: 2,
-    style: "currency",
-    currency
-  }).format(presentationNumber(amount));
-}
-
 export default function AccountsPage() {
   return (
     <Suspense fallback={<AccountsLoading />}>
@@ -68,7 +61,7 @@ export default function AccountsPage() {
 }
 
 async function AccountsPageContent() {
-  const user = await requireAuth();
+  const { settings, user } = await getUserSettings();
   const [moneySources, transactions] = await Promise.all([
     listMoneySources(),
     prisma.transaction.findMany({
@@ -94,6 +87,13 @@ async function AccountsPageContent() {
       }
     })
   ]);
+  const formatSettings: UserFormatSettings = {
+    defaultCurrency: settings.defaultCurrency,
+    dateFormat: settings.dateFormat as UserFormatSettings["dateFormat"],
+    numberFormat: settings.numberFormat as UserFormatSettings["numberFormat"]
+  };
+  const formatMoney = (amount: DecimalInput, currency: string) =>
+    formatUserMoney(amount, currency, formatSettings);
 
   return (
     <div className="mx-auto max-w-6xl space-y-8">
@@ -113,7 +113,7 @@ async function AccountsPageContent() {
       </div>
 
       <div className="scroll-mt-6" id="add-account">
-        <MoneySourceForm />
+        <MoneySourceForm defaultCurrency={settings.defaultCurrency} />
       </div>
 
       {moneySources.length === 0 ? (

@@ -24,7 +24,10 @@ type SettingsFormProps = {
 const initialState: SettingsState = {};
 
 export function SettingsForm({ initialValues }: SettingsFormProps) {
-  const [state, formAction] = useActionState(updateUserSettings, initialState);
+  const [state, formAction, isPending] = useActionState(
+    updateUserSettings,
+    initialState
+  );
 
   return (
     <form action={formAction} className="space-y-6">
@@ -144,19 +147,35 @@ export function SettingsForm({ initialValues }: SettingsFormProps) {
         </div>
       </Card>
 
-      {state.error ? (
-        <p className="rounded-md border border-expense/20 bg-expense/10 px-3 py-2 text-sm text-expense">
-          {state.error}
-        </p>
-      ) : null}
-      {state.success ? (
-        <p className="rounded-md border border-income/20 bg-income/10 px-3 py-2 text-sm text-income">
-          {state.success}
-        </p>
-      ) : null}
+      <p
+        aria-atomic="true"
+        aria-live="assertive"
+        className={
+          state.error
+            ? "rounded-md border border-expense/20 bg-expense/10 px-3 py-2 text-sm text-expense"
+            : "sr-only"
+        }
+        role="alert"
+      >
+        {state.error}
+      </p>
+      <p
+        aria-atomic="true"
+        aria-live="polite"
+        className={
+          state.success
+            ? "rounded-md border border-income/20 bg-income/10 px-3 py-2 text-sm text-income"
+            : "sr-only"
+        }
+        role="status"
+      >
+        {state.success}
+      </p>
 
       <div className="flex justify-end">
-        <Button type="submit">Save Settings</Button>
+        <Button disabled={isPending} type="submit">
+          {isPending ? "Saving Settings..." : "Save Settings"}
+        </Button>
       </div>
     </form>
   );

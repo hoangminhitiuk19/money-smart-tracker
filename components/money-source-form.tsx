@@ -23,6 +23,7 @@ export type MoneySourceFormInitialValues = MoneySourceInput & {
 };
 
 type MoneySourceFormProps = {
+  defaultCurrency?: string;
   initialValues?: MoneySourceFormInitialValues;
 };
 
@@ -105,6 +106,7 @@ function GroupHeading({
 }
 
 export function MoneySourceForm({
+  defaultCurrency = "VND",
   initialValues
 }: MoneySourceFormProps) {
   const router = useRouter();
@@ -133,7 +135,7 @@ export function MoneySourceForm({
       type,
       providerName: nullableField(formData, "providerName"),
       displayIdentifier: nullableField(formData, "displayIdentifier"),
-      currency: String(formData.get("currency") || "VND"),
+      currency: String(formData.get("currency") || defaultCurrency),
       openingBalance: String(formData.get("openingBalance") || "0"),
       description: nullableField(formData, "description"),
       isActive
@@ -159,7 +161,9 @@ export function MoneySourceForm({
       annualFeeAmount: hasAnnualFee
         ? nullableField(formData, "annualFeeAmount")
         : null,
-      annualFeeCurrency: String(formData.get("annualFeeCurrency") || "VND"),
+      annualFeeCurrency: String(
+        formData.get("annualFeeCurrency") || defaultCurrency
+      ),
       annualFeeChargeDate: hasAnnualFee
         ? nullableField(formData, "annualFeeChargeDate")
         : null,
@@ -292,7 +296,7 @@ export function MoneySourceForm({
             <span className="text-sm font-medium text-slate-700">Currency</span>
             <Input
               className="mt-1 uppercase"
-              defaultValue={fieldValue(initialValues?.currency, "VND")}
+              defaultValue={fieldValue(initialValues?.currency, defaultCurrency)}
               name="currency"
               required
             />
@@ -506,7 +510,7 @@ export function MoneySourceForm({
                       className="mt-1 uppercase"
                       defaultValue={fieldValue(
                         initialValues?.annualFeeCurrency,
-                        "VND"
+                        defaultCurrency
                       )}
                       name="annualFeeCurrency"
                       required
@@ -692,11 +696,18 @@ export function MoneySourceForm({
           </>
         ) : null}
 
-        {error ? (
-          <p className="rounded-md border border-expense/20 bg-expense/10 px-3 py-2 text-sm text-expense">
-            {error}
-          </p>
-        ) : null}
+        <p
+          aria-atomic="true"
+          aria-live="assertive"
+          className={
+            error
+              ? "rounded-md border border-expense/20 bg-expense/10 px-3 py-2 text-sm text-expense"
+              : "sr-only"
+          }
+          role="alert"
+        >
+          {error}
+        </p>
 
         <div className="flex justify-end">
           <Button

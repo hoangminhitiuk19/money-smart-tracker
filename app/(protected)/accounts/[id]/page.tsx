@@ -3,17 +3,21 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { getMoneySource } from "@/lib/actions/money-sources";
+import { getUserSettings } from "@/lib/actions/settings";
 import { buildAccountDetailTransactionScope } from "@/lib/account-transaction-scope";
-import { requireAuth } from "@/lib/auth";
 import { calculateFeeWaiverState } from "@/lib/calc/credit-card";
 import { calculateAccountProjection } from "@/lib/calc/dashboard";
 import {
   clampedPresentationPercent,
   decimal,
-  presentationNumber,
   type DecimalInput
 } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
+import {
+  formatUserDate,
+  formatUserMoney,
+  type UserFormatSettings
+} from "@/lib/user-format";
 import { MoneySourceForm } from "@/components/money-source-form";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
@@ -30,24 +34,8 @@ const typeLabels: Record<MoneySourceType, string> = {
   OTHER: "Other"
 };
 
-function formatMoney(amount: DecimalInput, currency: string) {
-  return new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: 2,
-    style: "currency",
-    currency
-  }).format(presentationNumber(amount));
-}
-
 function formatPercent(amount: DecimalInput) {
   return `${clampedPresentationPercent(amount).toFixed(0)}%`;
-}
-
-function formatDate(date: Date) {
-  return date.toLocaleDateString("en-US", {
-    day: "numeric",
-    month: "short",
-    year: "numeric"
-  });
 }
 
 function dateInputValue(date: Date | null) {
@@ -122,7 +110,7 @@ async function AccountDetailPageContent({
 }: {
   id: string;
 }) {
-  const user = await requireAuth();
+  const { settings, user } = await getUserSettings();
   const source = await getMoneySource(id).catch(() => notFound());
   const isCreditCard = source.type === MoneySourceType.CREDIT_CARD;
 
@@ -181,6 +169,15 @@ async function AccountDetailPageContent({
 
     return isExpense ? total.plus(decimal(transaction.amount)) : total;
   }, decimal(0));
+  const formatSettings: UserFormatSettings = {
+    defaultCurrency: settings.defaultCurrency,
+    dateFormat: settings.dateFormat as UserFormatSettings["dateFormat"],
+    numberFormat: settings.numberFormat as UserFormatSettings["numberFormat"]
+  };
+  const formatMoney = (amount: DecimalInput, currency: string) =>
+    formatUserMoney(amount, currency, formatSettings);
+  const formatDate = (date: Date | string) =>
+    formatUserDate(date, formatSettings);
 
   return (
     <div className="mx-auto max-w-5xl space-y-8">
@@ -339,6 +336,7 @@ async function AccountDetailPageContent({
       ) : null}
 
       <MoneySourceForm
+        defaultCurrency={settings.defaultCurrency}
         initialValues={{
           id: source.id,
           name: source.name,
@@ -395,7 +393,7 @@ async function AccountDetailPageContent({
                 {recentTransactions.map((transaction) => (
                   <tr className="transition hover:bg-slate-50/80" key={transaction.id}>
                     <td className="px-4 py-3 text-slate-600">
-                      {transaction.transactionDate.toLocaleDateString("en-US")}
+                      {formatDate(transaction.transactionDate)}
                     </td>
                     <td className="px-4 py-3 font-medium text-slate-950">
                       {transaction.title}

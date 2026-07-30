@@ -12,9 +12,9 @@ import {
   loadUpcomingRenewalsTotal,
   type ReportFilters
 } from "@/lib/actions/reports";
+import { getUserSettings } from "@/lib/actions/settings";
 import { QualityRating, TransactionType } from "@prisma/client";
 import { Suspense } from "react";
-import { requireAuth } from "@/lib/auth";
 import {
   decimal,
   moneyText,
@@ -23,6 +23,7 @@ import {
 import { ReportsClient } from "@/components/reports/ReportsClient";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { parseTransactionDateRange } from "@/lib/date-range";
+import type { UserFormatSettings } from "@/lib/user-format";
 import ReportsLoading from "./loading";
 
 type SearchParams = Record<string, string | string[] | undefined>;
@@ -137,7 +138,7 @@ async function ReportsPageContent({
 }: {
   searchParams: SearchParams;
 }) {
-  await requireAuth();
+  const { settings } = await getUserSettings();
   const filters = getReportFilters(searchParams) satisfies ReportFilters;
   const [
     filterOptions,
@@ -197,6 +198,12 @@ async function ReportsPageContent({
         }))}
         filterOptions={filterOptions}
         filters={filters}
+        formatSettings={{
+          defaultCurrency: settings.defaultCurrency,
+          dateFormat: settings.dateFormat as UserFormatSettings["dateFormat"],
+          numberFormat:
+            settings.numberFormat as UserFormatSettings["numberFormat"]
+        }}
         goalProgress={goalProgress.map(({ goal, progress }) => ({
           id: goal.id,
           name: goal.name,

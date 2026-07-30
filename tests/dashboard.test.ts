@@ -16,6 +16,7 @@ import {
 } from "@/lib/calc/dashboard";
 
 const dashboardMocks = vi.hoisted(() => ({
+  getUserSettings: vi.fn(),
   requireAuth: vi.fn(),
   transactionFindMany: vi.fn(),
   savingGoalFindMany: vi.fn(),
@@ -25,6 +26,9 @@ const dashboardMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/auth", () => ({ requireAuth: dashboardMocks.requireAuth }));
+vi.mock("@/lib/actions/settings", () => ({
+  getUserSettings: dashboardMocks.getUserSettings
+}));
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     transaction: { findMany: dashboardMocks.transactionFindMany },
@@ -37,6 +41,16 @@ vi.mock("@/lib/prisma", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useRealTimers();
+  dashboardMocks.getUserSettings.mockResolvedValue({
+    settings: {
+      defaultCurrency: "VND",
+      dateFormat: "DD/MM/YYYY",
+      numberFormat: "1,000,000",
+      defaultDashboardPeriod: "Month"
+    },
+    user: { id: "dashboard-user" }
+  });
   dashboardMocks.requireAuth.mockResolvedValue({ id: "dashboard-user" });
   dashboardMocks.transactionFindMany.mockResolvedValue([]);
   dashboardMocks.savingGoalFindMany.mockResolvedValue([]);
@@ -96,9 +110,13 @@ type DashboardContentElement = ReactElement<{
   }) => Promise<ReactElement>;
 };
 
-async function renderDashboardMarkup() {
+async function renderDashboardMarkup(
+  searchParams: Record<string, string | string[] | undefined> = {
+    period: "month"
+  }
+) {
   const shell = (await DashboardPage({
-    searchParams: Promise.resolve({ period: "month" })
+    searchParams: Promise.resolve(searchParams)
   })) as ReactElement<{ children: DashboardContentElement }>;
   const contentElement = shell.props.children;
   const content = await contentElement.type(contentElement.props);
@@ -479,5 +497,109 @@ describe("dashboard horizon labels", () => {
 
     expect(markup.match(/Selected period/g) ?? []).toHaveLength(4);
     expect(markup.match(/Current tracked estimate/g) ?? []).toHaveLength(2);
+  });
+});
+
+describe("dashboard persisted display settings", () => {
+  it("uses the persisted period when the URL omits period", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T12:00:00.000Z"));
+    dashboardMocks.getUserSettings.mockResolvedValueOnce({
+      settings: {
+        defaultCurrency: "VND",
+        dateFormat: "DD/MM/YYYY",
+        numberFormat: "1,000,000",
+        defaultDashboardPeriod: "Year"
+      },
+      user: { id: "dashboard-user" }
+    });
+
+    await renderDashboardMarkup({});
+
+    expect(dashboardMocks.transactionFindMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        userId: "dashboard-user",
+        transactionDate: {
+          gte: new Date("2026-01-01T00:00:00.000Z"),
+          lt: new Date("2027-01-01T00:00:00.000Z")
+        }
+      },
+      orderBy: { transactionDate: "desc" }
+    });
+  });
+
+  it("lets an explicit URL period override the persisted period", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T12:00:00.000Z"));
+    dashboardMocks.getUserSettings.mockResolvedValueOnce({
+      settings: {
+        defaultCurrency: "VND",
+        dateFormat: "DD/MM/YYYY",
+        numberFormat: "1,000,000",
+        defaultDashboardPeriod: "Year"
+      },
+      user: { id: "dashboard-user" }
+    });
+
+    await renderDashboardMarkup({ period: "week" });
+
+    expect(dashboardMocks.transactionFindMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        userId: "dashboard-user",
+        transactionDate: {
+          gte: new Date("2026-07-13T00:00:00.000Z"),
+          lt: new Date("2026-07-20T00:00:00.000Z")
+        }
+      },
+      orderBy: { transactionDate: "desc" }
+    });
+  });
+
+  it("lets an explicit month period override a persisted year default", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T12:00:00.000Z"));
+    dashboardMocks.getUserSettings.mockResolvedValueOnce({
+      settings: {
+        defaultCurrency: "VND",
+        dateFormat: "DD/MM/YYYY",
+        numberFormat: "1,000,000",
+        defaultDashboardPeriod: "Year"
+      },
+      user: { id: "dashboard-user" }
+    });
+
+    await renderDashboardMarkup({ period: "month" });
+
+    expect(dashboardMocks.transactionFindMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        userId: "dashboard-user",
+        transactionDate: {
+          gte: new Date("2026-07-01T00:00:00.000Z"),
+          lt: new Date("2026-08-01T00:00:00.000Z")
+        }
+      },
+      orderBy: { transactionDate: "desc" }
+    });
+  });
+
+  it("formats the selected range with the persisted date format", async () => {
+    dashboardMocks.getUserSettings.mockResolvedValueOnce({
+      settings: {
+        defaultCurrency: "VND",
+        dateFormat: "YYYY-MM-DD",
+        numberFormat: "1.000.000",
+        defaultDashboardPeriod: "Month"
+      },
+      user: { id: "dashboard-user" }
+    });
+
+    const markup = await renderDashboardMarkup({
+      period: "custom",
+      startDate: "2026-07-01",
+      endDate: "2026-07-30"
+    });
+
+    expect(markup).toContain("2026-07-01 to 2026-07-30");
+    expect(dashboardMocks.getUserSettings).toHaveBeenCalledTimes(1);
   });
 });

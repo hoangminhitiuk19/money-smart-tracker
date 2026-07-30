@@ -7,14 +7,17 @@ import {
   listProjects,
   updateProjectFormAction
 } from "@/lib/actions/projects";
-import { requireAuth } from "@/lib/auth";
+import { getUserSettings } from "@/lib/actions/settings";
 import { calculateProjectSummary } from "@/lib/calc/projects";
 import {
   decimal,
-  presentationNumber,
   type DecimalInput
 } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
+import {
+  formatUserMoney,
+  type UserFormatSettings
+} from "@/lib/user-format";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -32,14 +35,6 @@ const statusVariants = {
   PAUSED: "paused"
 } as const;
 
-function formatMoney(amount: DecimalInput) {
-  return new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: 2,
-    style: "currency",
-    currency: "VND"
-  }).format(presentationNumber(amount));
-}
-
 function formatRoi(roi: DecimalInput | null) {
   return roi === null
     ? "N/A"
@@ -55,7 +50,7 @@ export default function ProjectsPage() {
 }
 
 async function ProjectsPageContent() {
-  const user = await requireAuth();
+  const { settings, user } = await getUserSettings();
   const [projects, transactions] = await Promise.all([
     listProjects(),
     prisma.transaction.findMany({
@@ -71,6 +66,13 @@ async function ProjectsPageContent() {
       }
     })
   ]);
+  const formatSettings: UserFormatSettings = {
+    defaultCurrency: settings.defaultCurrency,
+    dateFormat: settings.dateFormat as UserFormatSettings["dateFormat"],
+    numberFormat: settings.numberFormat as UserFormatSettings["numberFormat"]
+  };
+  const formatMoney = (amount: DecimalInput) =>
+    formatUserMoney(amount, settings.defaultCurrency, formatSettings);
 
   return (
     <div className="mx-auto max-w-6xl space-y-8">

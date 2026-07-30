@@ -29,6 +29,10 @@ import {
   presentationNumber,
   type DecimalInput
 } from "@/lib/money";
+import {
+  formatUserMoney,
+  type UserFormatSettings
+} from "@/lib/user-format";
 
 type MoneyPoint = {
   period: string;
@@ -106,6 +110,7 @@ type ReportFilterOptions = {
 };
 
 type ReportsClientProps = {
+  formatSettings: UserFormatSettings;
   filters: ReportFilterState;
   filterOptions: ReportFilterOptions;
   incomeVsExpense: MoneyPoint[];
@@ -120,7 +125,9 @@ type ReportsClientProps = {
   recurringExpensePerMonth: MoneyPoint[];
 };
 
-type CurrencyTooltipProps = Partial<TooltipContentProps>;
+type CurrencyTooltipProps = Partial<TooltipContentProps> & {
+  formatSettings: UserFormatSettings;
+};
 
 const chartColors = [
   "#0f766e",
@@ -149,14 +156,6 @@ type TabId = (typeof tabs)[number]["id"];
 
 const transactionTypes = Object.values(TransactionType);
 const qualityRatings = Object.values(QualityRating);
-
-function formatMoney(amount: DecimalInput, currency = "VND") {
-  return new Intl.NumberFormat("en-US", {
-    currency,
-    maximumFractionDigits: 0,
-    style: "currency"
-  }).format(presentationNumber(amount));
-}
 
 function formatPercent(amount: DecimalInput) {
   return `${presentationNumber(amount).toFixed(1)}%`;
@@ -209,7 +208,12 @@ function ReportPanel({
   return <Card title={title}>{children}</Card>;
 }
 
-function CurrencyTooltip({ active, payload, label }: CurrencyTooltipProps) {
+function CurrencyTooltip({
+  active,
+  formatSettings,
+  payload,
+  label
+}: CurrencyTooltipProps) {
   if (!active || !payload?.length) {
     return null;
   }
@@ -220,10 +224,12 @@ function CurrencyTooltip({ active, payload, label }: CurrencyTooltipProps) {
       {payload.map((item, index) => (
         <p className="text-slate-600" key={String(item.dataKey ?? item.name ?? index)}>
           {item.name}:{" "}
-          {formatMoney(
+          {formatUserMoney(
             String(
               item.payload?.[`${String(item.dataKey)}Text`] ?? item.value ?? 0
-            )
+            ),
+            formatSettings.defaultCurrency,
+            formatSettings
           )}
         </p>
       ))}
@@ -232,9 +238,11 @@ function CurrencyTooltip({ active, payload, label }: CurrencyTooltipProps) {
 }
 
 function TotalTable({
+  formatSettings,
   label,
   rows
 }: {
+  formatSettings: UserFormatSettings;
   label: string;
   rows: Array<{ name: string; total: number; totalText: string; count?: number }>;
 }) {
@@ -256,7 +264,11 @@ function TotalTable({
               </td>
               <td className="px-4 py-3 text-slate-600">{row.count ?? "-"}</td>
               <td className="px-4 py-3 text-right font-semibold text-slate-950">
-                {formatMoney(row.totalText)}
+                {formatUserMoney(
+                  row.totalText,
+                  formatSettings.defaultCurrency,
+                  formatSettings
+                )}
               </td>
             </tr>
           ))}
@@ -516,6 +528,7 @@ export function ReportsClient({
   feeWaivers,
   filterOptions,
   filters,
+  formatSettings,
   goalProgress,
   incomeVsExpense,
   projectProfitLoss,
@@ -524,6 +537,10 @@ export function ReportsClient({
   spendingBySource,
   upcomingRenewalsByMonth
 }: ReportsClientProps) {
+  const formatMoney = (
+    amount: DecimalInput,
+    currency = formatSettings.defaultCurrency
+  ) => formatUserMoney(amount, currency, formatSettings);
   const [activeTab, setActiveTab] = useState<TabId>("income-expense");
   const incomeExpenseChartData = useMemo(
     () =>
@@ -643,7 +660,9 @@ export function ReportsClient({
                     formatMoney(presentationNumber(value))
                   }
                 />
-                <Tooltip content={<CurrencyTooltip />} />
+                <Tooltip
+                  content={<CurrencyTooltip formatSettings={formatSettings} />}
+                />
                 <Legend />
                 <Line
                   dataKey="income"
@@ -686,12 +705,18 @@ export function ReportsClient({
                     />
                   ))}
                 </Pie>
-                <Tooltip content={<CurrencyTooltip />} />
+                <Tooltip
+                  content={<CurrencyTooltip formatSettings={formatSettings} />}
+                />
                 <Legend />
               </PieChart>
             </ResponsiveContainer>
           </div>
-          <TotalTable label="Category" rows={categoryChartData} />
+          <TotalTable
+            formatSettings={formatSettings}
+            label="Category"
+            rows={categoryChartData}
+          />
         </ReportPanel>
       ) : null}
 
@@ -716,12 +741,18 @@ export function ReportsClient({
                     />
                   ))}
                 </Pie>
-                <Tooltip content={<CurrencyTooltip />} />
+                <Tooltip
+                  content={<CurrencyTooltip formatSettings={formatSettings} />}
+                />
                 <Legend />
               </PieChart>
             </ResponsiveContainer>
           </div>
-          <TotalTable label="Rating" rows={qualityChartData} />
+          <TotalTable
+            formatSettings={formatSettings}
+            label="Rating"
+            rows={qualityChartData}
+          />
         </ReportPanel>
       ) : null}
 
@@ -770,7 +801,9 @@ export function ReportsClient({
                     formatMoney(presentationNumber(value))
                   }
                 />
-                <Tooltip content={<CurrencyTooltip />} />
+                <Tooltip
+                  content={<CurrencyTooltip formatSettings={formatSettings} />}
+                />
                 <Legend />
                 <Bar dataKey="totalIncome" fill="#16a34a" name="Income" />
                 <Bar dataKey="totalExpense" fill="#dc2626" name="Expense" />
@@ -830,7 +863,9 @@ export function ReportsClient({
                     formatMoney(presentationNumber(value))
                   }
                 />
-                <Tooltip content={<CurrencyTooltip />} />
+                <Tooltip
+                  content={<CurrencyTooltip formatSettings={formatSettings} />}
+                />
                 <Bar dataKey="total" fill="#0f766e" name="Total" />
               </BarChart>
             </ResponsiveContainer>
@@ -917,7 +952,9 @@ export function ReportsClient({
                     formatMoney(presentationNumber(value))
                   }
                 />
-                <Tooltip content={<CurrencyTooltip />} />
+                <Tooltip
+                  content={<CurrencyTooltip formatSettings={formatSettings} />}
+                />
                 <Bar dataKey="total" fill="#f97316" name="Total" />
               </BarChart>
             </ResponsiveContainer>
@@ -940,7 +977,9 @@ export function ReportsClient({
                     formatMoney(presentationNumber(value))
                   }
                 />
-                <Tooltip content={<CurrencyTooltip />} />
+                <Tooltip
+                  content={<CurrencyTooltip formatSettings={formatSettings} />}
+                />
                 <Bar dataKey="total" fill="#9333ea" name="Total" />
               </BarChart>
             </ResponsiveContainer>

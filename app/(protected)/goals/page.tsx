@@ -7,12 +7,17 @@ import {
   listGoals,
   updateGoalFormAction
 } from "@/lib/actions/goals";
+import { getUserSettings } from "@/lib/actions/settings";
 import { calculateGoalProgress } from "@/lib/calc/goals";
 import {
   decimal,
-  presentationNumber,
   type DecimalInput
 } from "@/lib/money";
+import {
+  formatUserDate,
+  formatUserMoney,
+  type UserFormatSettings
+} from "@/lib/user-format";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -31,14 +36,6 @@ const statusVariants = {
   PAUSED: "paused"
 } as const;
 
-function formatMoney(amount: DecimalInput, currency: string) {
-  return new Intl.NumberFormat("en-US", {
-    currency,
-    maximumFractionDigits: 2,
-    style: "currency"
-  }).format(presentationNumber(amount));
-}
-
 function formatDateInput(date: Date | null) {
   return date ? date.toISOString().slice(0, 10) : "";
 }
@@ -52,7 +49,17 @@ export default function GoalsPage() {
 }
 
 async function GoalsPageContent() {
-  const goals = await listGoals();
+  const [{ settings }, goals] = await Promise.all([
+    getUserSettings(),
+    listGoals()
+  ]);
+  const formatSettings: UserFormatSettings = {
+    defaultCurrency: settings.defaultCurrency,
+    dateFormat: settings.dateFormat as UserFormatSettings["dateFormat"],
+    numberFormat: settings.numberFormat as UserFormatSettings["numberFormat"]
+  };
+  const formatMoney = (amount: DecimalInput, currency: string) =>
+    formatUserMoney(amount, currency, formatSettings);
 
   return (
     <div className="mx-auto max-w-6xl space-y-8">
@@ -98,7 +105,7 @@ async function GoalsPageContent() {
             </span>
             <Input
               className="mt-1 uppercase"
-              defaultValue="VND"
+              defaultValue={settings.defaultCurrency}
               name="currency"
               required
             />
@@ -171,7 +178,7 @@ async function GoalsPageContent() {
                     </Link>
                     {goal.deadline ? (
                       <p className="mt-1 text-sm text-slate-600">
-                        Deadline {goal.deadline.toLocaleDateString("en-US")}
+                        Deadline {formatUserDate(goal.deadline, formatSettings)}
                       </p>
                     ) : null}
                   </div>

@@ -3,6 +3,7 @@ import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ReportsPage from "@/app/(protected)/reports/page";
+import { ReportsClient } from "@/components/reports/ReportsClient";
 
 const reportPageMocks = vi.hoisted(() => ({
   loadCreditCardDebtReport: vi.fn(),
@@ -16,10 +17,14 @@ const reportPageMocks = vi.hoisted(() => ({
   loadSpendingBySource: vi.fn(),
   loadSpendingQualityBreakdown: vi.fn(),
   loadUpcomingRenewalsTotal: vi.fn(),
+  getUserSettings: vi.fn(),
   requireAuth: vi.fn()
 }));
 
 vi.mock("@/lib/auth", () => ({ requireAuth: reportPageMocks.requireAuth }));
+vi.mock("@/lib/actions/settings", () => ({
+  getUserSettings: reportPageMocks.getUserSettings
+}));
 vi.mock("@/lib/actions/reports", () => ({
   loadCreditCardDebtReport: reportPageMocks.loadCreditCardDebtReport,
   loadExpenseByCategory: reportPageMocks.loadExpenseByCategory,
@@ -63,17 +68,55 @@ type ReportsContentElement = ReactElement<{
 };
 
 async function renderReportsMarkup() {
+  return renderToStaticMarkup(await getReportsContent());
+}
+
+async function getReportsContent() {
   const shell = (await ReportsPage({
     searchParams: Promise.resolve(searchParams)
   })) as ReactElement<{ children: ReportsContentElement }>;
   const contentElement = shell.props.children;
-  const content = await contentElement.type(contentElement.props);
-  return renderToStaticMarkup(content);
+  return contentElement.type(contentElement.props);
+}
+
+function findReportsClient(
+  element: ReactElement
+): ReactElement<{ formatSettings?: unknown }> | null {
+  if (element.type === ReportsClient) {
+    return element as ReactElement<{ formatSettings?: unknown }>;
+  }
+
+  const children = (element.props as { children?: unknown }).children;
+  const candidates = Array.isArray(children) ? children : [children];
+  for (const candidate of candidates) {
+    if (
+      candidate &&
+      typeof candidate === "object" &&
+      "type" in candidate &&
+      "props" in candidate
+    ) {
+      const match = findReportsClient(candidate as ReactElement);
+      if (match) {
+        return match;
+      }
+    }
+  }
+
+  return null;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
   reportPageMocks.requireAuth.mockResolvedValue({ id: "report-user" });
+  reportPageMocks.getUserSettings.mockResolvedValue({
+    settings: {
+      defaultCurrency: "USD",
+      dateFormat: "YYYY-MM-DD",
+      numberFormat: "1.000.000",
+      defaultDashboardPeriod: "Year"
+    },
+    user: { id: "report-user" }
+  });
   reportPageMocks.loadCreditCardDebtReport.mockResolvedValue([]);
   reportPageMocks.loadExpenseByCategory.mockResolvedValue([]);
   reportPageMocks.loadFeeWaiverReport.mockResolvedValue([]);
@@ -156,5 +199,17 @@ describe("reports filter URL state", () => {
     expect(markup).toContain('href="/reports"');
     expect(markup).toContain("Reset filters");
     expect(markup).toContain('href="#report-filters"');
+  });
+
+  it("loads persisted display settings once and passes them to the report client", async () => {
+    const content = await getReportsContent();
+    const reportsClient = findReportsClient(content);
+
+    expect(reportsClient?.props.formatSettings).toEqual({
+      defaultCurrency: "USD",
+      dateFormat: "YYYY-MM-DD",
+      numberFormat: "1.000.000"
+    });
+    expect(reportPageMocks.getUserSettings).toHaveBeenCalledTimes(1);
   });
 });

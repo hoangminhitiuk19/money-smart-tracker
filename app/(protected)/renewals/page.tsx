@@ -28,6 +28,13 @@ import {
   skipRenewalCycleFormAction,
   updateRenewalFormAction
 } from "@/lib/actions/renewals";
+import { getUserSettings } from "@/lib/actions/settings";
+import type { DecimalInput } from "@/lib/money";
+import {
+  formatUserDate,
+  formatUserMoney,
+  type UserFormatSettings
+} from "@/lib/user-format";
 import RenewalsLoading from "./loading";
 
 type SearchParams = Record<string, string | string[] | undefined>;
@@ -59,14 +66,6 @@ function parseStatus(value: string | undefined) {
     : RenewalStatus.ACTIVE;
 }
 
-function formatMoney(amount: unknown, currency: string) {
-  return new Intl.NumberFormat("en-US", {
-    currency,
-    maximumFractionDigits: 2,
-    style: "currency"
-  }).format(Number(amount));
-}
-
 function formatDateInput(date: Date | null) {
   return date ? date.toISOString().slice(0, 10) : "";
 }
@@ -94,11 +93,13 @@ function renewalCadence(renewal: RenewalWithRelations) {
 
 function RenewalFormFields({
   categories,
+  defaultCurrency,
   moneySources,
   projects,
   renewal
 }: {
   categories: CategoryOption[];
+  defaultCurrency: string;
   moneySources: MoneySourceOption[];
   projects: ProjectOption[];
   renewal?: RenewalWithRelations;
@@ -125,7 +126,7 @@ function RenewalFormFields({
         <span className="text-sm font-medium text-slate-700">Currency</span>
         <Input
           className="mt-1 uppercase"
-          defaultValue={renewal?.currency ?? "VND"}
+          defaultValue={renewal?.currency ?? defaultCurrency}
           name="currency"
           required
         />
@@ -299,11 +300,13 @@ function RenewalFormFields({
 
 function RenewalRow({
   categories,
+  formatSettings,
   moneySources,
   projects,
   renewal
 }: {
   categories: CategoryOption[];
+  formatSettings: UserFormatSettings;
   moneySources: MoneySourceOption[];
   projects: ProjectOption[];
   renewal: RenewalWithRelations;
@@ -315,6 +318,8 @@ function RenewalRow({
   const cancelAction = cancelRenewalFormAction.bind(null, renewal.id);
   const updateAction = updateRenewalFormAction.bind(null, renewal.id);
   const dueInDays = daysUntil(renewal.nextDueDate);
+  const formatMoney = (amount: DecimalInput, currency: string) =>
+    formatUserMoney(amount, currency, formatSettings);
 
   return (
     <Card hover padded={false} className="p-4">
@@ -334,7 +339,7 @@ function RenewalRow({
             {renewal.transactionType} &middot; {renewalCadence(renewal)}
           </p>
           <p className="mt-1 text-sm text-slate-600">
-            Due {renewal.nextDueDate.toLocaleDateString("en-US")} ({dueInDays}{" "}
+            Due {formatUserDate(renewal.nextDueDate, formatSettings)} ({dueInDays}{" "}
             days)
           </p>
           <p className="mt-1 text-xs text-slate-500">
@@ -413,6 +418,7 @@ function RenewalRow({
         <form action={updateAction} className="mt-3 space-y-3">
           <RenewalFormFields
             categories={categories}
+            defaultCurrency={formatSettings.defaultCurrency}
             moneySources={moneySources}
             projects={projects}
             renewal={renewal}
@@ -448,14 +454,27 @@ async function RenewalsPageContent({
   searchParams: SearchParams;
 }) {
   const selectedStatus = parseStatus(getParam(searchParams, "status"));
-  const [renewals, upcomingRenewals, categories, moneySources, projects] =
+  const [
+    { settings },
+    renewals,
+    upcomingRenewals,
+    categories,
+    moneySources,
+    projects
+  ] =
     await Promise.all([
+      getUserSettings(),
       listRenewals({ status: selectedStatus }),
       getUpcomingRenewals(),
       listCategories(),
       listMoneySources(),
       listProjects()
     ]);
+  const formatSettings: UserFormatSettings = {
+    defaultCurrency: settings.defaultCurrency,
+    dateFormat: settings.dateFormat as UserFormatSettings["dateFormat"],
+    numberFormat: settings.numberFormat as UserFormatSettings["numberFormat"]
+  };
 
   return (
     <div className="mx-auto max-w-7xl space-y-8">
@@ -478,6 +497,7 @@ async function RenewalsPageContent({
         <form action={createRenewalFormAction} className="mt-4 space-y-3">
           <RenewalFormFields
             categories={categories}
+            defaultCurrency={settings.defaultCurrency}
             moneySources={moneySources}
             projects={projects}
           />
@@ -510,6 +530,7 @@ async function RenewalsPageContent({
             upcomingRenewals.map((renewal) => (
               <RenewalRow
                 categories={categories}
+                formatSettings={formatSettings}
                 key={renewal.id}
                 moneySources={moneySources}
                 projects={projects}
@@ -557,6 +578,7 @@ async function RenewalsPageContent({
             {renewals.map((renewal) => (
               <RenewalRow
                 categories={categories}
+                formatSettings={formatSettings}
                 key={renewal.id}
                 moneySources={moneySources}
                 projects={projects}
