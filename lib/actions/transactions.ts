@@ -3,6 +3,7 @@
 import {
   AdjustmentDirection,
   AdjustmentTarget,
+  MoneySourceType,
   Prisma,
   QualityRating,
   TransactionType
@@ -21,17 +22,78 @@ import {
   RATE_LIMIT_MESSAGE
 } from "@/lib/security/rate-limit";
 
-const optionalTextSchema = z
-  .string()
-  .trim()
+const nullableTextSchema = z
+  .union([z.string(), z.null()])
   .optional()
-  .transform((value) => (value ? value : undefined));
+  .transform((value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
 
-const optionalIdSchema = z
-  .string()
-  .trim()
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  });
+
+const nullableIdSchema = z
+  .union([z.string(), z.null()])
   .optional()
-  .transform((value) => (value ? value : undefined));
+  .transform((value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  });
+
+const maxDecimal18WithScale2 = new Prisma.Decimal("9999999999999999.99");
+const positiveDecimalSchema = z
+  .union([z.string(), z.number(), z.instanceof(Prisma.Decimal)])
+  .transform((value, context) => {
+    const text = typeof value === "string" ? value.trim() : value.toString();
+    let amount: Prisma.Decimal;
+
+    try {
+      amount = new Prisma.Decimal(text);
+    } catch {
+      context.addIssue({
+        code: "custom",
+        message: "Enter a valid decimal amount."
+      });
+      return z.NEVER;
+    }
+
+    if (
+      !text ||
+      !amount.isFinite() ||
+      !amount.greaterThan(0) ||
+      amount.decimalPlaces() > 2 ||
+      amount.greaterThan(maxDecimal18WithScale2)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Amount must be a positive Decimal(18,2) value."
+      });
+      return z.NEVER;
+    }
+
+    return text;
+  });
+
+const nullableQualityRatingSchema = z
+  .union([z.nativeEnum(QualityRating), z.literal(""), z.null()])
+  .optional()
+  .transform((value) => (value === "" ? null : value));
+
+const nullableAdjustmentDirectionSchema = z
+  .union([z.nativeEnum(AdjustmentDirection), z.literal(""), z.null()])
+  .optional()
+  .transform((value) => (value === "" ? null : value));
+
+const nullableAdjustmentTargetSchema = z
+  .union([z.nativeEnum(AdjustmentTarget), z.literal(""), z.null()])
+  .optional()
+  .transform((value) => (value === "" ? null : value));
 
 const optionalBooleanSchema = z.preprocess((value) => {
   if (value === undefined || value === null || value === "") {
@@ -51,31 +113,22 @@ const optionalBooleanSchema = z.preprocess((value) => {
 
 const transactionSchema = z.object({
   type: z.nativeEnum(TransactionType),
-  amount: z.coerce.number().positive(),
+  amount: positiveDecimalSchema,
   currency: z.string().trim().min(1).default("VND"),
   title: z.string().trim().min(1),
-  description: optionalTextSchema,
+  description: nullableTextSchema,
   transactionDate: z.coerce.date(),
-  categoryId: optionalIdSchema,
-  qualityRating: z
-    .nativeEnum(QualityRating)
-    .optional()
-    .or(z.literal("").transform(() => undefined)),
-  fromMoneySourceId: optionalIdSchema,
-  toMoneySourceId: optionalIdSchema,
-  adjustedMoneySourceId: optionalIdSchema,
-  adjustmentDirection: z
-    .nativeEnum(AdjustmentDirection)
-    .optional()
-    .or(z.literal("").transform(() => undefined)),
-  adjustmentTarget: z
-    .nativeEnum(AdjustmentTarget)
-    .optional()
-    .or(z.literal("").transform(() => undefined)),
-  projectId: optionalIdSchema,
-  relatedTransactionId: optionalIdSchema,
+  categoryId: nullableIdSchema,
+  qualityRating: nullableQualityRatingSchema,
+  fromMoneySourceId: nullableIdSchema,
+  toMoneySourceId: nullableIdSchema,
+  adjustedMoneySourceId: nullableIdSchema,
+  adjustmentDirection: nullableAdjustmentDirectionSchema,
+  adjustmentTarget: nullableAdjustmentTargetSchema,
+  projectId: nullableIdSchema,
+  relatedTransactionId: nullableIdSchema,
   countTowardFeeWaiver: optionalBooleanSchema,
-  recurringPaymentId: optionalIdSchema,
+  recurringPaymentId: nullableIdSchema,
   isInstallmentRelated: z.coerce.boolean().default(false)
 });
 
@@ -111,6 +164,15 @@ function formValue(formData: FormData, key: string) {
   return formData.get(key) ?? undefined;
 }
 
+function nullableFormValue(formData: FormData, key: string) {
+  if (!formData.has(key)) {
+    return undefined;
+  }
+
+  const value = formData.get(key);
+  return typeof value === "string" && value.trim() === "" ? null : value;
+}
+
 function parseTransactionInput(data: TransactionInput | FormData) {
   if (data instanceof FormData) {
     return transactionSchema.safeParse({
@@ -118,19 +180,22 @@ function parseTransactionInput(data: TransactionInput | FormData) {
       amount: formValue(data, "amount"),
       currency: formValue(data, "currency") || "VND",
       title: formValue(data, "title"),
-      description: formValue(data, "description"),
+      description: nullableFormValue(data, "description"),
       transactionDate: formValue(data, "transactionDate"),
-      categoryId: formValue(data, "categoryId"),
-      qualityRating: formValue(data, "qualityRating"),
-      fromMoneySourceId: formValue(data, "fromMoneySourceId"),
-      toMoneySourceId: formValue(data, "toMoneySourceId"),
-      adjustedMoneySourceId: formValue(data, "adjustedMoneySourceId"),
-      adjustmentDirection: formValue(data, "adjustmentDirection"),
-      adjustmentTarget: formValue(data, "adjustmentTarget"),
-      projectId: formValue(data, "projectId"),
-      relatedTransactionId: formValue(data, "relatedTransactionId"),
+      categoryId: nullableFormValue(data, "categoryId"),
+      qualityRating: nullableFormValue(data, "qualityRating"),
+      fromMoneySourceId: nullableFormValue(data, "fromMoneySourceId"),
+      toMoneySourceId: nullableFormValue(data, "toMoneySourceId"),
+      adjustedMoneySourceId: nullableFormValue(
+        data,
+        "adjustedMoneySourceId"
+      ),
+      adjustmentDirection: nullableFormValue(data, "adjustmentDirection"),
+      adjustmentTarget: nullableFormValue(data, "adjustmentTarget"),
+      projectId: nullableFormValue(data, "projectId"),
+      relatedTransactionId: nullableFormValue(data, "relatedTransactionId"),
       countTowardFeeWaiver: formValue(data, "countTowardFeeWaiver"),
-      recurringPaymentId: formValue(data, "recurringPaymentId"),
+      recurringPaymentId: nullableFormValue(data, "recurringPaymentId"),
       isInstallmentRelated: data.get("isInstallmentRelated") === "on"
     });
   }
@@ -145,19 +210,22 @@ function parseTransactionUpdateInput(data: TransactionUpdateInput | FormData) {
       amount: formValue(data, "amount"),
       currency: formValue(data, "currency"),
       title: formValue(data, "title"),
-      description: formValue(data, "description"),
+      description: nullableFormValue(data, "description"),
       transactionDate: formValue(data, "transactionDate"),
-      categoryId: formValue(data, "categoryId"),
-      qualityRating: formValue(data, "qualityRating"),
-      fromMoneySourceId: formValue(data, "fromMoneySourceId"),
-      toMoneySourceId: formValue(data, "toMoneySourceId"),
-      adjustedMoneySourceId: formValue(data, "adjustedMoneySourceId"),
-      adjustmentDirection: formValue(data, "adjustmentDirection"),
-      adjustmentTarget: formValue(data, "adjustmentTarget"),
-      projectId: formValue(data, "projectId"),
-      relatedTransactionId: formValue(data, "relatedTransactionId"),
+      categoryId: nullableFormValue(data, "categoryId"),
+      qualityRating: nullableFormValue(data, "qualityRating"),
+      fromMoneySourceId: nullableFormValue(data, "fromMoneySourceId"),
+      toMoneySourceId: nullableFormValue(data, "toMoneySourceId"),
+      adjustedMoneySourceId: nullableFormValue(
+        data,
+        "adjustedMoneySourceId"
+      ),
+      adjustmentDirection: nullableFormValue(data, "adjustmentDirection"),
+      adjustmentTarget: nullableFormValue(data, "adjustmentTarget"),
+      projectId: nullableFormValue(data, "projectId"),
+      relatedTransactionId: nullableFormValue(data, "relatedTransactionId"),
       countTowardFeeWaiver: formValue(data, "countTowardFeeWaiver"),
-      recurringPaymentId: formValue(data, "recurringPaymentId"),
+      recurringPaymentId: nullableFormValue(data, "recurringPaymentId"),
       isInstallmentRelated: data.has("isInstallmentRelated")
         ? data.get("isInstallmentRelated") === "on"
         : undefined
@@ -167,21 +235,48 @@ function parseTransactionUpdateInput(data: TransactionUpdateInput | FormData) {
   return transactionUpdateSchema.safeParse(data);
 }
 
-function cleanNullableRelations<T extends TransactionData | TransactionUpdateData>(
-  data: T
-) {
+type NullableTransactionField =
+  | "categoryId"
+  | "qualityRating"
+  | "fromMoneySourceId"
+  | "toMoneySourceId"
+  | "adjustedMoneySourceId"
+  | "adjustmentDirection"
+  | "adjustmentTarget"
+  | "projectId"
+  | "relatedTransactionId"
+  | "recurringPaymentId";
+
+function nullableTransactionValue<
+  T extends TransactionData | TransactionUpdateData
+>(data: T, field: NullableTransactionField) {
+  return data[field] ?? null;
+}
+
+function cleanNullableRelations<
+  T extends TransactionData | TransactionUpdateData
+>(data: T) {
   return {
     ...data,
-    categoryId: data.categoryId ?? null,
-    qualityRating: data.qualityRating ?? null,
-    fromMoneySourceId: data.fromMoneySourceId ?? null,
-    toMoneySourceId: data.toMoneySourceId ?? null,
-    adjustedMoneySourceId: data.adjustedMoneySourceId ?? null,
-    adjustmentDirection: data.adjustmentDirection ?? null,
-    adjustmentTarget: data.adjustmentTarget ?? null,
-    projectId: data.projectId ?? null,
-    relatedTransactionId: data.relatedTransactionId ?? null,
-    recurringPaymentId: data.recurringPaymentId ?? null
+    categoryId: nullableTransactionValue(data, "categoryId"),
+    qualityRating: nullableTransactionValue(data, "qualityRating"),
+    fromMoneySourceId: nullableTransactionValue(data, "fromMoneySourceId"),
+    toMoneySourceId: nullableTransactionValue(data, "toMoneySourceId"),
+    adjustedMoneySourceId: nullableTransactionValue(
+      data,
+      "adjustedMoneySourceId"
+    ),
+    adjustmentDirection: nullableTransactionValue(
+      data,
+      "adjustmentDirection"
+    ),
+    adjustmentTarget: nullableTransactionValue(data, "adjustmentTarget"),
+    projectId: nullableTransactionValue(data, "projectId"),
+    relatedTransactionId: nullableTransactionValue(
+      data,
+      "relatedTransactionId"
+    ),
+    recurringPaymentId: nullableTransactionValue(data, "recurringPaymentId")
   };
 }
 
@@ -198,8 +293,8 @@ async function verifyTransactionOwnership(id: string, userId: string) {
 }
 
 async function verifyOptionalRecord(
-  model: "category" | "financialProject" | "transaction" | "recurringPayment",
-  id: string | undefined,
+  model: "financialProject" | "recurringPayment",
+  id: string | null | undefined,
   userId: string
 ) {
   if (!id) {
@@ -207,24 +302,55 @@ async function verifyOptionalRecord(
   }
 
   const record =
-    model === "category"
-      ? await prisma.category.findFirst({ where: { id, userId }, select: { id: true } })
-      : model === "financialProject"
-        ? await prisma.financialProject.findFirst({
-            where: { id, userId },
-            select: { id: true }
-          })
-        : model === "transaction"
-          ? await prisma.transaction.findFirst({
-              where: { id, userId },
-              select: { id: true }
-            })
-          : await prisma.recurringPayment.findFirst({
-              where: { id, userId },
-              select: { id: true }
-            });
+    model === "financialProject"
+      ? await prisma.financialProject.findFirst({
+          where: { id, userId },
+          select: { id: true }
+        })
+      : await prisma.recurringPayment.findFirst({
+          where: { id, userId },
+          select: { id: true }
+        });
 
   if (!record) {
+    throw new Error("Referenced record not found.");
+  }
+}
+
+async function getOwnedCategory(
+  id: string | null | undefined,
+  userId: string
+) {
+  if (!id) {
+    return null;
+  }
+
+  const category = await prisma.category.findFirst({
+    where: { id, userId },
+    select: { id: true, defaultCountTowardFeeWaiver: true }
+  });
+
+  if (!category) {
+    throw new Error("Referenced record not found.");
+  }
+
+  return category;
+}
+
+async function verifyRelatedExpense(
+  id: string | null | undefined,
+  userId: string
+) {
+  if (!id) {
+    return;
+  }
+
+  const expense = await prisma.transaction.findFirst({
+    where: { id, userId, type: TransactionType.EXPENSE },
+    select: { id: true }
+  });
+
+  if (!expense) {
     throw new Error("Referenced record not found.");
   }
 }
@@ -258,14 +384,14 @@ async function verifyReferences(
   data: TransactionData | TransactionUpdateData,
   userId: string
 ) {
-  await Promise.all([
-    verifyOptionalRecord("category", data.categoryId, userId),
+  const [category] = await Promise.all([
+    getOwnedCategory(data.categoryId, userId),
     verifyOptionalRecord("financialProject", data.projectId, userId),
-    verifyOptionalRecord("transaction", data.relatedTransactionId, userId),
+    verifyRelatedExpense(data.relatedTransactionId, userId),
     verifyOptionalRecord("recurringPayment", data.recurringPaymentId, userId)
   ]);
 
-  return getOwnedMoneySources(
+  const moneySources = await getOwnedMoneySources(
     [
       data.fromMoneySourceId,
       data.toMoneySourceId,
@@ -273,6 +399,8 @@ async function verifyReferences(
     ].filter((id): id is string => Boolean(id)),
     userId
   );
+
+  return { category, moneySources };
 }
 
 async function logActivity(
@@ -295,16 +423,90 @@ async function logActivity(
   });
 }
 
-function validateCompleteTransaction(data: TransactionData) {
+function validateCompleteTransaction(
+  data: TransactionData,
+  moneySources: Array<{ id: string; type: MoneySourceType }> = []
+) {
+  const adjustedMoneySourceType = moneySources.find(
+    (source) => source.id === data.adjustedMoneySourceId
+  )?.type;
+
   return validateTransactionFields({
     amount: data.amount,
     type: data.type,
     fromMoneySourceId: data.fromMoneySourceId,
     toMoneySourceId: data.toMoneySourceId,
     adjustedMoneySourceId: data.adjustedMoneySourceId,
+    adjustedMoneySourceType,
     adjustmentDirection: data.adjustmentDirection,
-    qualityRating: data.qualityRating
+    adjustmentTarget: data.adjustmentTarget,
+    qualityRating: data.qualityRating,
+    relatedTransactionId: data.relatedTransactionId
   });
+}
+
+function normalizeTypeTransition(
+  data: TransactionData,
+  typeChanged: boolean
+): TransactionData {
+  if (!typeChanged) {
+    return data;
+  }
+
+  const normalized = { ...data };
+
+  if (normalized.type === TransactionType.INCOME) {
+    normalized.fromMoneySourceId = null;
+  } else if (normalized.type === TransactionType.EXPENSE) {
+    normalized.toMoneySourceId = null;
+  } else if (normalized.type === TransactionType.REFUND) {
+    normalized.fromMoneySourceId = null;
+  } else if (normalized.type === TransactionType.ADJUSTMENT) {
+    normalized.fromMoneySourceId = null;
+    normalized.toMoneySourceId = null;
+  }
+
+  if (normalized.type !== TransactionType.EXPENSE) {
+    normalized.qualityRating = null;
+  }
+
+  if (normalized.type !== TransactionType.ADJUSTMENT) {
+    normalized.adjustedMoneySourceId = null;
+    normalized.adjustmentDirection = null;
+    normalized.adjustmentTarget = null;
+  }
+
+  if (normalized.type !== TransactionType.REFUND) {
+    normalized.relatedTransactionId = null;
+  }
+
+  return normalized;
+}
+
+function normalizeAdjustmentTarget(
+  data: TransactionData,
+  moneySources: Array<{ id: string; type: MoneySourceType }>,
+  adjustmentTargetWasProvided: boolean
+) {
+  if (data.type !== TransactionType.ADJUSTMENT) {
+    return data;
+  }
+
+  const adjustedSource = moneySources.find(
+    (source) => source.id === data.adjustedMoneySourceId
+  );
+
+  if (adjustedSource?.type === MoneySourceType.CREDIT_CARD) {
+    return {
+      ...data,
+      adjustmentTarget:
+        data.adjustmentTarget ?? AdjustmentTarget.CREDIT_CARD_DEBT
+    };
+  }
+
+  return adjustmentTargetWasProvided && data.adjustmentTarget
+    ? data
+    : { ...data, adjustmentTarget: null };
 }
 
 export async function createTransaction(
@@ -321,20 +523,37 @@ export async function createTransaction(
     return { ok: false, error: "Enter a valid transaction." };
   }
 
-  const validation = validateCompleteTransaction(parsed.data);
+  const initialValidation = validateCompleteTransaction(parsed.data);
+
+  if (!initialValidation.ok) {
+    return { ok: false, error: initialValidation.errors.join(" ") };
+  }
+
+  const { category, moneySources } = await verifyReferences(parsed.data, user.id);
+  const validation = validateCompleteTransaction(parsed.data, moneySources);
 
   if (!validation.ok) {
     return { ok: false, error: validation.errors.join(" ") };
   }
 
-  const moneySources = await verifyReferences(parsed.data, user.id);
+  const normalizedData = normalizeAdjustmentTarget(
+    parsed.data,
+    moneySources,
+    parsed.data.adjustmentTarget !== undefined
+  );
   const countTowardFeeWaiver =
-    parsed.data.countTowardFeeWaiver ??
-    getCountTowardFeeWaiverDefault(parsed.data, moneySources);
+    normalizedData.type === TransactionType.EXPENSE
+      ? (parsed.data.countTowardFeeWaiver ??
+        getCountTowardFeeWaiverDefault(
+          normalizedData,
+          moneySources,
+          category
+        ))
+      : false;
 
   const transaction = await prisma.transaction.create({
     data: {
-      ...cleanNullableRelations(parsed.data),
+      ...cleanNullableRelations(normalizedData),
       countTowardFeeWaiver,
       userId: user.id
     },
@@ -376,84 +595,110 @@ export async function updateTransaction(
     amount:
       parsed.data.amount !== undefined
         ? parsed.data.amount
-        : Number(existingTransaction.amount),
+        : existingTransaction.amount.toString(),
     currency: parsed.data.currency ?? existingTransaction.currency,
     title: parsed.data.title ?? existingTransaction.title,
     description:
       parsed.data.description !== undefined
         ? parsed.data.description
-        : existingTransaction.description ?? undefined,
+        : existingTransaction.description,
     transactionDate:
       parsed.data.transactionDate ?? existingTransaction.transactionDate,
     categoryId:
       parsed.data.categoryId !== undefined
         ? parsed.data.categoryId
-        : existingTransaction.categoryId ?? undefined,
+        : existingTransaction.categoryId,
     qualityRating:
       parsed.data.qualityRating !== undefined
         ? parsed.data.qualityRating
-        : existingTransaction.qualityRating ?? undefined,
+        : existingTransaction.qualityRating,
     fromMoneySourceId:
       parsed.data.fromMoneySourceId !== undefined
         ? parsed.data.fromMoneySourceId
-        : existingTransaction.fromMoneySourceId ?? undefined,
+        : existingTransaction.fromMoneySourceId,
     toMoneySourceId:
       parsed.data.toMoneySourceId !== undefined
         ? parsed.data.toMoneySourceId
-        : existingTransaction.toMoneySourceId ?? undefined,
+        : existingTransaction.toMoneySourceId,
     adjustedMoneySourceId:
       parsed.data.adjustedMoneySourceId !== undefined
         ? parsed.data.adjustedMoneySourceId
-        : existingTransaction.adjustedMoneySourceId ?? undefined,
+        : existingTransaction.adjustedMoneySourceId,
     adjustmentDirection:
       parsed.data.adjustmentDirection !== undefined
         ? parsed.data.adjustmentDirection
-        : existingTransaction.adjustmentDirection ?? undefined,
+        : existingTransaction.adjustmentDirection,
     adjustmentTarget:
       parsed.data.adjustmentTarget !== undefined
         ? parsed.data.adjustmentTarget
-        : existingTransaction.adjustmentTarget ?? undefined,
+        : existingTransaction.adjustmentTarget,
     projectId:
       parsed.data.projectId !== undefined
         ? parsed.data.projectId
-        : existingTransaction.projectId ?? undefined,
+        : existingTransaction.projectId,
     relatedTransactionId:
       parsed.data.relatedTransactionId !== undefined
         ? parsed.data.relatedTransactionId
-        : existingTransaction.relatedTransactionId ?? undefined,
+        : existingTransaction.relatedTransactionId,
     countTowardFeeWaiver:
       parsed.data.countTowardFeeWaiver ??
       existingTransaction.countTowardFeeWaiver,
     recurringPaymentId:
       parsed.data.recurringPaymentId !== undefined
         ? parsed.data.recurringPaymentId
-        : existingTransaction.recurringPaymentId ?? undefined,
+        : existingTransaction.recurringPaymentId,
     isInstallmentRelated:
       parsed.data.isInstallmentRelated ?? existingTransaction.isInstallmentRelated
   } satisfies TransactionData;
+  const typeChanged =
+    parsed.data.type !== undefined &&
+    parsed.data.type !== existingTransaction.type;
+  const typeNormalizedData = normalizeTypeTransition(mergedData, typeChanged);
 
-  const validation = validateCompleteTransaction(mergedData);
+  const initialValidation = validateCompleteTransaction(typeNormalizedData);
+
+  if (!initialValidation.ok) {
+    return { ok: false, error: initialValidation.errors.join(" ") };
+  }
+
+  const { category, moneySources } = await verifyReferences(
+    typeNormalizedData,
+    user.id
+  );
+  const normalizedData = normalizeAdjustmentTarget(
+    typeNormalizedData,
+    moneySources,
+    parsed.data.adjustmentTarget !== undefined
+  );
+  const validation = validateCompleteTransaction(normalizedData, moneySources);
 
   if (!validation.ok) {
     return { ok: false, error: validation.errors.join(" ") };
   }
 
-  const moneySources = await verifyReferences(mergedData, user.id);
   const feeWaiverRelevantFieldsChanged =
-    (parsed.data.type !== undefined && parsed.data.type !== existingTransaction.type) ||
+    typeChanged ||
     (parsed.data.fromMoneySourceId !== undefined &&
-      parsed.data.fromMoneySourceId !== (existingTransaction.fromMoneySourceId ?? undefined));
+      parsed.data.fromMoneySourceId !== existingTransaction.fromMoneySourceId) ||
+    (parsed.data.categoryId !== undefined &&
+      parsed.data.categoryId !== existingTransaction.categoryId);
   const countTowardFeeWaiver =
-    parsed.data.countTowardFeeWaiver !== undefined
-      ? parsed.data.countTowardFeeWaiver
-      : feeWaiverRelevantFieldsChanged
-        ? getCountTowardFeeWaiverDefault(mergedData, moneySources)
-        : existingTransaction.countTowardFeeWaiver;
+    normalizedData.type === TransactionType.EXPENSE
+      ? parsed.data.countTowardFeeWaiver !== undefined
+        ? parsed.data.countTowardFeeWaiver
+        : feeWaiverRelevantFieldsChanged
+          ? getCountTowardFeeWaiverDefault(
+              normalizedData,
+              moneySources,
+              category
+            )
+          : existingTransaction.countTowardFeeWaiver
+      : false;
 
   await prisma.transaction.updateMany({
     where: { id, userId: user.id },
     data: {
-      ...cleanNullableRelations(mergedData),
+      ...cleanNullableRelations(normalizedData),
       countTowardFeeWaiver
     }
   });

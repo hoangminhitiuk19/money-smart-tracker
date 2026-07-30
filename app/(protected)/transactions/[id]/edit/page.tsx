@@ -99,6 +99,8 @@ async function EditTransactionPageContent({
         categories={categories.map((category) => ({
           id: category.id,
           name: category.name,
+          defaultCountTowardFeeWaiver:
+            category.defaultCountTowardFeeWaiver,
           defaultQualityRating: category.defaultQualityRating
         }))}
         expenseTransactions={expenseTransactions.map((expenseTransaction) => ({

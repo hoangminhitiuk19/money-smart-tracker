@@ -25,6 +25,7 @@ import {
 type CategoryOption = {
   id: string;
   name: string;
+  defaultCountTowardFeeWaiver: boolean;
   defaultQualityRating: QualityRating | null;
 };
 
@@ -85,6 +86,10 @@ function emptyToUndefined(value: string) {
   return value.trim() ? value : undefined;
 }
 
+function emptyToNull(value: string) {
+  return value.trim() ? value : null;
+}
+
 function isCreditCard(sourceId: string, moneySources: MoneySourceOption[]) {
   return (
     moneySources.find((moneySource) => moneySource.id === sourceId)?.type ===
@@ -133,7 +138,7 @@ export function TransactionForm({
   const [qualityRating, setQualityRating] = useState<QualityRating | "">(
     initialValues?.qualityRating ?? ""
   );
-  const [qualityTouched, setQualityTouched] = useState(false);
+  const [qualityTouched, setQualityTouched] = useState(Boolean(initialValues));
   const [fromMoneySourceId, setFromMoneySourceId] = useState(
     initialValues?.fromMoneySourceId ?? ""
   );
@@ -152,7 +157,9 @@ export function TransactionForm({
   const [countTowardFeeWaiver, setCountTowardFeeWaiver] = useState(
     initialValues?.countTowardFeeWaiver ?? false
   );
-  const [feeWaiverTouched, setFeeWaiverTouched] = useState(false);
+  const [feeWaiverTouched, setFeeWaiverTouched] = useState(
+    Boolean(initialValues)
+  );
   const [expenseSearch, setExpenseSearch] = useState("");
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 
@@ -189,25 +196,27 @@ export function TransactionForm({
   useEffect(() => {
     if (type === TransactionType.EXPENSE && fromIsCreditCard) {
       if (!feeWaiverTouched) {
-        setCountTowardFeeWaiver(true);
+        setCountTowardFeeWaiver(
+          selectedCategory?.defaultCountTowardFeeWaiver !== false
+        );
       }
     } else {
       setCountTowardFeeWaiver(false);
     }
-  }, [feeWaiverTouched, fromIsCreditCard, type]);
+  }, [feeWaiverTouched, fromIsCreditCard, selectedCategory, type]);
 
   function buildPayload(formData: FormData): TransactionFormInput {
     const basePayload = {
-      amount: Number(formData.get("amount")),
-      categoryId: emptyToUndefined(categoryId),
+      amount: String(formData.get("amount") ?? ""),
+      categoryId: emptyToNull(categoryId),
       countTowardFeeWaiver:
         type === TransactionType.EXPENSE && fromIsCreditCard
           ? countTowardFeeWaiver
           : false,
       currency: String(formData.get("currency") || "VND"),
-      description: emptyToUndefined(String(formData.get("description") ?? "")),
+      description: emptyToNull(String(formData.get("description") ?? "")),
       isInstallmentRelated: false,
-      projectId: emptyToUndefined(String(formData.get("projectId") ?? "")),
+      projectId: emptyToNull(String(formData.get("projectId") ?? "")),
       title: String(formData.get("title") ?? ""),
       transactionDate: String(formData.get("transactionDate")),
       type
@@ -224,7 +233,7 @@ export function TransactionForm({
       return {
         ...basePayload,
         fromMoneySourceId: emptyToUndefined(fromMoneySourceId),
-        qualityRating: qualityRating || undefined
+        qualityRating: qualityRating || null
       };
     }
 
@@ -239,7 +248,7 @@ export function TransactionForm({
     if (type === TransactionType.REFUND) {
       return {
         ...basePayload,
-        relatedTransactionId: emptyToUndefined(
+        relatedTransactionId: emptyToNull(
           String(formData.get("relatedTransactionId") ?? "")
         ),
         toMoneySourceId: emptyToUndefined(toMoneySourceId)
@@ -250,7 +259,9 @@ export function TransactionForm({
       ...basePayload,
       adjustedMoneySourceId: emptyToUndefined(adjustedMoneySourceId),
       adjustmentDirection: adjustmentDirection || undefined,
-      adjustmentTarget: adjustedIsCreditCard ? adjustmentTarget || undefined : undefined
+      adjustmentTarget: adjustedIsCreditCard
+        ? adjustmentTarget || null
+        : null
     };
   }
 
@@ -521,6 +532,7 @@ export function TransactionForm({
               onChange={(event) => {
                 setCategoryId(event.target.value);
                 setQualityTouched(false);
+                setFeeWaiverTouched(false);
               }}
               value={categoryId}
             >

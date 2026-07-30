@@ -1,4 +1,10 @@
-import { MoneySourceType, QualityRating, TransactionType } from "@prisma/client";
+import {
+  AdjustmentDirection,
+  AdjustmentTarget,
+  MoneySourceType,
+  QualityRating,
+  TransactionType
+} from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createTransaction,
@@ -33,9 +39,17 @@ vi.mock("@/lib/security/rate-limit", () => ({
 }));
 
 type FakeMoneySource = { id: string; userId: string; type: MoneySourceType };
+type FakeCategory = {
+  id: string;
+  userId: string;
+  defaultCountTowardFeeWaiver: boolean;
+};
+type FakeProject = { id: string; userId: string };
 type FakeRecurringPayment = { id: string; userId: string };
 type FakeTransaction = Record<string, unknown> & { id: string; userId: string };
 
+let categories: FakeCategory[];
+let projects: FakeProject[];
 let moneySources: FakeMoneySource[];
 let recurringPayments: FakeRecurringPayment[];
 let transactions: FakeTransaction[];
@@ -58,11 +72,29 @@ function matchesTransactionWhere(transaction: FakeTransaction, where: any) {
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    category: { findFirst: vi.fn(async () => null) },
-    financialProject: { findFirst: vi.fn(async () => null) },
+    category: {
+      findFirst: vi.fn(async ({ where }: any) =>
+        categories.find(
+          (category) =>
+            category.id === where.id && category.userId === where.userId
+        ) ?? null
+      )
+    },
+    financialProject: {
+      findFirst: vi.fn(async ({ where }: any) =>
+        projects.find(
+          (project) => project.id === where.id && project.userId === where.userId
+        ) ?? null
+      )
+    },
     transaction: {
       findFirst: vi.fn(async ({ where }: any) =>
-        transactions.find((t) => t.id === where.id && t.userId === where.userId) ?? null
+        transactions.find(
+          (transaction) =>
+            transaction.id === where.id &&
+            transaction.userId === where.userId &&
+            (where.type === undefined || transaction.type === where.type)
+        ) ?? null
       ),
       create: vi.fn(async ({ data }: any) => {
         const record = { id: "new-transaction", userId: mockUser.id, ...data };
@@ -122,6 +154,19 @@ beforeEach(() => {
     { id: "ms-debit", userId: "user-1", type: MoneySourceType.BANK_ACCOUNT },
     { id: "ms-credit", userId: "user-1", type: MoneySourceType.CREDIT_CARD }
   ];
+  categories = [
+    {
+      id: "category-eligible",
+      userId: "user-1",
+      defaultCountTowardFeeWaiver: true
+    },
+    {
+      id: "category-excluded",
+      userId: "user-1",
+      defaultCountTowardFeeWaiver: false
+    }
+  ];
+  projects = [{ id: "project-own", userId: "user-1" }];
   recurringPayments = [{ id: "rp-own", userId: "user-1" }];
   transactions = [];
 });
@@ -182,6 +227,238 @@ describe("createTransaction quality rating validation", () => {
     expect(result.ok).toBe(true);
     expect(prisma.transaction.create).toHaveBeenCalled();
   });
+});
+
+describe("createTransaction exact decimal validation", () => {
+  it("passes exact Decimal text to Prisma without Number coercion", async () => {
+    const result = await createTransaction({
+      type: TransactionType.EXPENSE,
+      amount: "90071992547409.99",
+      title: "Exact purchase",
+      transactionDate: new Date("2026-01-01"),
+      fromMoneySourceId: "ms-a"
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(prisma.transaction.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ amount: "90071992547409.99" })
+      })
+    );
+  });
+
+  it.each(["0", "-1", "0.001", "99999999999999999.99"])(
+    "rejects amount %s before transaction or activity writes",
+    async (amount) => {
+      const result = await createTransaction({
+        type: TransactionType.EXPENSE,
+        amount,
+        title: "Invalid purchase",
+        transactionDate: new Date("2026-01-01"),
+        fromMoneySourceId: "ms-a"
+      });
+
+      expect(result).toEqual({
+        ok: false,
+        error: "Enter a valid transaction."
+      });
+      expect(prisma.transaction.create).not.toHaveBeenCalled();
+      expect(prisma.activityLog.create).not.toHaveBeenCalled();
+    }
+  );
+});
+
+describe("createTransaction refund relation rules", () => {
+  beforeEach(() => {
+    transactions = [
+      {
+        id: "expense-own",
+        userId: "user-1",
+        type: TransactionType.EXPENSE,
+        amount: "25.00"
+      },
+      {
+        id: "income-own",
+        userId: "user-1",
+        type: TransactionType.INCOME,
+        amount: "25.00"
+      },
+      {
+        id: "expense-foreign",
+        userId: "user-2",
+        type: TransactionType.EXPENSE,
+        amount: "25.00"
+      }
+    ];
+  });
+
+  it("accepts a same-user EXPENSE link on a REFUND", async () => {
+    const result = await createTransaction({
+      type: TransactionType.REFUND,
+      amount: "25.00",
+      title: "Returned purchase",
+      transactionDate: new Date("2026-01-02"),
+      toMoneySourceId: "ms-a",
+      relatedTransactionId: "expense-own"
+    });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  it.each(["income-own", "expense-foreign"])(
+    "rejects invalid REFUND relation %s without writes",
+    async (relatedTransactionId) => {
+      await expect(
+        createTransaction({
+          type: TransactionType.REFUND,
+          amount: "25.00",
+          title: "Invalid refund",
+          transactionDate: new Date("2026-01-02"),
+          toMoneySourceId: "ms-a",
+          relatedTransactionId
+        })
+      ).rejects.toThrow();
+
+      expect(prisma.transaction.create).not.toHaveBeenCalled();
+      expect(prisma.activityLog.create).not.toHaveBeenCalled();
+    }
+  );
+
+  it("rejects a relation on a non-REFUND without writes", async () => {
+    const result = await createTransaction({
+      type: TransactionType.EXPENSE,
+      amount: "25.00",
+      title: "Invalid relation",
+      transactionDate: new Date("2026-01-02"),
+      fromMoneySourceId: "ms-a",
+      relatedTransactionId: "expense-own"
+    });
+
+    expect(result.ok).toBe(false);
+    expect(prisma.transaction.create).not.toHaveBeenCalled();
+    expect(prisma.activityLog.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("createTransaction adjustment target rules", () => {
+  it("defaults a credit-card adjustment target to CREDIT_CARD_DEBT", async () => {
+    const result = await createTransaction({
+      type: TransactionType.ADJUSTMENT,
+      amount: "10.00",
+      title: "Correct card debt",
+      transactionDate: new Date("2026-01-03"),
+      adjustedMoneySourceId: "ms-credit",
+      adjustmentDirection: AdjustmentDirection.INCREASE
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(prisma.transaction.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          adjustmentTarget: AdjustmentTarget.CREDIT_CARD_DEBT
+        })
+      })
+    );
+  });
+
+  it("persists CARD_CREDIT when explicitly selected", async () => {
+    const result = await createTransaction({
+      type: TransactionType.ADJUSTMENT,
+      amount: "10.00",
+      title: "Correct card credit",
+      transactionDate: new Date("2026-01-03"),
+      adjustedMoneySourceId: "ms-credit",
+      adjustmentDirection: AdjustmentDirection.DECREASE,
+      adjustmentTarget: AdjustmentTarget.CARD_CREDIT
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(prisma.transaction.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          adjustmentTarget: AdjustmentTarget.CARD_CREDIT
+        })
+      })
+    );
+  });
+
+  it("rejects a target for a non-card adjustment without writes", async () => {
+    const result = await createTransaction({
+      type: TransactionType.ADJUSTMENT,
+      amount: "10.00",
+      title: "Invalid bank target",
+      transactionDate: new Date("2026-01-03"),
+      adjustedMoneySourceId: "ms-a",
+      adjustmentDirection: AdjustmentDirection.INCREASE,
+      adjustmentTarget: AdjustmentTarget.CARD_CREDIT
+    });
+
+    expect(result.ok).toBe(false);
+    expect(prisma.transaction.create).not.toHaveBeenCalled();
+    expect(prisma.activityLog.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("createTransaction owned references and waiver defaults", () => {
+  it("uses the selected category's waiver exclusion for a card expense", async () => {
+    const result = await createTransaction({
+      type: TransactionType.EXPENSE,
+      amount: "50.00",
+      title: "Annual fee",
+      transactionDate: new Date("2026-01-01"),
+      fromMoneySourceId: "ms-credit",
+      categoryId: "category-excluded"
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(prisma.transaction.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ countTowardFeeWaiver: false })
+      })
+    );
+  });
+
+  it("preserves an explicit waiver override over the category default", async () => {
+    const result = await createTransaction({
+      type: TransactionType.EXPENSE,
+      amount: "50.00",
+      title: "Manually eligible fee",
+      transactionDate: new Date("2026-01-01"),
+      fromMoneySourceId: "ms-credit",
+      categoryId: "category-excluded",
+      countTowardFeeWaiver: true
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(prisma.transaction.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ countTowardFeeWaiver: true })
+      })
+    );
+  });
+
+  it.each([
+    ["categoryId", "category-foreign"],
+    ["projectId", "project-foreign"],
+    ["fromMoneySourceId", "source-foreign"],
+    ["recurringPaymentId", "renewal-foreign"]
+  ] as const)(
+    "rejects an unowned %s without transaction or activity writes",
+    async (field, value) => {
+      const resultPromise = createTransaction({
+        type: TransactionType.EXPENSE,
+        amount: "50.00",
+        title: "Foreign reference",
+        transactionDate: new Date("2026-01-01"),
+        fromMoneySourceId: field === "fromMoneySourceId" ? value : "ms-a",
+        [field]: value
+      });
+
+      await expect(resultPromise).rejects.toThrow();
+      expect(prisma.transaction.create).not.toHaveBeenCalled();
+      expect(prisma.activityLog.create).not.toHaveBeenCalled();
+    }
+  );
 });
 
 describe("createTransaction recurringPaymentId ownership", () => {
@@ -297,5 +574,147 @@ describe("updateTransaction countTowardFeeWaiver recompute", () => {
 
     expect(result.ok).toBe(true);
     expect(transactions[0].countTowardFeeWaiver).toBe(true);
+  });
+});
+
+describe("updateTransaction nullable fields and type transitions", () => {
+  beforeEach(() => {
+    transactions = [
+      {
+        id: "expense-own",
+        userId: "user-1",
+        type: TransactionType.EXPENSE,
+        amount: "50.00",
+        currency: "VND",
+        title: "Coffee",
+        description: "Morning coffee",
+        transactionDate: new Date("2026-01-01"),
+        categoryId: "category-eligible",
+        qualityRating: QualityRating.B,
+        fromMoneySourceId: "ms-debit",
+        toMoneySourceId: null,
+        adjustedMoneySourceId: null,
+        adjustmentDirection: null,
+        adjustmentTarget: null,
+        projectId: "project-own",
+        relatedTransactionId: null,
+        countTowardFeeWaiver: false,
+        recurringPaymentId: "rp-own",
+        isInstallmentRelated: false
+      },
+      {
+        id: "refund-own",
+        userId: "user-1",
+        type: TransactionType.REFUND,
+        amount: "10.00",
+        currency: "VND",
+        title: "Coffee refund",
+        description: null,
+        transactionDate: new Date("2026-01-02"),
+        categoryId: null,
+        qualityRating: null,
+        fromMoneySourceId: null,
+        toMoneySourceId: "ms-a",
+        adjustedMoneySourceId: null,
+        adjustmentDirection: null,
+        adjustmentTarget: null,
+        projectId: null,
+        relatedTransactionId: "expense-own",
+        countTowardFeeWaiver: false,
+        recurringPaymentId: null,
+        isInstallmentRelated: false
+      }
+    ];
+  });
+
+  it("clears stale expense-only and from-source state on EXPENSE to INCOME", async () => {
+    const result = await updateTransaction("expense-own", {
+      type: TransactionType.INCOME,
+      toMoneySourceId: "ms-a"
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(transactions[0]).toMatchObject({
+      type: TransactionType.INCOME,
+      fromMoneySourceId: null,
+      toMoneySourceId: "ms-a",
+      qualityRating: null,
+      adjustedMoneySourceId: null,
+      adjustmentDirection: null,
+      adjustmentTarget: null,
+      relatedTransactionId: null,
+      countTowardFeeWaiver: false
+    });
+  });
+
+  it("uses null to clear nullable fields", async () => {
+    const result = await updateTransaction("expense-own", {
+      categoryId: null,
+      description: null,
+      projectId: null,
+      recurringPaymentId: null
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(transactions[0]).toMatchObject({
+      categoryId: null,
+      description: null,
+      projectId: null,
+      recurringPaymentId: null
+    });
+  });
+
+  it("uses undefined to retain nullable fields", async () => {
+    const result = await updateTransaction("expense-own", {
+      title: "Coffee renamed"
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(transactions[0]).toMatchObject({
+      categoryId: "category-eligible",
+      description: "Morning coffee",
+      projectId: "project-own",
+      recurringPaymentId: "rp-own"
+    });
+  });
+
+  it("unlinks a refund when relatedTransactionId is null", async () => {
+    const result = await updateTransaction("refund-own", {
+      relatedTransactionId: null
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(transactions[1].relatedTransactionId).toBeNull();
+  });
+
+  it("clears stale adjustment state when changing to EXPENSE", async () => {
+    transactions[0] = {
+      ...transactions[0],
+      type: TransactionType.ADJUSTMENT,
+      categoryId: null,
+      qualityRating: null,
+      fromMoneySourceId: null,
+      adjustedMoneySourceId: "ms-credit",
+      adjustmentDirection: AdjustmentDirection.INCREASE,
+      adjustmentTarget: AdjustmentTarget.CARD_CREDIT,
+      projectId: null,
+      recurringPaymentId: null
+    };
+
+    const result = await updateTransaction("expense-own", {
+      type: TransactionType.EXPENSE,
+      fromMoneySourceId: "ms-a",
+      qualityRating: QualityRating.A
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(transactions[0]).toMatchObject({
+      type: TransactionType.EXPENSE,
+      fromMoneySourceId: "ms-a",
+      adjustedMoneySourceId: null,
+      adjustmentDirection: null,
+      adjustmentTarget: null,
+      qualityRating: QualityRating.A
+    });
   });
 });
