@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  CategoryType,
   ContributionType,
   GoalStatus,
   MoneySourceType,
@@ -129,7 +130,7 @@ describe("dashboard data horizons", () => {
     const annualFeeChargeDate = new Date(today);
     annualFeeChargeDate.setDate(annualFeeChargeDate.getDate() + 20);
 
-    const [bank, card, activeGoal] = await prisma.$transaction([
+    const [bank, card, inactiveCard, activeGoal] = await prisma.$transaction([
       prisma.moneySource.create({
         data: {
           userId: context.userB.id,
@@ -150,6 +151,21 @@ describe("dashboard data horizons", () => {
           annualFeeWaiverSpendTarget: "500.00",
           creditLimit: "1000.00",
           hasAnnualFee: true,
+          type: MoneySourceType.CREDIT_CARD,
+          waiverPeriodEndDate: new Date("2026-12-31T00:00:00.000Z"),
+          waiverPeriodStartDate: new Date("2026-01-01T00:00:00.000Z")
+        }
+      }),
+      prisma.moneySource.create({
+        data: {
+          userId: context.userB.id,
+          name: "Inactive dashboard card",
+          annualFeeWaiverEnabled: true,
+          annualFeeWaiverPeriod: WaiverPeriod.YEARLY,
+          annualFeeWaiverSpendTarget: "500.00",
+          creditLimit: "1000.00",
+          initialOutstandingDebt: "30.00",
+          isActive: false,
           type: MoneySourceType.CREDIT_CARD,
           waiverPeriodEndDate: new Date("2026-12-31T00:00:00.000Z"),
           waiverPeriodStartDate: new Date("2026-01-01T00:00:00.000Z")
@@ -252,8 +268,12 @@ describe("dashboard data horizons", () => {
     );
     expect(result.goals).toHaveLength(1);
     expect(result.goals[0].progress.netContributed.toFixed(2)).toBe("300.00");
-    expect(result.creditCards).toHaveLength(1);
-    expect(result.creditCards[0].source.userId).toBe(context.userB.id);
+    expect(result.summary.estimatedNetPosition.toFixed(2)).toBe("-30.00");
+    expect(result.creditCards.map(({ source }) => source.id)).toEqual([card.id]);
+    expect(result.creditCards.map(({ source }) => source.id)).not.toContain(
+      inactiveCard.id
+    );
+    expect(result.feeWaivers.map(({ source }) => source.id)).toEqual([card.id]);
     expect(result.feeWaivers[0].state.eligibleSpending.toFixed(2)).toBe(
       "40.00"
     );
@@ -261,5 +281,123 @@ describe("dashboard data horizons", () => {
       "Isolated upcoming renewal"
     ]);
     expect(result.cardFees.upcoming.map(({ id }) => id)).toEqual([card.id]);
+  }, 20_000);
+
+  it("returns owned renewal roots without leaking poisoned foreign relations", async () => {
+    authState.userId = context.userA.id;
+    const today = new Date();
+    const poisonedDueDate = new Date(today);
+    poisonedDueDate.setDate(poisonedDueDate.getDate() + 1);
+    const validDueDate = new Date(today);
+    validDueDate.setDate(validDueDate.getDate() + 2);
+
+    const [
+      ownedSource,
+      foreignFromSource,
+      foreignToSource,
+      foreignCategory,
+      foreignProject
+    ] = await prisma.$transaction([
+      prisma.moneySource.create({
+        data: {
+          userId: context.userA.id,
+          name: "Owned renewal source",
+          type: MoneySourceType.BANK_ACCOUNT
+        }
+      }),
+      prisma.moneySource.create({
+        data: {
+          userId: context.userB.id,
+          name: "Foreign renewal source from",
+          type: MoneySourceType.BANK_ACCOUNT
+        }
+      }),
+      prisma.moneySource.create({
+        data: {
+          userId: context.userB.id,
+          name: "Foreign renewal source to",
+          type: MoneySourceType.E_WALLET
+        }
+      }),
+      prisma.category.create({
+        data: {
+          userId: context.userB.id,
+          name: "Foreign renewal category",
+          type: CategoryType.EXPENSE
+        }
+      }),
+      prisma.financialProject.create({
+        data: {
+          userId: context.userB.id,
+          name: "Foreign renewal project"
+        }
+      })
+    ]);
+
+    const [poisonedRenewal, validRenewal] = await prisma.$transaction([
+      prisma.recurringPayment.create({
+        data: {
+          userId: context.userA.id,
+          title: "Owned poisoned renewal",
+          amount: "25.00",
+          transactionType: TransactionType.TRANSFER,
+          frequency: RenewalFrequency.MONTHLY,
+          nextDueDate: poisonedDueDate,
+          reminderDaysBefore: 3,
+          categoryId: foreignCategory.id,
+          fromMoneySourceId: foreignFromSource.id,
+          toMoneySourceId: foreignToSource.id,
+          projectId: foreignProject.id
+        }
+      }),
+      prisma.recurringPayment.create({
+        data: {
+          userId: context.userA.id,
+          title: "Owned valid renewal",
+          amount: "15.00",
+          transactionType: TransactionType.EXPENSE,
+          frequency: RenewalFrequency.MONTHLY,
+          nextDueDate: validDueDate,
+          reminderDaysBefore: 3,
+          fromMoneySourceId: ownedSource.id
+        }
+      })
+    ]);
+
+    const result = await getDashboardData("2026-07-01", "2026-07-31");
+    const upcomingById = new Map(
+      result.renewals.upcoming.map((renewal) => [renewal.id, renewal])
+    );
+
+    expect(upcomingById.get(validRenewal.id)).toMatchObject({
+      id: validRenewal.id,
+      title: "Owned valid renewal",
+      currency: "VND",
+      amount: validRenewal.amount,
+      nextDueDate: validRenewal.nextDueDate,
+      reminderDaysBefore: 3
+    });
+    expect(upcomingById.has(poisonedRenewal.id)).toBe(true);
+    expect(result.renewals.upcoming.map(({ title }) => title)).toEqual([
+      "Owned poisoned renewal",
+      "Owned valid renewal"
+    ]);
+
+    for (const renewal of result.renewals.upcoming) {
+      expect("category" in renewal).toBe(false);
+      expect("categoryId" in renewal).toBe(false);
+      expect("fromMoneySource" in renewal).toBe(false);
+      expect("fromMoneySourceId" in renewal).toBe(false);
+      expect("toMoneySource" in renewal).toBe(false);
+      expect("toMoneySourceId" in renewal).toBe(false);
+      expect("project" in renewal).toBe(false);
+      expect("projectId" in renewal).toBe(false);
+    }
+
+    const serializedUpcoming = JSON.stringify(result.renewals.upcoming);
+    expect(serializedUpcoming).not.toContain("Isolated upcoming renewal");
+    expect(serializedUpcoming).not.toContain("Foreign renewal category");
+    expect(serializedUpcoming).not.toContain("Foreign renewal source");
+    expect(serializedUpcoming).not.toContain("Foreign renewal project");
   }, 20_000);
 });

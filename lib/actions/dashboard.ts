@@ -92,11 +92,13 @@ export async function getDashboardData(
         status: RenewalStatus.ACTIVE
       },
       orderBy: [{ nextDueDate: "asc" }, { title: "asc" }],
-      include: {
-        category: true,
-        fromMoneySource: true,
-        toMoneySource: true,
-        project: true
+      select: {
+        id: true,
+        title: true,
+        amount: true,
+        currency: true,
+        nextDueDate: true,
+        reminderDaysBefore: true
       }
     }),
     prisma.moneySource.findMany({
@@ -126,7 +128,10 @@ export async function getDashboardData(
     ledgerTransactions
   );
   const creditCards = moneySources
-    .filter((source) => source.type === MoneySourceType.CREDIT_CARD)
+    .filter(
+      (source) =>
+        source.type === MoneySourceType.CREDIT_CARD && source.isActive
+    )
     .map((source) => ({
       source,
       state: calculateCreditCardState(source, ledgerTransactions)
@@ -135,6 +140,7 @@ export async function getDashboardData(
     .filter(
       (source) =>
         source.type === MoneySourceType.CREDIT_CARD &&
+        source.isActive &&
         source.annualFeeWaiverEnabled
     )
     .map((source) => ({

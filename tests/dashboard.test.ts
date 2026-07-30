@@ -399,6 +399,62 @@ describe("getDashboardData date filtering", () => {
   });
 });
 
+describe("dashboard card visibility", () => {
+  it("shows only active card widgets while retaining inactive card debt in net position", async () => {
+    dashboardMocks.moneySourceFindMany
+      .mockResolvedValueOnce([
+        {
+          id: "bank",
+          userId: "dashboard-user",
+          name: "Dashboard bank",
+          type: MoneySourceType.BANK_ACCOUNT,
+          currency: "VND",
+          openingBalance: 200,
+          isActive: true
+        },
+        {
+          id: "active-card",
+          userId: "dashboard-user",
+          name: "Active dashboard card",
+          type: MoneySourceType.CREDIT_CARD,
+          currency: "VND",
+          openingBalance: 0,
+          creditLimit: 1000,
+          initialOutstandingDebt: 25,
+          initialCardCredit: 0,
+          isActive: true,
+          annualFeeWaiverEnabled: true,
+          annualFeeWaiverSpendTarget: 100
+        },
+        {
+          id: "inactive-card",
+          userId: "dashboard-user",
+          name: "Inactive dashboard card",
+          type: MoneySourceType.CREDIT_CARD,
+          currency: "VND",
+          openingBalance: 0,
+          creditLimit: 1000,
+          initialOutstandingDebt: 75,
+          initialCardCredit: 0,
+          isActive: false,
+          annualFeeWaiverEnabled: true,
+          annualFeeWaiverSpendTarget: 100
+        }
+      ])
+      .mockResolvedValueOnce([]);
+
+    const result = await getDashboardData("2026-07-01", "2026-07-31");
+
+    expect(result.summary.estimatedNetPosition.toFixed(2)).toBe("100.00");
+    expect(result.creditCards.map(({ source }) => source.id)).toEqual([
+      "active-card"
+    ]);
+    expect(result.feeWaivers.map(({ source }) => source.id)).toEqual([
+      "active-card"
+    ]);
+  });
+});
+
 describe("dashboard horizon labels", () => {
   it("labels selected-period metrics and current tracked state", async () => {
     dashboardMocks.moneySourceFindMany
@@ -413,6 +469,7 @@ describe("dashboard horizon labels", () => {
           creditLimit: 1000,
           initialOutstandingDebt: 0,
           initialCardCredit: 0,
+          isActive: true,
           annualFeeWaiverEnabled: false
         }
       ])

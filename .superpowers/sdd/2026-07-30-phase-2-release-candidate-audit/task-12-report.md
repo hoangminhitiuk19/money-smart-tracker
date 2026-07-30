@@ -85,3 +85,48 @@ multiple-lockfile warning.
   before commit.
 
 No unresolved Task 12 issue remains.
+
+## Fix Round 1 — Active Card Widgets and Renewal Projection
+
+Two Important review findings were reproduced with failing tests before
+production changes.
+
+### RED
+
+- The adversarial PostgreSQL renewal test created an owned renewal referencing
+  another user's category, two money sources, and project. Dashboard
+  integration ran 3 tests with 2 passing and 1 failing because the returned
+  renewal still had the nested `category` key and exposed the foreign records.
+- The inactive-card unit fixture ran 18 tests with 17 passing and 1 failing:
+  net position correctly stayed `100.00`, including both cards' debt, but the
+  displayed card collection contained `active-card` and `inactive-card`.
+- The matching PostgreSQL fixture ran 3 tests with 2 passing and 1 failing:
+  net position correctly stayed `-30.00`, including the inactive card's
+  `30.00` debt, but the displayed collection contained both card IDs.
+
+### Implementation
+
+- Credit-card state and fee-waiver widget collections now require both
+  `CREDIT_CARD` type and `isActive`.
+- Net position still receives every owned money source, so active and inactive
+  card debt remain liabilities.
+- The dashboard renewal query no longer includes category, source, destination,
+  or project relations. It positively selects only `id`, `title`, `amount`,
+  `currency`, `nextDueDate`, and `reminderDaysBefore`, the fields required by
+  reminder filtering and the dashboard UI.
+- The poisoned renewal remains an owned upcoming root, but no foreign nested
+  record, foreign-key ID, private name, or second-user renewal root is returned.
+
+### GREEN and Final Verification
+
+- Focused dashboard unit/render tests: 18/18 passed.
+- Focused dashboard PostgreSQL integration: 3/3 passed.
+- Full unit suite: 30 files, 397/397 passed.
+- Full PostgreSQL integration suite: 12 files, 87/87 passed.
+- Typecheck, zero-warning ESLint, Prisma validation, `git diff --check`, and
+  production build passed.
+
+The production build emitted only the known isolated-worktree multiple-lockfile
+warning. Generated `next-env.d.ts` and `tsconfig.tsbuildinfo` changes were
+restored before commit. No report, settings, schema, migration, or unrelated UI
+scope was changed.
