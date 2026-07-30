@@ -43,6 +43,7 @@ import {
   createAuditContext,
   type AuditContext
 } from "@/tests/integration/helpers/audit-context";
+import { parseCsv } from "@/tests/integration/helpers/csv";
 import {
   REFERENCE_AMOUNTS,
   REFERENCE_DATES,
@@ -452,6 +453,38 @@ async function reportProjection() {
   };
 }
 
+function activityEvidence(
+  logs: Array<{
+    action: string;
+    entityType: string;
+    metadata: unknown;
+  }>,
+  action: string
+) {
+  return logs
+    .filter((log) => log.action === action)
+    .map(({ entityType, metadata }) => ({ entityType, metadata }))
+    .sort((left, right) =>
+      activityMetadataSortKey(left.metadata).localeCompare(
+        activityMetadataSortKey(right.metadata)
+      )
+    );
+}
+
+function activityMetadataSortKey(metadata: unknown) {
+  const value =
+    metadata && typeof metadata === "object"
+      ? (metadata as Record<string, unknown>)
+      : {};
+  return [value.type, value.title, value.name, value.amount]
+    .map((part) => String(part ?? ""))
+    .join(":");
+}
+
+function csvRowByTitle(records: string[][], title: string) {
+  return records.find((record) => record[2] === title);
+}
+
 describe("action-entered reference ledger reconciliation", () => {
   it("reconciles literal balances, card state, dashboard, all reports, CSV, and activity", async () => {
     authState.userId = fixtures.context.userA.id;
@@ -549,18 +582,249 @@ describe("action-entered reference ledger reconciliation", () => {
       )
     );
     const csv = await response.text();
-    const rows = csv.split("\n");
-    expect(rows[0]?.split(",")).toEqual([...REFERENCE_EXPORT_COLUMNS]);
-    expect(rows).toHaveLength(10);
-    expect(csv).toContain(`"${fixtures.prefix} Eligible expense"`);
-    await expect(
-      prisma.activityLog.count({
-        where: {
-          userId: fixtures.context.userA.id,
-          action: "TRANSACTION_CREATED"
+    const records = parseCsv(csv);
+    expect(records[0]).toEqual([...REFERENCE_EXPORT_COLUMNS]);
+    expect(records).toHaveLength(10);
+    expect(csvRowByTitle(records, `${fixtures.prefix} Debt adjustment`)?.slice(0, 12)).toEqual([
+      "2026-07-08T00:00:00.000Z",
+      "ADJUSTMENT",
+      `${fixtures.prefix} Debt adjustment`,
+      "15",
+      "VND",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "false"
+    ]);
+    expect(csvRowByTitle(records, `${fixtures.prefix} Credit adjustment`)?.slice(0, 12)).toEqual([
+      "2026-07-09T00:00:00.000Z",
+      "ADJUSTMENT",
+      `${fixtures.prefix} Credit adjustment`,
+      "15",
+      "VND",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "false"
+    ]);
+
+    const creationLogs = await prisma.activityLog.findMany({
+      where: {
+        userId: fixtures.context.userA.id,
+        action: {
+          in: [
+            "CATEGORY_CREATED",
+            "MONEY_SOURCE_CREATED",
+            "PROJECT_CREATED",
+            "GOAL_CREATED",
+            "GOAL_CONTRIBUTION_CREATED",
+            "RENEWAL_CREATED",
+            "TRANSACTION_CREATED"
+          ]
         }
-      })
-    ).resolves.toBe(9);
+      },
+      select: {
+        action: true,
+        entityType: true,
+        metadata: true
+      }
+    });
+    expect(creationLogs).toHaveLength(20);
+    expect(activityEvidence(creationLogs, "CATEGORY_CREATED")).toEqual(
+      [
+        {
+          entityType: "Category",
+          metadata: {
+            name: `${fixtures.prefix} Daily`,
+            type: "EXPENSE"
+          }
+        },
+        {
+          entityType: "Category",
+          metadata: {
+            name: `${fixtures.prefix} Eligible`,
+            type: "EXPENSE"
+          }
+        }
+      ].sort((left, right) =>
+        activityMetadataSortKey(left.metadata).localeCompare(
+          activityMetadataSortKey(right.metadata)
+        )
+      )
+    );
+    expect(activityEvidence(creationLogs, "MONEY_SOURCE_CREATED")).toEqual(
+      [
+        {
+          entityType: "MoneySource",
+          metadata: { name: `${fixtures.prefix} Bank`, type: "BANK_ACCOUNT" }
+        },
+        {
+          entityType: "MoneySource",
+          metadata: { name: `${fixtures.prefix} Card`, type: "CREDIT_CARD" }
+        },
+        {
+          entityType: "MoneySource",
+          metadata: { name: `${fixtures.prefix} Cash`, type: "CASH" }
+        },
+        {
+          entityType: "MoneySource",
+          metadata: { name: `${fixtures.prefix} Investment`, type: "INVESTMENT" }
+        },
+        {
+          entityType: "MoneySource",
+          metadata: { name: `${fixtures.prefix} Wallet`, type: "E_WALLET" }
+        }
+      ].sort((left, right) =>
+        activityMetadataSortKey(left.metadata).localeCompare(
+          activityMetadataSortKey(right.metadata)
+        )
+      )
+    );
+    expect(activityEvidence(creationLogs, "PROJECT_CREATED")).toEqual([
+      {
+        entityType: "FinancialProject",
+        metadata: {
+          name: `${fixtures.prefix} Project`,
+          status: "ACTIVE"
+        }
+      }
+    ]);
+    expect(activityEvidence(creationLogs, "GOAL_CREATED")).toEqual([
+      {
+        entityType: "SavingGoal",
+        metadata: {
+          name: `${fixtures.prefix} Goal`,
+          status: "ACTIVE",
+          targetAmount: "500"
+        }
+      }
+    ]);
+    expect(
+      activityEvidence(creationLogs, "GOAL_CONTRIBUTION_CREATED")
+    ).toEqual([
+      {
+        entityType: "GoalContribution",
+        metadata: {
+          goalId: fixtures.goalId,
+          amount: "100.00",
+          type: "CONTRIBUTION"
+        }
+      }
+    ]);
+    expect(activityEvidence(creationLogs, "RENEWAL_CREATED")).toEqual([
+      {
+        entityType: "RecurringPayment",
+        metadata: {
+          title: `${fixtures.prefix} Renewal`,
+          amount: "30.00",
+          status: "ACTIVE"
+        }
+      }
+    ]);
+    expect(activityEvidence(creationLogs, "TRANSACTION_CREATED")).toEqual(
+      [
+        {
+          entityType: "Transaction",
+          metadata: {
+            amount: "1000.00",
+            type: "INCOME",
+            title: `${fixtures.prefix} Income`,
+            fromSourceId: null,
+            toSourceId: fixtures.bankId
+          }
+        },
+        {
+          entityType: "Transaction",
+          metadata: {
+            amount: "300.00",
+            type: "EXPENSE",
+            title: `${fixtures.prefix} Eligible expense`,
+            fromSourceId: fixtures.cardId,
+            toSourceId: null
+          }
+        },
+        {
+          entityType: "Transaction",
+          metadata: {
+            amount: "140.00",
+            type: "EXPENSE",
+            title: `${fixtures.prefix} Bank expense`,
+            fromSourceId: fixtures.bankId,
+            toSourceId: null
+          }
+        },
+        {
+          entityType: "Transaction",
+          metadata: {
+            amount: "100.00",
+            type: "TRANSFER",
+            title: `${fixtures.prefix} Cash transfer`,
+            fromSourceId: fixtures.bankId,
+            toSourceId: fixtures.cashId
+          }
+        },
+        {
+          entityType: "Transaction",
+          metadata: {
+            amount: "250.00",
+            type: "TRANSFER",
+            title: `${fixtures.prefix} Wallet transfer`,
+            fromSourceId: fixtures.bankId,
+            toSourceId: fixtures.walletId
+          }
+        },
+        {
+          entityType: "Transaction",
+          metadata: {
+            amount: "200.00",
+            type: "TRANSFER",
+            title: `${fixtures.prefix} Card payment`,
+            fromSourceId: fixtures.bankId,
+            toSourceId: fixtures.cardId
+          }
+        },
+        {
+          entityType: "Transaction",
+          metadata: {
+            amount: "90.00",
+            type: "REFUND",
+            title: `${fixtures.prefix} Refund`,
+            fromSourceId: null,
+            toSourceId: fixtures.bankId
+          }
+        },
+        {
+          entityType: "Transaction",
+          metadata: {
+            amount: "15.00",
+            type: "ADJUSTMENT",
+            title: `${fixtures.prefix} Debt adjustment`,
+            fromSourceId: null,
+            toSourceId: null
+          }
+        },
+        {
+          entityType: "Transaction",
+          metadata: {
+            amount: "15.00",
+            type: "ADJUSTMENT",
+            title: `${fixtures.prefix} Credit adjustment`,
+            fromSourceId: null,
+            toSourceId: null
+          }
+        }
+      ].sort((left, right) =>
+        activityMetadataSortKey(left.metadata).localeCompare(
+          activityMetadataSortKey(right.metadata)
+        )
+      )
+    );
     await expect(
       prisma.activityLog.findFirst({
         where: {
@@ -594,6 +858,35 @@ describe("action-entered reference ledger reconciliation", () => {
       "100.00"
     );
     expect(reports.waivers[0]?.state.eligibleSpending.toFixed(2)).toBe("210.00");
+    const editedExport = parseCsv(
+      await (
+        await exportTransactions(
+          new Request(
+            "http://localhost/api/export/transactions?startDate=2026-07-01&endDate=2026-07-31"
+          )
+        )
+      ).text()
+    );
+    expect(
+      csvRowByTitle(editedExport, `${fixtures.prefix} Bank expense`)?.[3]
+    ).toBe("100");
+    await expect(
+      prisma.activityLog.findFirstOrThrow({
+        where: {
+          userId: fixtures.context.userA.id,
+          action: "TRANSACTION_UPDATED",
+          entityId: fixtures.bankExpenseId
+        },
+        orderBy: { createdAt: "desc" }
+      })
+    ).resolves.toMatchObject({
+      entityType: "Transaction",
+      metadata: {
+        changedFields: {
+          amount: ["140.00", "100.00"]
+        }
+      }
+    });
 
     await expectOk(deleteTransaction(fixtures.refundId));
     [bank, dashboard, reports] = await Promise.all([
@@ -603,16 +896,47 @@ describe("action-entered reference ledger reconciliation", () => {
     ]);
     expect(bank.toFixed(2)).toBe("1405.00");
     expect(dashboard.summary.estimatedNetPosition.toFixed(2)).toBe("2470.00");
+    expect(dashboard.feeWaivers[0]?.state.eligibleSpending.toFixed(2)).toBe(
+      "300.00"
+    );
     expect(reports.incomeExpense[0]?.expense.toFixed(2)).toBe("400.00");
     expect(reports.projects[0]?.totalExpense.toFixed(2)).toBe("400.00");
     expect(reports.waivers[0]?.state.eligibleSpending.toFixed(2)).toBe("300.00");
+    const postRefundExport = parseCsv(
+      await (
+        await exportTransactions(
+          new Request(
+            "http://localhost/api/export/transactions?startDate=2026-07-01&endDate=2026-07-31"
+          )
+        )
+      ).text()
+    );
+    expect(csvRowByTitle(postRefundExport, `${fixtures.prefix} Refund`)).toBeUndefined();
+    await expect(
+      prisma.activityLog.findFirstOrThrow({
+        where: {
+          userId: fixtures.context.userA.id,
+          action: "TRANSACTION_DELETED",
+          entityId: fixtures.refundId
+        },
+        orderBy: { createdAt: "desc" }
+      })
+    ).resolves.toMatchObject({
+      entityType: "Transaction",
+      metadata: {
+        amount: "90.00",
+        type: "REFUND",
+        title: `${fixtures.prefix} Refund`
+      }
+    });
 
     await expectOk(deleteTransaction(fixtures.cardCreditAdjustmentId));
-    const [cardRows, finalExport] = await Promise.all([
+    const [cardRows, finalDashboard, finalExport] = await Promise.all([
       loadCreditCardDebtReport({
         ...julyFilters,
         moneySourceId: fixtures.cardId
       }),
+      getDashboardData("2026-07-01", "2026-07-31"),
       exportTransactions(
         new Request(
           "http://localhost/api/export/transactions?startDate=2026-07-01&endDate=2026-07-31"
@@ -621,7 +945,43 @@ describe("action-entered reference ledger reconciliation", () => {
     ]);
     expect(cardRows[0]?.state.outstandingDebt.toFixed(2)).toBe("85.00");
     expect(cardRows[0]?.state.cardCredit.toFixed(2)).toBe("0.00");
-    expect((await finalExport.text()).split("\n")).toHaveLength(8);
+    expect(
+      finalDashboard.creditCards[0]?.state.outstandingDebt.toFixed(2)
+    ).toBe("85.00");
+    expect(finalDashboard.creditCards[0]?.state.cardCredit.toFixed(2)).toBe(
+      "0.00"
+    );
+    expect(finalDashboard.summary.estimatedNetPosition.toFixed(2)).toBe(
+      "2470.00"
+    );
+    expect(
+      finalDashboard.feeWaivers[0]?.state.eligibleSpending.toFixed(2)
+    ).toBe("300.00");
+    const finalRecords = parseCsv(await finalExport.text());
+    expect(finalRecords).toHaveLength(8);
+    expect(
+      csvRowByTitle(finalRecords, `${fixtures.prefix} Credit adjustment`)
+    ).toBeUndefined();
+    expect(
+      csvRowByTitle(finalRecords, `${fixtures.prefix} Debt adjustment`)?.[1]
+    ).toBe("ADJUSTMENT");
+    await expect(
+      prisma.activityLog.findFirstOrThrow({
+        where: {
+          userId: fixtures.context.userA.id,
+          action: "TRANSACTION_DELETED",
+          entityId: fixtures.cardCreditAdjustmentId
+        },
+        orderBy: { createdAt: "desc" }
+      })
+    ).resolves.toMatchObject({
+      entityType: "Transaction",
+      metadata: {
+        amount: "15.00",
+        type: "ADJUSTMENT",
+        title: `${fixtures.prefix} Credit adjustment`
+      }
+    });
     await expect(
       prisma.activityLog.findFirst({
         where: {

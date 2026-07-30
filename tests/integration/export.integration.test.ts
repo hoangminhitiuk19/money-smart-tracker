@@ -17,6 +17,7 @@ import {
   createAuditContext,
   type AuditContext
 } from "@/tests/integration/helpers/audit-context";
+import { parseCsv } from "@/tests/integration/helpers/csv";
 import { REFERENCE_EXPORT_COLUMNS } from "@/tests/integration/helpers/reference-ledger";
 
 const authState = vi.hoisted(() => ({ userId: "" }));
@@ -154,40 +155,6 @@ afterAll(async () => {
   await Promise.all(contexts.map(cleanupAuditContext));
   await prisma.$disconnect();
 }, 20_000);
-
-function parseCsv(csv: string) {
-  const records: string[][] = [];
-  let record: string[] = [];
-  let cell = "";
-  let quoted = false;
-
-  for (let index = 0; index < csv.length; index += 1) {
-    const character = csv[index];
-
-    if (character === '"') {
-      if (quoted && csv[index + 1] === '"') {
-        cell += '"';
-        index += 1;
-      } else {
-        quoted = !quoted;
-      }
-    } else if (character === "," && !quoted) {
-      record.push(cell);
-      cell = "";
-    } else if (character === "\n" && !quoted) {
-      record.push(cell);
-      records.push(record);
-      record = [];
-      cell = "";
-    } else {
-      cell += character;
-    }
-  }
-
-  record.push(cell);
-  records.push(record);
-  return records;
-}
 
 describe("real two-user CSV export", () => {
   it("exports exact columns and owned rows while preserving quoted CSV fields", async () => {

@@ -67,13 +67,19 @@ type ReportsContentElement = ReactElement<{
   }) => Promise<ReactElement>;
 };
 
-async function renderReportsMarkup() {
-  return renderToStaticMarkup(await getReportsContent());
+async function renderReportsMarkup(
+  selectedSearchParams: Record<string, string | string[] | undefined> =
+    searchParams
+) {
+  return renderToStaticMarkup(await getReportsContent(selectedSearchParams));
 }
 
-async function getReportsContent() {
+async function getReportsContent(
+  selectedSearchParams: Record<string, string | string[] | undefined> =
+    searchParams
+) {
   const shell = (await ReportsPage({
-    searchParams: Promise.resolve(searchParams)
+    searchParams: Promise.resolve(selectedSearchParams)
   })) as ReactElement<{ children: ReportsContentElement }>;
   const contentElement = shell.props.children;
   return contentElement.type(contentElement.props);
@@ -199,6 +205,18 @@ describe("reports filter URL state", () => {
     expect(markup).toContain('href="/reports"');
     expect(markup).toContain("Reset filters");
     expect(markup).toContain('href="#report-filters"');
+  });
+
+  it("labels ADJUSTMENT wherever the report filter surfaces that type", async () => {
+    const markup = await renderReportsMarkup({
+      ...searchParams,
+      type: TransactionType.ADJUSTMENT
+    });
+
+    expect(markup).toContain('value="ADJUSTMENT" selected=""');
+    expect(markup).toContain(
+      '<span class="font-semibold text-slate-950">Type</span> ADJUSTMENT'
+    );
   });
 
   it("loads persisted display settings once and passes them to the report client", async () => {
