@@ -157,4 +157,23 @@ describe("GET /api/export/transactions", () => {
       })
     );
   });
+
+  it.each(["", "2026-02-30", "not-a-date"])(
+    "returns 400 without querying for an invalid date boundary: %s",
+    async (startDate) => {
+      const response = await GET(
+        new Request(
+          `http://localhost/api/export/transactions?startDate=${encodeURIComponent(startDate)}`
+        )
+      );
+
+      expect(response.status).toBe(400);
+      await expect(response.text()).resolves.toBe(
+        "Date filters must use valid YYYY-MM-DD calendar dates."
+      );
+      expect(checkExport).not.toHaveBeenCalled();
+      expect(prisma.transaction.findMany).not.toHaveBeenCalled();
+      expect(prisma.activityLog.create).not.toHaveBeenCalled();
+    }
+  );
 });

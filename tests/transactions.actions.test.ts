@@ -236,6 +236,20 @@ describe("searchTransactions money source filtering", () => {
   });
 });
 
+describe("searchTransactions date filtering", () => {
+  it.each(["", "2026-02-30", "not-a-date"])(
+    "rejects an invalid date boundary before querying: %s",
+    async (startDate) => {
+      await expect(searchTransactions({ startDate })).rejects.toThrow(
+        "Date filters must use valid YYYY-MM-DD calendar dates."
+      );
+
+      expect(prisma.transaction.findMany).not.toHaveBeenCalled();
+      expect(prisma.transaction.count).not.toHaveBeenCalled();
+    }
+  );
+});
+
 describe("updateTransaction countTowardFeeWaiver recompute", () => {
   beforeEach(() => {
     transactions = [

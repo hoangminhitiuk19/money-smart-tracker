@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
-import { transactionDateRange } from "@/lib/date-range";
+import { parseTransactionDateRange } from "@/lib/date-range";
 import { prisma } from "@/lib/prisma";
 import { checkExport, RATE_LIMIT_MESSAGE } from "@/lib/security/rate-limit";
 
@@ -19,20 +19,6 @@ const columns = [
   "Count Toward Fee Waiver",
   "Created At"
 ];
-
-function parseDateParam(value: string | null) {
-  if (!value) {
-    return undefined;
-  }
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return undefined;
-  }
-
-  return value;
-}
 
 function csvCell(value: unknown) {
   const text =
@@ -56,6 +42,16 @@ export async function GET(request: Request) {
     return new NextResponse("Unauthorized", { status: 401 });
   }
 
+  const url = new URL(request.url);
+  const dateRange = parseTransactionDateRange(
+    url.searchParams.get("startDate") ?? undefined,
+    url.searchParams.get("endDate") ?? undefined
+  );
+
+  if (!dateRange.ok) {
+    return new NextResponse(dateRange.error, { status: 400 });
+  }
+
   const rateLimit = await checkExport(user.id);
   if (!rateLimit.allowed) {
     return new NextResponse(RATE_LIMIT_MESSAGE, {
@@ -67,14 +63,11 @@ export async function GET(request: Request) {
     });
   }
 
-  const url = new URL(request.url);
-  const startDate = parseDateParam(url.searchParams.get("startDate"));
-  const endDate = parseDateParam(url.searchParams.get("endDate"));
   const now = new Date();
   const transactions = await prisma.transaction.findMany({
     where: {
       userId: user.id,
-      transactionDate: transactionDateRange(startDate, endDate)
+      transactionDate: dateRange.range
     },
     orderBy: [{ transactionDate: "desc" }, { createdAt: "desc" }],
     include: {

@@ -16,6 +16,44 @@ function parseDateOnly(input: string): Date | undefined {
     : new Date(Number.NaN);
 }
 
+export const INVALID_TRANSACTION_DATE_RANGE_ERROR =
+  "Date filters must use valid YYYY-MM-DD calendar dates.";
+
+function isValidDateInput(input: Date | string) {
+  if (input instanceof Date) {
+    return !Number.isNaN(input.getTime());
+  }
+
+  const date = parseDateOnly(input);
+  return date !== undefined && !Number.isNaN(date.getTime());
+}
+
+function createTransactionDateRange(
+  start?: Date | string,
+  inclusiveEnd?: Date | string
+) {
+  return {
+    ...(start ? { gte: startOfDate(start) } : {}),
+    ...(inclusiveEnd ? { lt: exclusiveDayAfter(inclusiveEnd) } : {})
+  };
+}
+
+export function parseTransactionDateRange(
+  start?: Date | string,
+  inclusiveEnd?: Date | string
+):
+  | { ok: true; range: { gte?: Date; lt?: Date } }
+  | { ok: false; error: string } {
+  if (
+    (start !== undefined && !isValidDateInput(start)) ||
+    (inclusiveEnd !== undefined && !isValidDateInput(inclusiveEnd))
+  ) {
+    return { ok: false, error: INVALID_TRANSACTION_DATE_RANGE_ERROR };
+  }
+
+  return { ok: true, range: createTransactionDateRange(start, inclusiveEnd) };
+}
+
 export function startOfDate(input: Date | string): Date {
   if (input instanceof Date) {
     return new Date(
@@ -41,8 +79,11 @@ export function transactionDateRange(
   start?: Date | string,
   inclusiveEnd?: Date | string
 ): { gte?: Date; lt?: Date } {
-  return {
-    ...(start ? { gte: startOfDate(start) } : {}),
-    ...(inclusiveEnd ? { lt: exclusiveDayAfter(inclusiveEnd) } : {})
-  };
+  const result = parseTransactionDateRange(start, inclusiveEnd);
+
+  if (!result.ok) {
+    throw new Error(result.error);
+  }
+
+  return result.range;
 }

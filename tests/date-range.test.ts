@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   exclusiveDayAfter,
+  parseTransactionDateRange,
   startOfDate,
   transactionDateRange
 } from "@/lib/date-range";
@@ -36,4 +37,14 @@ describe("transaction date ranges", () => {
       lt: new Date("2026-07-31T00:00:00.000Z")
     });
   });
+
+  it.each(["", "2026-02-30", "not-a-date"])(
+    "rejects an invalid date-only boundary: %s",
+    (input) => {
+      expect(parseTransactionDateRange(input)).toStrictEqual({
+        ok: false,
+        error: "Date filters must use valid YYYY-MM-DD calendar dates."
+      });
+    }
+  );
 });
