@@ -145,11 +145,11 @@ no database evidence exists yet.
 | §19 Manual form includes amount/date/title/category/quality/source/description and creates normal EXPENSE | receipt upload UI/action | — | — | Missing | Task 17 |
 | §19 Success redirects to transactions and displays the required placeholder | receipt upload UI | — | — | Missing | Task 17 |
 | §19 No OCR or server-side file upload occurs in MVP | receipt upload boundary | — | — | Missing | Task 17 |
-| §20.1 ActivityLog record fields and owner contract | Prisma schema | — | — | Missing | Task 11/15 |
-| §20.2 Every listed action writes its specified metadata shape | action modules | category/export tests cover a subset | — | Missing | Task 11 |
+| §20.1 ActivityLog record fields and owner contract | Prisma schema; activity builders and authenticated action modules | exact metadata assertions in action tests | `tests/integration/activity.integration.test.ts` verifies persisted owner, action, entity, and metadata fields | Covered | Task 11 |
+| §20.2 Every listed action writes its specified metadata shape | typed builders in `lib/activity.ts`; transaction, money-source/card, category, goal/contribution, project, renewal, and export action modules | exact action metadata assertions across the domain suites | `tests/integration/activity.integration.test.ts`, `tests/integration/projects.integration.test.ts`, and `tests/integration/renewals.integration.test.ts` verify persisted metadata | Covered | Task 11 |
 | §20.3 Log list paginates at 50 | activity-log action/page | — | — | Missing | Task 11/17 |
-| §20.3 MVP retains logs for 90 days | activity-log retention boundary | — | — | Missing | Task 11 |
-| §20.3 Mutations write logs server-side, not through a client call | action modules | selected mocked action-log assertions only | `tests/integration/projects.integration.test.ts` proves project CRUD/activity commit together and all three mutations roll back on forced activity failure | Missing | Task 9 proves projects; Task 11/15 complete remaining mutations |
+| §20.3 MVP retains logs for 90 days | inclusive retained-read predicate and bounded oldest-first cleanup in `lib/activity.ts`; activity-log page | `tests/activity.test.ts` verifies the inclusive cutoff and 500-row cap | `tests/integration/activity.integration.test.ts` verifies pre-cleanup filtering, exact boundary retention, bounded deletion, and cross-user preservation | Covered | Task 11 |
+| §20.3 Mutations write logs server-side, not through a client call | authenticated server-action modules use one transaction client for domain mutation and activity insert | action tests verify transaction-client use and exact server-side activity writes | activity, transaction, project, goal, and renewal integration suites force activity failure and verify domain rollback | Covered | Tasks 8–11 |
 | §21 Default currency setting | settings action/page | — | — | Missing | Task 14 |
 | §21 Date and number format settings | settings action/page | — | — | Missing | Task 14 |
 | §21 Default dashboard period setting | settings action/page | — | — | Missing | Task 14 |

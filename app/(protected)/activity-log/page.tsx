@@ -1,6 +1,11 @@
 import { Prisma } from "@prisma/client";
 import Link from "next/link";
 import { Suspense } from "react";
+import {
+  activityRetentionCutoff,
+  deleteExpiredActivity,
+  retainedActivityWhere
+} from "@/lib/activity";
 import { requireAuth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { Button } from "@/components/ui/Button";
@@ -208,10 +213,10 @@ async function ActivityLogPageContent({
   const user = await requireAuth();
   const action = getParam(searchParams, "action");
   const page = parsePositiveInt(getParam(searchParams, "page"), 1);
-  const where = {
-    userId: user.id,
-    action: action || undefined
-  };
+  const now = new Date();
+  const cutoff = activityRetentionCutoff(now);
+  await deleteExpiredActivity(prisma, cutoff);
+  const where = retainedActivityWhere(user.id, action, now);
   const [logs, total] = await Promise.all([
     prisma.activityLog.findMany({
       where,

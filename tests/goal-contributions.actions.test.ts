@@ -81,9 +81,13 @@ vi.mock("@/lib/prisma", () => ({
         amount: data.amount,
         type: data.type
       })),
-      findFirst: vi.fn(async ({ where }: any) =>
-        contributions.find((c) => c.id === where.id && c.userId === where.userId) ?? null
-      ),
+      findFirst: vi.fn(async ({ where }: any) => {
+        const contribution =
+          contributions.find(
+            (c) => c.id === where.id && c.userId === where.userId
+          ) ?? null;
+        return contribution ? { ...contribution } : null;
+      }),
       aggregate: vi.fn(async ({ where }: any) => {
         // Mirrors real Prisma: excludes the row named in where.id.not, same as
         // validateLinkedTransactionLimit's excludeContributionId argument.
@@ -235,5 +239,50 @@ describe("updateContribution over-contribution guard", () => {
     expect(prisma.$transaction).toHaveBeenCalledTimes(3);
     expect(prisma.goalContribution.create).not.toHaveBeenCalled();
     expect(prisma.activityLog.create).not.toHaveBeenCalled();
+  });
+
+  it("writes exact §20.2 create metadata", async () => {
+    await expect(
+      createContribution({
+        savingGoalId: "g1",
+        amount: "25.00",
+        type: ContributionType.CONTRIBUTION,
+        contributionDate: new Date("2026-01-02")
+      })
+    ).resolves.toEqual({ ok: true });
+
+    expect(prisma.activityLog.create).toHaveBeenCalledWith({
+      data: {
+        userId: "user-1",
+        action: "GOAL_CONTRIBUTION_CREATED",
+        entityType: "GoalContribution",
+        entityId: "new-contribution",
+        metadata: {
+          goalId: "g1",
+          amount: "25.00",
+          type: ContributionType.CONTRIBUTION
+        }
+      }
+    });
+  });
+
+  it("writes only persisted semantic changes on update", async () => {
+    await expect(
+      updateContribution("c1", { note: "renamed" })
+    ).resolves.toEqual({ ok: true });
+
+    expect(prisma.activityLog.create).toHaveBeenCalledWith({
+      data: {
+        userId: "user-1",
+        action: "GOAL_CONTRIBUTION_UPDATED",
+        entityType: "GoalContribution",
+        entityId: "c1",
+        metadata: {
+          changedFields: {
+            note: [null, "renamed"]
+          }
+        }
+      }
+    });
   });
 });

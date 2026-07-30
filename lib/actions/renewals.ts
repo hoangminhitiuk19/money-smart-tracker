@@ -5,11 +5,13 @@ import {
   QualityRating,
   RenewalFrequency,
   RenewalStatus,
+  type RecurringPayment,
   TransactionType
 } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireAuth } from "@/lib/auth";
+import { changedFields } from "@/lib/activity";
 import {
   calculatePaidRenewalCycle,
   calculateSkippedRenewalCycle,
@@ -385,30 +387,6 @@ function validateRenewalTransactionShape(data: RenewalData) {
   });
 }
 
-function activityValue(value: unknown): Prisma.InputJsonValue | null {
-  if (value === undefined || value === null) {
-    return null;
-  }
-
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-
-  if (value instanceof Prisma.Decimal) {
-    return moneyText(value);
-  }
-
-  if (
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
-    return value;
-  }
-
-  return String(value);
-}
-
 const renewalActivityFields = [
   "fromMoneySourceId",
   "toMoneySourceId",
@@ -430,23 +408,38 @@ const renewalActivityFields = [
   "lastGeneratedDate"
 ] as const;
 
+function renewalActivitySnapshot(renewal: RecurringPayment) {
+  return {
+    fromMoneySourceId: renewal.fromMoneySourceId,
+    toMoneySourceId: renewal.toMoneySourceId,
+    categoryId: renewal.categoryId,
+    projectId: renewal.projectId,
+    title: renewal.title,
+    description: renewal.description,
+    amount: moneyText(renewal.amount),
+    currency: renewal.currency,
+    transactionType: renewal.transactionType,
+    qualityRating: renewal.qualityRating,
+    countTowardFeeWaiver: renewal.countTowardFeeWaiver,
+    frequency: renewal.frequency,
+    intervalCount: renewal.intervalCount,
+    nextDueDate: renewal.nextDueDate.toISOString(),
+    reminderDaysBefore: renewal.reminderDaysBefore,
+    autoCreateTransaction: renewal.autoCreateTransaction,
+    status: renewal.status,
+    lastGeneratedDate: renewal.lastGeneratedDate?.toISOString() ?? null
+  };
+}
+
 function renewalChangedFields(
-  existing: Record<string, unknown>,
-  persisted: Record<string, unknown>
+  existing: RecurringPayment,
+  persisted: RecurringPayment
 ): Prisma.InputJsonObject {
-  const changedFields: Record<string, Prisma.InputJsonValue> = {};
-
-  for (const field of renewalActivityFields) {
-    const oldActivityValue = activityValue(existing[field]);
-    const newActivityValue = activityValue(persisted[field]);
-    if (
-      JSON.stringify(oldActivityValue) !== JSON.stringify(newActivityValue)
-    ) {
-      changedFields[field] = [oldActivityValue, newActivityValue];
-    }
-  }
-
-  return changedFields as Prisma.InputJsonObject;
+  return changedFields(
+    renewalActivitySnapshot(existing),
+    renewalActivitySnapshot(persisted),
+    renewalActivityFields
+  ) as Prisma.InputJsonObject;
 }
 
 async function logActivity(
@@ -660,10 +653,7 @@ export async function updateRenewal(
       data: cleanRenewalData(normalizedData)
     });
     const persisted = await verifyRenewalOwnership(db, id, user.id);
-    const changedFields = renewalChangedFields(
-      before as unknown as Record<string, unknown>,
-      persisted as unknown as Record<string, unknown>
-    );
+    const changedFields = renewalChangedFields(before, persisted);
 
     await logActivity(user.id, "RENEWAL_UPDATED", id, {
       renewalId: id,

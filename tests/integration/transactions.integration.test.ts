@@ -202,6 +202,68 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
+async function installTransactionActivityFailure(userId: string) {
+  const suffix = randomUUID().replaceAll("-", "");
+  const functionName = `fail_transaction_activity_${suffix}`;
+  const triggerName = `fail_transaction_activity_trigger_${suffix}`;
+
+  await prisma.$executeRawUnsafe(`
+    CREATE FUNCTION "${functionName}"() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW."userId" = '${userId}' AND NEW."action" LIKE 'TRANSACTION_%' THEN
+        RAISE EXCEPTION 'forced transaction activity failure';
+      END IF;
+      RETURN NEW;
+    END;
+    $$;
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE TRIGGER "${triggerName}"
+    BEFORE INSERT ON "ActivityLog"
+    FOR EACH ROW EXECUTE FUNCTION "${functionName}"();
+  `);
+
+  return async () => {
+    await prisma.$executeRawUnsafe(
+      `DROP TRIGGER IF EXISTS "${triggerName}" ON "ActivityLog"`
+    );
+    await prisma.$executeRawUnsafe(
+      `DROP FUNCTION IF EXISTS "${functionName}"()`
+    );
+  };
+}
+
+describe("transaction activity atomicity", () => {
+  it("rolls back a financial transaction when its activity write fails", async () => {
+    authState.userId = fixtures.context.userA.id;
+    const title = `Atomic transaction ${randomUUID()}`;
+    const uninstallFailure = await installTransactionActivityFailure(
+      fixtures.context.userA.id
+    );
+
+    try {
+      await expect(
+        createTransaction({
+          type: TransactionType.EXPENSE,
+          amount: "100.00",
+          title,
+          transactionDate: "2026-07-30",
+          fromMoneySourceId: fixtures.bankAId
+        })
+      ).rejects.toThrow();
+    } finally {
+      await uninstallFailure();
+    }
+
+    await expect(
+      prisma.transaction.count({
+        where: { userId: fixtures.context.userA.id, title }
+      })
+    ).resolves.toBe(0);
+  });
+});
+
 async function countsForUser(userId: string) {
   return Promise.all([
     prisma.transaction.count({ where: { userId } }),

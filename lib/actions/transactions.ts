@@ -12,6 +12,11 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireAuth } from "@/lib/auth";
 import {
+  transactionCreatedMetadata,
+  transactionDeletedMetadata,
+  transactionUpdatedMetadata
+} from "@/lib/activity";
+import {
   getCountTowardFeeWaiverDefault,
   validateTransactionFields
 } from "@/lib/calc/transactions";
@@ -280,8 +285,12 @@ function cleanNullableRelations<
   };
 }
 
-async function verifyTransactionOwnership(id: string, userId: string) {
-  const transaction = await prisma.transaction.findFirst({
+async function verifyTransactionOwnership(
+  db: Prisma.TransactionClient | typeof prisma,
+  id: string,
+  userId: string
+) {
+  const transaction = await db.transaction.findFirst({
     where: { id, userId }
   });
 
@@ -293,6 +302,7 @@ async function verifyTransactionOwnership(id: string, userId: string) {
 }
 
 async function verifyOptionalRecord(
+  db: Prisma.TransactionClient | typeof prisma,
   model: "financialProject" | "recurringPayment",
   id: string | null | undefined,
   userId: string
@@ -303,11 +313,11 @@ async function verifyOptionalRecord(
 
   const record =
     model === "financialProject"
-      ? await prisma.financialProject.findFirst({
+      ? await db.financialProject.findFirst({
           where: { id, userId },
           select: { id: true }
         })
-      : await prisma.recurringPayment.findFirst({
+      : await db.recurringPayment.findFirst({
           where: { id, userId },
           select: { id: true }
         });
@@ -318,6 +328,7 @@ async function verifyOptionalRecord(
 }
 
 async function getOwnedCategory(
+  db: Prisma.TransactionClient | typeof prisma,
   id: string | null | undefined,
   userId: string
 ) {
@@ -325,7 +336,7 @@ async function getOwnedCategory(
     return null;
   }
 
-  const category = await prisma.category.findFirst({
+  const category = await db.category.findFirst({
     where: { id, userId },
     select: { id: true, defaultCountTowardFeeWaiver: true }
   });
@@ -338,6 +349,7 @@ async function getOwnedCategory(
 }
 
 async function verifyRelatedExpense(
+  db: Prisma.TransactionClient | typeof prisma,
   id: string | null | undefined,
   userId: string
 ) {
@@ -345,7 +357,7 @@ async function verifyRelatedExpense(
     return;
   }
 
-  const expense = await prisma.transaction.findFirst({
+  const expense = await db.transaction.findFirst({
     where: { id, userId, type: TransactionType.EXPENSE },
     select: { id: true }
   });
@@ -355,8 +367,12 @@ async function verifyRelatedExpense(
   }
 }
 
-async function hasOwnedLinkedRefund(id: string, userId: string) {
-  const linkedRefundCount = await prisma.transaction.count({
+async function hasOwnedLinkedRefund(
+  db: Prisma.TransactionClient | typeof prisma,
+  id: string,
+  userId: string
+) {
+  const linkedRefundCount = await db.transaction.count({
     where: {
       userId,
       type: TransactionType.REFUND,
@@ -367,14 +383,18 @@ async function hasOwnedLinkedRefund(id: string, userId: string) {
   return linkedRefundCount > 0;
 }
 
-async function getOwnedMoneySources(ids: string[], userId: string) {
+async function getOwnedMoneySources(
+  db: Prisma.TransactionClient | typeof prisma,
+  ids: string[],
+  userId: string
+) {
   const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
 
   if (uniqueIds.length === 0) {
     return [];
   }
 
-  const moneySources = await prisma.moneySource.findMany({
+  const moneySources = await db.moneySource.findMany({
     where: {
       id: { in: uniqueIds },
       userId
@@ -393,17 +413,19 @@ async function getOwnedMoneySources(ids: string[], userId: string) {
 }
 
 async function verifyReferences(
+  db: Prisma.TransactionClient | typeof prisma,
   data: TransactionData | TransactionUpdateData,
   userId: string
 ) {
   const [category] = await Promise.all([
-    getOwnedCategory(data.categoryId, userId),
-    verifyOptionalRecord("financialProject", data.projectId, userId),
-    verifyRelatedExpense(data.relatedTransactionId, userId),
-    verifyOptionalRecord("recurringPayment", data.recurringPaymentId, userId)
+    getOwnedCategory(db, data.categoryId, userId),
+    verifyOptionalRecord(db, "financialProject", data.projectId, userId),
+    verifyRelatedExpense(db, data.relatedTransactionId, userId),
+    verifyOptionalRecord(db, "recurringPayment", data.recurringPaymentId, userId)
   ]);
 
   const moneySources = await getOwnedMoneySources(
+    db,
     [
       data.fromMoneySourceId,
       data.toMoneySourceId,
@@ -416,6 +438,7 @@ async function verifyReferences(
 }
 
 async function logActivity(
+  db: Prisma.TransactionClient,
   userId: string,
   action:
     | "TRANSACTION_CREATED"
@@ -424,7 +447,7 @@ async function logActivity(
   entityId: string,
   metadata?: Prisma.InputJsonObject
 ) {
-  await prisma.activityLog.create({
+  await db.activityLog.create({
     data: {
       userId,
       action,
@@ -541,43 +564,54 @@ export async function createTransaction(
     return { ok: false, error: initialValidation.errors.join(" ") };
   }
 
-  const { category, moneySources } = await verifyReferences(parsed.data, user.id);
-  const validation = validateCompleteTransaction(parsed.data, moneySources);
+  const result = await prisma.$transaction(async (db) => {
+    const { category, moneySources } = await verifyReferences(
+      db,
+      parsed.data,
+      user.id
+    );
+    const validation = validateCompleteTransaction(parsed.data, moneySources);
 
-  if (!validation.ok) {
-    return { ok: false, error: validation.errors.join(" ") };
+    if (!validation.ok) {
+      return { ok: false as const, error: validation.errors.join(" ") };
+    }
+
+    const normalizedData = normalizeAdjustmentTarget(
+      parsed.data,
+      moneySources,
+      parsed.data.adjustmentTarget !== undefined
+    );
+    const countTowardFeeWaiver =
+      normalizedData.type === TransactionType.EXPENSE
+        ? (parsed.data.countTowardFeeWaiver ??
+          getCountTowardFeeWaiverDefault(
+            normalizedData,
+            moneySources,
+            category
+          ))
+        : false;
+
+    const transaction = await db.transaction.create({
+      data: {
+        ...cleanNullableRelations(normalizedData),
+        countTowardFeeWaiver,
+        userId: user.id
+      }
+    });
+
+    await logActivity(
+      db,
+      user.id,
+      "TRANSACTION_CREATED",
+      transaction.id,
+      transactionCreatedMetadata(transaction)
+    );
+    return { ok: true as const };
+  });
+
+  if (!result.ok) {
+    return result;
   }
-
-  const normalizedData = normalizeAdjustmentTarget(
-    parsed.data,
-    moneySources,
-    parsed.data.adjustmentTarget !== undefined
-  );
-  const countTowardFeeWaiver =
-    normalizedData.type === TransactionType.EXPENSE
-      ? (parsed.data.countTowardFeeWaiver ??
-        getCountTowardFeeWaiverDefault(
-          normalizedData,
-          moneySources,
-          category
-        ))
-      : false;
-
-  const transaction = await prisma.transaction.create({
-    data: {
-      ...cleanNullableRelations(normalizedData),
-      countTowardFeeWaiver,
-      userId: user.id
-    },
-    select: { id: true, title: true, type: true, amount: true }
-  });
-
-  await logActivity(user.id, "TRANSACTION_CREATED", transaction.id, {
-    title: transaction.title,
-    type: transaction.type,
-    amount: transaction.amount.toString()
-  });
-
   revalidatePath("/transactions");
   return { ok: true };
 }
@@ -591,30 +625,35 @@ export async function updateTransaction(
   if (!rateLimit.allowed) {
     return { ok: false, error: RATE_LIMIT_MESSAGE };
   }
-  const existingTransaction = await verifyTransactionOwnership(id, user.id);
   const parsed = parseTransactionUpdateInput(data);
 
   if (!parsed.success) {
     return { ok: false, error: "Enter a valid transaction." };
   }
 
-  if (
-    existingTransaction.type === TransactionType.EXPENSE &&
-    parsed.data.type !== undefined &&
-    parsed.data.type !== TransactionType.EXPENSE &&
-    (await hasOwnedLinkedRefund(id, user.id))
-  ) {
-    return {
-      ok: false,
-      error: "Unlink related refunds before changing this expense type."
-    };
-  }
-
   if (parsed.data.relatedTransactionId === id) {
     return { ok: false, error: "A transaction cannot relate to itself." };
   }
 
-  const mergedData = {
+  const result = await prisma.$transaction(async (db) => {
+    const existingTransaction = await verifyTransactionOwnership(
+      db,
+      id,
+      user.id
+    );
+    if (
+      existingTransaction.type === TransactionType.EXPENSE &&
+      parsed.data.type !== undefined &&
+      parsed.data.type !== TransactionType.EXPENSE &&
+      (await hasOwnedLinkedRefund(db, id, user.id))
+    ) {
+      return {
+        ok: false as const,
+        error: "Unlink related refunds before changing this expense type."
+      };
+    }
+
+    const mergedData = {
     type: parsed.data.type ?? existingTransaction.type,
     amount:
       parsed.data.amount !== undefined
@@ -673,32 +712,33 @@ export async function updateTransaction(
         : existingTransaction.recurringPaymentId,
     isInstallmentRelated:
       parsed.data.isInstallmentRelated ?? existingTransaction.isInstallmentRelated
-  } satisfies TransactionData;
-  const typeChanged =
-    parsed.data.type !== undefined &&
-    parsed.data.type !== existingTransaction.type;
-  const typeNormalizedData = normalizeTypeTransition(mergedData, typeChanged);
+    } satisfies TransactionData;
+    const typeChanged =
+      parsed.data.type !== undefined &&
+      parsed.data.type !== existingTransaction.type;
+    const typeNormalizedData = normalizeTypeTransition(mergedData, typeChanged);
 
-  const initialValidation = validateCompleteTransaction(typeNormalizedData);
+    const initialValidation = validateCompleteTransaction(typeNormalizedData);
 
-  if (!initialValidation.ok) {
-    return { ok: false, error: initialValidation.errors.join(" ") };
-  }
+    if (!initialValidation.ok) {
+      return { ok: false as const, error: initialValidation.errors.join(" ") };
+    }
 
-  const { category, moneySources } = await verifyReferences(
-    typeNormalizedData,
-    user.id
-  );
-  const normalizedData = normalizeAdjustmentTarget(
-    typeNormalizedData,
-    moneySources,
-    parsed.data.adjustmentTarget !== undefined
-  );
-  const validation = validateCompleteTransaction(normalizedData, moneySources);
+    const { category, moneySources } = await verifyReferences(
+      db,
+      typeNormalizedData,
+      user.id
+    );
+    const normalizedData = normalizeAdjustmentTarget(
+      typeNormalizedData,
+      moneySources,
+      parsed.data.adjustmentTarget !== undefined
+    );
+    const validation = validateCompleteTransaction(normalizedData, moneySources);
 
-  if (!validation.ok) {
-    return { ok: false, error: validation.errors.join(" ") };
-  }
+    if (!validation.ok) {
+      return { ok: false as const, error: validation.errors.join(" ") };
+    }
 
   const feeWaiverRelevantFieldsChanged =
     typeChanged ||
@@ -719,21 +759,28 @@ export async function updateTransaction(
           : existingTransaction.countTowardFeeWaiver
       : false;
 
-  await prisma.transaction.updateMany({
-    where: { id, userId: user.id },
-    data: {
-      ...cleanNullableRelations(normalizedData),
-      countTowardFeeWaiver
-    }
-  });
-  const transaction = await verifyTransactionOwnership(id, user.id);
+    await db.transaction.updateMany({
+      where: { id, userId: user.id },
+      data: {
+        ...cleanNullableRelations(normalizedData),
+        countTowardFeeWaiver
+      }
+    });
+    const transaction = await verifyTransactionOwnership(db, id, user.id);
 
-  await logActivity(user.id, "TRANSACTION_UPDATED", transaction.id, {
-    title: transaction.title,
-    type: transaction.type,
-    amount: transaction.amount.toString()
+    await logActivity(
+      db,
+      user.id,
+      "TRANSACTION_UPDATED",
+      transaction.id,
+      transactionUpdatedMetadata(existingTransaction, transaction)
+    );
+    return { ok: true as const };
   });
 
+  if (!result.ok) {
+    return result;
+  }
   revalidatePath("/transactions");
   revalidatePath(`/transactions/${id}`);
   return { ok: true };
@@ -747,16 +794,19 @@ export async function deleteTransaction(
   if (!rateLimit.allowed) {
     return { ok: false, error: RATE_LIMIT_MESSAGE };
   }
-  const transaction = await verifyTransactionOwnership(id, user.id);
+  await prisma.$transaction(async (db) => {
+    const transaction = await verifyTransactionOwnership(db, id, user.id);
+    await db.transaction.deleteMany({
+      where: { id, userId: user.id }
+    });
 
-  await prisma.transaction.deleteMany({
-    where: { id, userId: user.id }
-  });
-
-  await logActivity(user.id, "TRANSACTION_DELETED", id, {
-    title: transaction.title,
-    type: transaction.type,
-    amount: transaction.amount.toString()
+    await logActivity(
+      db,
+      user.id,
+      "TRANSACTION_DELETED",
+      id,
+      transactionDeletedMetadata(transaction)
+    );
   });
 
   revalidatePath("/transactions");
@@ -765,7 +815,7 @@ export async function deleteTransaction(
 
 export async function getTransaction(id: string) {
   const user = await requireAuth();
-  return verifyTransactionOwnership(id, user.id);
+  return verifyTransactionOwnership(prisma, id, user.id);
 }
 
 function buildTransactionSearchWhere(

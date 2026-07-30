@@ -58,8 +58,12 @@ function parseCategoryInput(data: CategoryInput | FormData) {
   return categorySchema.safeParse(data);
 }
 
-async function verifyCategoryOwnership(id: string, userId: string) {
-  const category = await prisma.category.findFirst({
+async function verifyCategoryOwnership(
+  db: Prisma.TransactionClient | typeof prisma,
+  id: string,
+  userId: string
+) {
+  const category = await db.category.findFirst({
     where: { id, userId }
   });
 
@@ -71,12 +75,13 @@ async function verifyCategoryOwnership(id: string, userId: string) {
 }
 
 async function logActivity(
+  db: Prisma.TransactionClient,
   userId: string,
   action: "CATEGORY_CREATED" | "CATEGORY_UPDATED" | "CATEGORY_DELETED",
   entityId: string,
   metadata?: Prisma.InputJsonObject
 ) {
-  await prisma.activityLog.create({
+  await db.activityLog.create({
     data: {
       userId,
       action,
@@ -101,17 +106,19 @@ export async function createCategory(
     return { ok: false, error: "Enter a valid category." };
   }
 
-  const category = await prisma.category.create({
-    data: {
-      ...parsed.data,
-      userId: user.id
-    },
-    select: { id: true, name: true, type: true }
-  });
+  await prisma.$transaction(async (db) => {
+    const category = await db.category.create({
+      data: {
+        ...parsed.data,
+        userId: user.id
+      },
+      select: { id: true, name: true, type: true }
+    });
 
-  await logActivity(user.id, "CATEGORY_CREATED", category.id, {
-    name: category.name,
-    type: category.type
+    await logActivity(db, user.id, "CATEGORY_CREATED", category.id, {
+      name: category.name,
+      type: category.type
+    });
   });
 
   revalidatePath("/categories");
@@ -137,17 +144,18 @@ export async function updateCategory(
     return { ok: false, error: "Enter a valid category." };
   }
 
-  await verifyCategoryOwnership(id, user.id);
+  await prisma.$transaction(async (db) => {
+    await verifyCategoryOwnership(db, id, user.id);
+    await db.category.updateMany({
+      where: { id, userId: user.id },
+      data: parsed.data
+    });
+    const category = await verifyCategoryOwnership(db, id, user.id);
 
-  await prisma.category.updateMany({
-    where: { id, userId: user.id },
-    data: parsed.data
-  });
-  const category = await verifyCategoryOwnership(id, user.id);
-
-  await logActivity(user.id, "CATEGORY_UPDATED", category.id, {
-    name: category.name,
-    type: category.type
+    await logActivity(db, user.id, "CATEGORY_UPDATED", category.id, {
+      name: category.name,
+      type: category.type
+    });
   });
 
   revalidatePath("/categories");
@@ -166,31 +174,36 @@ export async function deleteCategory(
   if (!rateLimit.allowed) {
     return { ok: false, error: RATE_LIMIT_MESSAGE };
   }
-  const category = await verifyCategoryOwnership(id, user.id);
+  const result = await prisma.$transaction(async (db) => {
+    const category = await verifyCategoryOwnership(db, id, user.id);
+    const transactionCount = await db.transaction.count({
+      where: {
+        categoryId: id,
+        userId: user.id
+      }
+    });
 
-  const transactionCount = await prisma.transaction.count({
-    where: {
-      categoryId: id,
-      userId: user.id
+    if (transactionCount > 0) {
+      return {
+        ok: false as const,
+        error: "This category is used by transactions and cannot be deleted."
+      };
     }
+
+    await db.category.deleteMany({
+      where: { id, userId: user.id }
+    });
+
+    await logActivity(db, user.id, "CATEGORY_DELETED", id, {
+      name: category.name,
+      type: category.type
+    });
+    return { ok: true as const };
   });
 
-  if (transactionCount > 0) {
-    return {
-      ok: false,
-      error: "This category is used by transactions and cannot be deleted."
-    };
+  if (!result.ok) {
+    return result;
   }
-
-  await prisma.category.deleteMany({
-    where: { id, userId: user.id }
-  });
-
-  await logActivity(user.id, "CATEGORY_DELETED", id, {
-    name: category.name,
-    type: category.type
-  });
-
   revalidatePath("/categories");
   return { ok: true };
 }
@@ -210,5 +223,5 @@ export async function listCategories() {
 
 export async function getCategory(id: string) {
   const user = await requireAuth();
-  return verifyCategoryOwnership(id, user.id);
+  return verifyCategoryOwnership(prisma, id, user.id);
 }

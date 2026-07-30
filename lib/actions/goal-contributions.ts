@@ -9,6 +9,10 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireAuth } from "@/lib/auth";
 import {
+  goalContributionCreatedMetadata,
+  goalContributionUpdatedMetadata
+} from "@/lib/activity";
+import {
   overContributionError,
   validateContributionAgainstTransaction
 } from "@/lib/calc/goals";
@@ -418,11 +422,7 @@ export async function createContribution(
         user.id,
         "GOAL_CONTRIBUTION_CREATED",
         contribution.id,
-        {
-          savingGoalId: contribution.savingGoalId,
-          amount: contribution.amount.toString(),
-          type: contribution.type
-        }
+        goalContributionCreatedMetadata(contribution)
       );
 
       return {
@@ -540,11 +540,7 @@ export async function updateContribution(
         user.id,
         "GOAL_CONTRIBUTION_UPDATED",
         contribution.id,
-        {
-          savingGoalId: contribution.savingGoalId,
-          amount: contribution.amount.toString(),
-          type: contribution.type
-        }
+        goalContributionUpdatedMetadata(existingContribution, contribution)
       );
 
       return {

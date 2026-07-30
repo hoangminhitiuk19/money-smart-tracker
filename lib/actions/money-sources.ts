@@ -2,6 +2,10 @@
 
 import { MoneySourceType, Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
+import {
+  moneySourceCreatedMetadata,
+  moneySourceUpdatedActivity
+} from "@/lib/activity";
 import { requireAuth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import {
@@ -133,8 +137,12 @@ const clearedCardConfiguration = {
   annualFeeWaiverNote: null
 } satisfies Prisma.MoneySourceUpdateManyMutationInput;
 
-async function verifyMoneySourceOwnership(id: string, userId: string) {
-  const moneySource = await prisma.moneySource.findFirst({
+async function verifyMoneySourceOwnership(
+  db: Prisma.TransactionClient | typeof prisma,
+  id: string,
+  userId: string
+) {
+  const moneySource = await db.moneySource.findFirst({
     where: { id, userId }
   });
 
@@ -146,12 +154,17 @@ async function verifyMoneySourceOwnership(id: string, userId: string) {
 }
 
 async function logActivity(
+  db: Prisma.TransactionClient,
   userId: string,
-  action: "MONEY_SOURCE_CREATED" | "MONEY_SOURCE_UPDATED" | "MONEY_SOURCE_DELETED",
+  action:
+    | "MONEY_SOURCE_CREATED"
+    | "MONEY_SOURCE_UPDATED"
+    | "CREDIT_CARD_UPDATED"
+    | "MONEY_SOURCE_DELETED",
   entityId: string,
   metadata?: Prisma.InputJsonObject
 ) {
-  await prisma.activityLog.create({
+  await db.activityLog.create({
     data: {
       userId,
       action,
@@ -176,17 +189,21 @@ export async function createMoneySource(
     return { ok: false, error: "Enter a valid account or wallet." };
   }
 
-  const moneySource = await prisma.moneySource.create({
-    data: {
-      ...parsed.data,
-      userId: user.id
-    },
-    select: { id: true, name: true, type: true }
-  });
+  await prisma.$transaction(async (db) => {
+    const moneySource = await db.moneySource.create({
+      data: {
+        ...parsed.data,
+        userId: user.id
+      }
+    });
 
-  await logActivity(user.id, "MONEY_SOURCE_CREATED", moneySource.id, {
-    name: moneySource.name,
-    type: moneySource.type
+    await logActivity(
+      db,
+      user.id,
+      "MONEY_SOURCE_CREATED",
+      moneySource.id,
+      moneySourceCreatedMetadata(moneySource)
+    );
   });
 
   revalidatePath("/accounts");
@@ -212,33 +229,49 @@ export async function updateMoneySource(
     return { ok: false, error: "Enter a valid account or wallet." };
   }
 
-  const existingMoneySource = await verifyMoneySourceOwnership(id, user.id);
-  const updateData =
-    parsed.data.type !== undefined &&
-    parsed.data.type !== MoneySourceType.CREDIT_CARD
-      ? { ...parsed.data, ...clearedCardConfiguration }
-      : parsed.data;
-  const completeUpdate = moneySourceSchema.safeParse({
-    ...existingMoneySource,
-    ...updateData
+  const result = await prisma.$transaction(async (db) => {
+    const existingMoneySource = await verifyMoneySourceOwnership(
+      db,
+      id,
+      user.id
+    );
+    const updateData =
+      parsed.data.type !== undefined &&
+      parsed.data.type !== MoneySourceType.CREDIT_CARD
+        ? { ...parsed.data, ...clearedCardConfiguration }
+        : parsed.data;
+    const completeUpdate = moneySourceSchema.safeParse({
+      ...existingMoneySource,
+      ...updateData
+    });
+
+    if (!completeUpdate.success) {
+      return { ok: false as const, error: "Enter a valid account or wallet." };
+    }
+
+    await db.moneySource.updateMany({
+      where: { id, userId: user.id },
+      data: updateData
+    });
+    const moneySource = await verifyMoneySourceOwnership(db, id, user.id);
+    const activity = moneySourceUpdatedActivity(
+      existingMoneySource,
+      moneySource
+    );
+
+    await logActivity(
+      db,
+      user.id,
+      activity.action,
+      moneySource.id,
+      activity.metadata
+    );
+    return { ok: true as const };
   });
 
-  if (!completeUpdate.success) {
-    return { ok: false, error: "Enter a valid account or wallet." };
+  if (!result.ok) {
+    return result;
   }
-
-  await prisma.moneySource.updateMany({
-    where: { id, userId: user.id },
-    data: updateData
-  });
-  const moneySource = await verifyMoneySourceOwnership(id, user.id);
-
-  await logActivity(user.id, "MONEY_SOURCE_UPDATED", moneySource.id, {
-    name: moneySource.name,
-    type: moneySource.type,
-    isActive: moneySource.isActive
-  });
-
   revalidatePath("/accounts");
   revalidatePath(`/accounts/${id}`);
   return { ok: true };
@@ -268,35 +301,40 @@ export async function deleteMoneySource(
   if (!rateLimit.allowed) {
     return { ok: false, error: RATE_LIMIT_MESSAGE };
   }
-  const moneySource = await verifyMoneySourceOwnership(id, user.id);
+  const result = await prisma.$transaction(async (db) => {
+    const moneySource = await verifyMoneySourceOwnership(db, id, user.id);
+    const transactionCount = await db.transaction.count({
+      where: {
+        userId: user.id,
+        OR: [
+          { fromMoneySourceId: id },
+          { toMoneySourceId: id },
+          { adjustedMoneySourceId: id }
+        ]
+      }
+    });
 
-  const transactionCount = await prisma.transaction.count({
-    where: {
-      userId: user.id,
-      OR: [
-        { fromMoneySourceId: id },
-        { toMoneySourceId: id },
-        { adjustedMoneySourceId: id }
-      ]
+    if (transactionCount > 0) {
+      return {
+        ok: false as const,
+        error: "This account is used by transactions and cannot be deleted."
+      };
     }
+
+    await db.moneySource.deleteMany({
+      where: { id, userId: user.id }
+    });
+
+    await logActivity(db, user.id, "MONEY_SOURCE_DELETED", id, {
+      name: moneySource.name,
+      type: moneySource.type
+    });
+    return { ok: true as const };
   });
 
-  if (transactionCount > 0) {
-    return {
-      ok: false,
-      error: "This account is used by transactions and cannot be deleted."
-    };
+  if (!result.ok) {
+    return result;
   }
-
-  await prisma.moneySource.deleteMany({
-    where: { id, userId: user.id }
-  });
-
-  await logActivity(user.id, "MONEY_SOURCE_DELETED", id, {
-    name: moneySource.name,
-    type: moneySource.type
-  });
-
   revalidatePath("/accounts");
   return { ok: true };
 }
@@ -316,5 +354,5 @@ export async function listMoneySources() {
 
 export async function getMoneySource(id: string) {
   const user = await requireAuth();
-  return verifyMoneySourceOwnership(id, user.id);
+  return verifyMoneySourceOwnership(prisma, id, user.id);
 }

@@ -161,10 +161,17 @@ function fakeCreditCard(): FakeMoneySource {
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    $transaction: vi.fn(async (operation: any) =>
+      operation((await import("@/lib/prisma")).prisma)
+    ),
     moneySource: {
-      findFirst: vi.fn(async ({ where }: any) =>
-        moneySources.find((m) => m.id === where.id && m.userId === where.userId) ?? null
-      ),
+      findFirst: vi.fn(async ({ where }: any) => {
+        const moneySource =
+          moneySources.find(
+            (m) => m.id === where.id && m.userId === where.userId
+          ) ?? null;
+        return moneySource ? { ...moneySource } : null;
+      }),
       create: vi.fn(async ({ data }: any) => {
         const record = { id: "new-money-source", ...data } as FakeMoneySource;
         moneySources.push(record);
@@ -284,6 +291,70 @@ describe("money source mutation boundaries", () => {
         })
       })
     );
+  });
+
+  it("writes exact §20.2 create metadata", async () => {
+    await expect(
+      createMoneySource({
+        name: "Travel Cash",
+        type: MoneySourceType.CASH
+      })
+    ).resolves.toEqual({ ok: true });
+
+    expect(prisma.activityLog.create).toHaveBeenCalledWith({
+      data: {
+        userId: "user-1",
+        action: "MONEY_SOURCE_CREATED",
+        entityType: "MoneySource",
+        entityId: "new-money-source",
+        metadata: {
+          name: "Travel Cash",
+          type: MoneySourceType.CASH
+        }
+      }
+    });
+  });
+
+  it("writes only persisted semantic changes for a non-card update", async () => {
+    await expect(
+      updateMoneySource("ms-1", { name: "Travel Cash" })
+    ).resolves.toEqual({ ok: true });
+
+    expect(prisma.activityLog.create).toHaveBeenCalledWith({
+      data: {
+        userId: "user-1",
+        action: "MONEY_SOURCE_UPDATED",
+        entityType: "MoneySource",
+        entityId: "ms-1",
+        metadata: {
+          changedFields: {
+            name: ["Cash Wallet", "Travel Cash"]
+          }
+        }
+      }
+    });
+  });
+
+  it("uses CREDIT_CARD_UPDATED with exact Decimal changedFields", async () => {
+    moneySources.push(fakeCreditCard());
+
+    await expect(
+      updateMoneySource("ms-card", { creditLimit: "6000.00" })
+    ).resolves.toEqual({ ok: true });
+
+    expect(prisma.activityLog.create).toHaveBeenCalledWith({
+      data: {
+        userId: "user-1",
+        action: "CREDIT_CARD_UPDATED",
+        entityType: "MoneySource",
+        entityId: "ms-card",
+        metadata: {
+          changedFields: {
+            creditLimit: ["5000.00", "6000.00"]
+          }
+        }
+      }
+    });
   });
 });
 

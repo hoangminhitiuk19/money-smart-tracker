@@ -44,6 +44,9 @@ let categories: FakeCategory[];
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    $transaction: vi.fn(async (operation: any) =>
+      operation((await import("@/lib/prisma")).prisma)
+    ),
     category: {
       findFirst: vi.fn(async ({ where }: any) =>
         categories.find((c) => c.id === where.id && c.userId === where.userId) ?? null
@@ -132,6 +135,7 @@ describe("category activity logging", () => {
         data: expect.objectContaining({ userId: "user-1", action: "CATEGORY_CREATED" })
       })
     );
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function));
   });
 
   it("writes a CATEGORY_UPDATED entry on update", async () => {

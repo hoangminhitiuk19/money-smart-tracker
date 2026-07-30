@@ -79,6 +79,9 @@ function matchesTransactionWhere(transaction: FakeTransaction, where: any) {
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    $transaction: vi.fn(async (operation: any) =>
+      operation((await import("@/lib/prisma")).prisma)
+    ),
     category: {
       findFirst: vi.fn(async ({ where }: any) =>
         categories.find(
@@ -95,18 +98,19 @@ vi.mock("@/lib/prisma", () => ({
       )
     },
     transaction: {
-      findFirst: vi.fn(async ({ where }: any) =>
-        transactions.find(
+      findFirst: vi.fn(async ({ where }: any) => {
+        const transaction = transactions.find(
           (transaction) =>
             transaction.id === where.id &&
             transaction.userId === where.userId &&
             (where.type === undefined || transaction.type === where.type)
-        ) ?? null
-      ),
+        );
+        return transaction ? { ...transaction } : null;
+      }),
       create: vi.fn(async ({ data }: any) => {
         const record = { id: "new-transaction", userId: mockUser.id, ...data };
         transactions.push(record);
-        return { id: record.id, title: record.title, type: record.type, amount: record.amount };
+        return record;
       }),
       updateMany: vi.fn(async ({ where, data }: any) => {
         const target = transactions.find(
@@ -176,6 +180,81 @@ beforeEach(() => {
   projects = [{ id: "project-own", userId: "user-1" }];
   recurringPayments = [{ id: "rp-own", userId: "user-1" }];
   transactions = [];
+});
+
+describe("transaction §20.2 activity metadata", () => {
+  it("records exact created metadata including Decimal text and null source IDs", async () => {
+    await expect(
+      createTransaction({
+        type: TransactionType.EXPENSE,
+        amount: "100.00",
+        title: "Audit expense",
+        transactionDate: new Date("2026-01-01"),
+        fromMoneySourceId: "ms-a"
+      })
+    ).resolves.toEqual({ ok: true });
+
+    expect(prisma.activityLog.create).toHaveBeenCalledWith({
+      data: {
+        userId: "user-1",
+        action: "TRANSACTION_CREATED",
+        entityType: "Transaction",
+        entityId: "new-transaction",
+        metadata: {
+          amount: "100.00",
+          type: "EXPENSE",
+          title: "Audit expense",
+          fromSourceId: "ms-a",
+          toSourceId: null
+        }
+      }
+    });
+  });
+
+  it("records only persisted semantic changes on update", async () => {
+    transactions = [
+      {
+        id: "transaction-1",
+        userId: "user-1",
+        type: TransactionType.EXPENSE,
+        amount: "100.00",
+        currency: "VND",
+        title: "Before",
+        description: null,
+        transactionDate: new Date("2026-01-01"),
+        categoryId: null,
+        qualityRating: null,
+        fromMoneySourceId: "ms-a",
+        toMoneySourceId: null,
+        adjustedMoneySourceId: null,
+        adjustmentDirection: null,
+        adjustmentTarget: null,
+        projectId: null,
+        relatedTransactionId: null,
+        countTowardFeeWaiver: false,
+        recurringPaymentId: null,
+        isInstallmentRelated: false
+      }
+    ];
+
+    await expect(
+      updateTransaction("transaction-1", { title: "After" })
+    ).resolves.toEqual({ ok: true });
+
+    expect(prisma.activityLog.create).toHaveBeenCalledWith({
+      data: {
+        userId: "user-1",
+        action: "TRANSACTION_UPDATED",
+        entityType: "Transaction",
+        entityId: "transaction-1",
+        metadata: {
+          changedFields: {
+            title: ["Before", "After"]
+          }
+        }
+      }
+    });
+  });
 });
 
 describe("transaction mutation rate limiting", () => {
