@@ -5,9 +5,14 @@ import {
   type ProjectSummaryTransaction
 } from "@/lib/calc/projects";
 
+type LinkedProjectSummaryTransaction = ProjectSummaryTransaction & {
+  id?: string;
+  relatedTransactionId?: string | null;
+};
+
 function tx(
-  transaction: Partial<ProjectSummaryTransaction>
-): ProjectSummaryTransaction {
+  transaction: Partial<LinkedProjectSummaryTransaction>
+): LinkedProjectSummaryTransaction {
   return {
     amount: 0,
     projectId: "project-1",
@@ -28,9 +33,18 @@ function summaryText(result: ReturnType<typeof calculateProjectSummary>) {
 describe("calculateProjectSummary", () => {
   it("keeps the published project example raw and exact", () => {
     const summary = calculateProjectSummary([
-      tx({ amount: "500000.00", type: TransactionType.EXPENSE }),
+      tx({
+        id: "fruit-expense",
+        amount: "500000.00",
+        type: TransactionType.EXPENSE
+      }),
       tx({ amount: "100000.00", type: TransactionType.EXPENSE }),
-      tx({ amount: "900000.00", type: TransactionType.INCOME })
+      tx({ amount: "900000.00", type: TransactionType.INCOME }),
+      tx({
+        amount: "100000.00",
+        relatedTransactionId: "fruit-expense",
+        type: TransactionType.REFUND
+      })
     ]);
 
     expect(summary.totalIncome.toFixed(2)).toBe("900000.00");
