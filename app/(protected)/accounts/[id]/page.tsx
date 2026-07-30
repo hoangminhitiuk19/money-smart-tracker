@@ -16,6 +16,7 @@ import {
   type DecimalInput
 } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
+import { MoneySourceForm } from "@/components/money-source-form";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
 import { ProgressBar } from "@/components/ui/ProgressBar";
@@ -49,6 +50,10 @@ function formatDate(date: Date) {
     month: "short",
     year: "numeric"
   });
+}
+
+function dateInputValue(date: Date | null) {
+  return date?.toISOString().slice(0, 10) ?? null;
 }
 
 function formatPeriod(period: string | null) {
@@ -336,6 +341,43 @@ async function AccountDetailPageContent({
           ) : null}
         </Card>
       ) : null}
+
+      <MoneySourceForm
+        initialValues={{
+          id: source.id,
+          name: source.name,
+          type: source.type,
+          providerName: source.providerName,
+          displayIdentifier: source.displayIdentifier,
+          currency: source.currency,
+          openingBalance: source.openingBalance.toFixed(2),
+          description: source.description,
+          isActive: source.isActive,
+          cardLastFourDigits: source.cardLastFourDigits,
+          cardNetwork: source.cardNetwork,
+          openedDate: dateInputValue(source.openedDate),
+          creditLimit: source.creditLimit?.toFixed(2) ?? null,
+          initialOutstandingDebt: source.initialOutstandingDebt.toFixed(2),
+          initialCardCredit: source.initialCardCredit.toFixed(2),
+          billingCycleDay: source.billingCycleDay,
+          paymentDueDay: source.paymentDueDay,
+          hasAnnualFee: source.hasAnnualFee,
+          annualFeeAmount: source.annualFeeAmount?.toFixed(2) ?? null,
+          annualFeeCurrency: source.annualFeeCurrency,
+          annualFeeChargeDate: dateInputValue(source.annualFeeChargeDate),
+          annualFeeFrequency: source.annualFeeFrequency,
+          firstYearFeeWaived: source.firstYearFeeWaived,
+          freeYearsCount: source.freeYearsCount,
+          feeWaivedUntilDate: dateInputValue(source.feeWaivedUntilDate),
+          annualFeeWaiverEnabled: source.annualFeeWaiverEnabled,
+          annualFeeWaiverSpendTarget:
+            source.annualFeeWaiverSpendTarget?.toFixed(2) ?? null,
+          annualFeeWaiverPeriod: source.annualFeeWaiverPeriod,
+          waiverPeriodStartDate: dateInputValue(source.waiverPeriodStartDate),
+          waiverPeriodEndDate: dateInputValue(source.waiverPeriodEndDate),
+          annualFeeWaiverNote: source.annualFeeWaiverNote
+        }}
+      />
 
       <Card padded={false} title="Recent Transactions">
         {recentTransactions.length === 0 ? (

@@ -2,7 +2,6 @@ import { MoneySourceType } from "@prisma/client";
 import Link from "next/link";
 import { Suspense } from "react";
 import {
-  createMoneySourceFormAction,
   deleteMoneySourceFormAction,
   listMoneySources,
   toggleMoneySourceActiveFormAction
@@ -14,16 +13,13 @@ import {
   type DecimalInput
 } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
+import { MoneySourceForm } from "@/components/money-source-form";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { Input } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { Select } from "@/components/ui/Select";
 import AccountsLoading from "./loading";
-
-const sourceTypes = Object.values(MoneySourceType);
 
 const typeLabels: Record<MoneySourceType, string> = {
   CASH: "Cash",
@@ -113,82 +109,9 @@ async function AccountsPageContent() {
         </p>
       </div>
 
-      <Card
-        className="scroll-mt-6"
-        title="Add Account"
-      >
-        <div className="scroll-mt-6" id="add-account" />
-        <form
-          action={createMoneySourceFormAction}
-          className="mt-4 grid gap-3 md:grid-cols-6"
-        >
-          <label className="md:col-span-2">
-            <span className="text-sm font-medium text-slate-700">Name</span>
-            <Input className="mt-1" name="name" required />
-          </label>
-          <label>
-            <span className="text-sm font-medium text-slate-700">Type</span>
-            <Select
-              className="mt-1"
-              defaultValue={MoneySourceType.BANK_ACCOUNT}
-              name="type"
-              required
-            >
-              {sourceTypes.map((type) => (
-                <option key={type} value={type}>
-                  {typeLabels[type]}
-                </option>
-              ))}
-            </Select>
-          </label>
-          <label>
-            <span className="text-sm font-medium text-slate-700">Currency</span>
-            <Input
-              className="mt-1 uppercase"
-              defaultValue="VND"
-              name="currency"
-              required
-            />
-          </label>
-          <label>
-            <span className="text-sm font-medium text-slate-700">Opening</span>
-            <Input
-              className="mt-1"
-              defaultValue="0"
-              name="openingBalance"
-              step="0.01"
-              type="number"
-            />
-          </label>
-          <label>
-            <span className="text-sm font-medium text-slate-700">Provider</span>
-            <Input className="mt-1" name="providerName" placeholder="Optional" />
-          </label>
-          <label className="md:col-span-2">
-            <span className="text-sm font-medium text-slate-700">Identifier</span>
-            <Input
-              className="mt-1"
-              name="displayIdentifier"
-              placeholder="Optional"
-            />
-          </label>
-          <label className="md:col-span-3">
-            <span className="text-sm font-medium text-slate-700">
-              Description
-            </span>
-            <Input className="mt-1" name="description" placeholder="Optional" />
-          </label>
-          <label className="flex items-center gap-2 md:col-span-1 md:pt-7">
-            <input defaultChecked name="isActive" type="checkbox" />
-            <span className="text-sm font-medium text-slate-700">Active</span>
-          </label>
-          <div className="md:col-span-6 md:flex md:justify-end">
-            <Button className="w-full md:w-auto" type="submit">
-              Add Account
-            </Button>
-          </div>
-        </form>
-      </Card>
+      <div className="scroll-mt-6" id="add-account">
+        <MoneySourceForm />
+      </div>
 
       {moneySources.length === 0 ? (
         <EmptyState

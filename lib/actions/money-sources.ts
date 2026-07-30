@@ -2,53 +2,97 @@
 
 import { MoneySourceType, Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
-import { z } from "zod";
 import { requireAuth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import {
   checkAuthenticatedMutation,
   RATE_LIMIT_MESSAGE
 } from "@/lib/security/rate-limit";
-
-const optionalTextSchema = z
-  .string()
-  .trim()
-  .optional()
-  .transform((value) => (value ? value : undefined));
-
-const moneySourceSchema = z.object({
-  name: z.string().trim().min(1),
-  type: z.nativeEnum(MoneySourceType),
-  providerName: optionalTextSchema,
-  displayIdentifier: optionalTextSchema,
-  currency: z.string().trim().min(1).default("VND"),
-  openingBalance: z.coerce.number().default(0),
-  description: optionalTextSchema,
-  isActive: z.coerce.boolean().default(true)
-});
-
-const moneySourceUpdateSchema = moneySourceSchema.partial();
-
-type MoneySourceInput = z.input<typeof moneySourceSchema>;
-type MoneySourceUpdateInput = z.input<typeof moneySourceUpdateSchema>;
+import {
+  moneySourceSchema,
+  moneySourceUpdateSchema,
+  type MoneySourceInput,
+  type MoneySourceUpdateInput
+} from "@/lib/validation/money-source";
 
 export type MoneySourceActionResult = {
   ok: boolean;
   error?: string;
 };
 
+function formValue(formData: FormData, key: string) {
+  return formData.get(key) ?? undefined;
+}
+
+function nullableFormValue(formData: FormData, key: string) {
+  if (!formData.has(key)) {
+    return undefined;
+  }
+
+  const value = formData.get(key);
+  return typeof value === "string" && value.trim() === "" ? null : value;
+}
+
+function formCheckboxValue(formData: FormData, key: string) {
+  return formData.get(key) === "on";
+}
+
+function moneySourceFormData(formData: FormData) {
+  return {
+    name: formValue(formData, "name"),
+    type: formValue(formData, "type"),
+    providerName: nullableFormValue(formData, "providerName"),
+    displayIdentifier: nullableFormValue(formData, "displayIdentifier"),
+    currency: formValue(formData, "currency"),
+    openingBalance: formValue(formData, "openingBalance"),
+    description: nullableFormValue(formData, "description"),
+    isActive: formCheckboxValue(formData, "isActive"),
+    cardLastFourDigits: nullableFormValue(formData, "cardLastFourDigits"),
+    cardNetwork: nullableFormValue(formData, "cardNetwork"),
+    openedDate: nullableFormValue(formData, "openedDate"),
+    creditLimit: nullableFormValue(formData, "creditLimit"),
+    initialOutstandingDebt: formValue(
+      formData,
+      "initialOutstandingDebt"
+    ),
+    initialCardCredit: formValue(formData, "initialCardCredit"),
+    billingCycleDay: nullableFormValue(formData, "billingCycleDay"),
+    paymentDueDay: nullableFormValue(formData, "paymentDueDay"),
+    hasAnnualFee: formCheckboxValue(formData, "hasAnnualFee"),
+    annualFeeAmount: nullableFormValue(formData, "annualFeeAmount"),
+    annualFeeCurrency: formValue(formData, "annualFeeCurrency"),
+    annualFeeChargeDate: nullableFormValue(formData, "annualFeeChargeDate"),
+    annualFeeFrequency: nullableFormValue(formData, "annualFeeFrequency"),
+    firstYearFeeWaived: formCheckboxValue(formData, "firstYearFeeWaived"),
+    freeYearsCount: nullableFormValue(formData, "freeYearsCount"),
+    feeWaivedUntilDate: nullableFormValue(formData, "feeWaivedUntilDate"),
+    annualFeeWaiverEnabled: formCheckboxValue(
+      formData,
+      "annualFeeWaiverEnabled"
+    ),
+    annualFeeWaiverSpendTarget: nullableFormValue(
+      formData,
+      "annualFeeWaiverSpendTarget"
+    ),
+    annualFeeWaiverPeriod: nullableFormValue(
+      formData,
+      "annualFeeWaiverPeriod"
+    ),
+    waiverPeriodStartDate: nullableFormValue(
+      formData,
+      "waiverPeriodStartDate"
+    ),
+    waiverPeriodEndDate: nullableFormValue(formData, "waiverPeriodEndDate"),
+    annualFeeWaiverNote: nullableFormValue(
+      formData,
+      "annualFeeWaiverNote"
+    )
+  };
+}
+
 function parseMoneySourceInput(data: MoneySourceInput | FormData) {
   if (data instanceof FormData) {
-    return moneySourceSchema.safeParse({
-      name: data.get("name"),
-      type: data.get("type"),
-      providerName: data.get("providerName"),
-      displayIdentifier: data.get("displayIdentifier"),
-      currency: data.get("currency") || "VND",
-      openingBalance: data.get("openingBalance") || 0,
-      description: data.get("description"),
-      isActive: data.get("isActive") === "on"
-    });
+    return moneySourceSchema.safeParse(moneySourceFormData(data));
   }
 
   return moneySourceSchema.safeParse(data);
@@ -58,20 +102,36 @@ function parseMoneySourceUpdateInput(
   data: MoneySourceUpdateInput | FormData
 ) {
   if (data instanceof FormData) {
-    return moneySourceUpdateSchema.safeParse({
-      name: data.get("name") || undefined,
-      type: data.get("type") || undefined,
-      providerName: data.get("providerName") ?? undefined,
-      displayIdentifier: data.get("displayIdentifier") ?? undefined,
-      currency: data.get("currency") || undefined,
-      openingBalance: data.get("openingBalance") || undefined,
-      description: data.get("description") ?? undefined,
-      isActive: data.has("isActive") ? data.get("isActive") === "on" : undefined
-    });
+    return moneySourceUpdateSchema.safeParse(moneySourceFormData(data));
   }
 
   return moneySourceUpdateSchema.safeParse(data);
 }
+
+const clearedCardConfiguration = {
+  cardLastFourDigits: null,
+  cardNetwork: null,
+  openedDate: null,
+  creditLimit: null,
+  initialOutstandingDebt: "0",
+  initialCardCredit: "0",
+  billingCycleDay: null,
+  paymentDueDay: null,
+  hasAnnualFee: false,
+  annualFeeAmount: null,
+  annualFeeCurrency: "VND",
+  annualFeeChargeDate: null,
+  annualFeeFrequency: null,
+  firstYearFeeWaived: false,
+  freeYearsCount: null,
+  feeWaivedUntilDate: null,
+  annualFeeWaiverEnabled: false,
+  annualFeeWaiverSpendTarget: null,
+  annualFeeWaiverPeriod: null,
+  waiverPeriodStartDate: null,
+  waiverPeriodEndDate: null,
+  annualFeeWaiverNote: null
+} satisfies Prisma.MoneySourceUpdateManyMutationInput;
 
 async function verifyMoneySourceOwnership(id: string, userId: string) {
   const moneySource = await prisma.moneySource.findFirst({
@@ -152,11 +212,24 @@ export async function updateMoneySource(
     return { ok: false, error: "Enter a valid account or wallet." };
   }
 
-  await verifyMoneySourceOwnership(id, user.id);
+  const existingMoneySource = await verifyMoneySourceOwnership(id, user.id);
+  const updateData =
+    parsed.data.type !== undefined &&
+    parsed.data.type !== MoneySourceType.CREDIT_CARD
+      ? { ...parsed.data, ...clearedCardConfiguration }
+      : parsed.data;
+  const completeUpdate = moneySourceSchema.safeParse({
+    ...existingMoneySource,
+    ...updateData
+  });
+
+  if (!completeUpdate.success) {
+    return { ok: false, error: "Enter a valid account or wallet." };
+  }
 
   await prisma.moneySource.updateMany({
     where: { id, userId: user.id },
-    data: parsed.data,
+    data: updateData
   });
   const moneySource = await verifyMoneySourceOwnership(id, user.id);
 
