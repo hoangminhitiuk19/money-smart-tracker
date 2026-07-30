@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  CategoryType,
   MoneySourceType,
   Prisma,
   RenewalFrequency,
@@ -246,6 +247,288 @@ describe("canonical renewal payment workflow", () => {
 });
 
 describe("renewal CRUD and activity contracts", () => {
+  it.each([TransactionType.REFUND, TransactionType.ADJUSTMENT])(
+    "rejects %s on create and update without renewal or activity writes",
+    async (transactionType) => {
+      const createTitle = `Unsupported ${transactionType} ${randomUUID()}`;
+      const beforeCreate = await Promise.all([
+        prisma.recurringPayment.count({
+          where: { userId: fixtures.context.userA.id, title: createTitle }
+        }),
+        prisma.activityLog.count({
+          where: {
+            userId: fixtures.context.userA.id,
+            action: "RENEWAL_CREATED"
+          }
+        })
+      ]);
+      const createResult = await createRenewal({
+        title: createTitle,
+        amount: "10.00",
+        transactionType,
+        frequency: RenewalFrequency.MONTHLY,
+        nextDueDate: new Date("2026-07-30T00:00:00.000Z"),
+        ...(transactionType === TransactionType.REFUND
+          ? { toMoneySourceId: fixtures.sourceAId }
+          : {})
+      });
+
+      expect(createResult).toEqual({
+        ok: false,
+        error: "Renewals support INCOME, EXPENSE, or TRANSFER only."
+      });
+      await expect(
+        Promise.all([
+          prisma.recurringPayment.count({
+            where: { userId: fixtures.context.userA.id, title: createTitle }
+          }),
+          prisma.activityLog.count({
+            where: {
+              userId: fixtures.context.userA.id,
+              action: "RENEWAL_CREATED"
+            }
+          })
+        ])
+      ).resolves.toEqual(beforeCreate);
+
+      const renewal = await createDirectRenewal();
+      const beforeUpdateActivity = await prisma.activityLog.count({
+        where: { entityId: renewal.id }
+      });
+      const updateResult = await updateRenewal(renewal.id, {
+        transactionType,
+        ...(transactionType === TransactionType.REFUND
+          ? { toMoneySourceId: fixtures.sourceAId }
+          : {})
+      });
+
+      expect(updateResult).toEqual({
+        ok: false,
+        error: "Renewals support INCOME, EXPENSE, or TRANSFER only."
+      });
+      await expect(
+        prisma.recurringPayment.findUniqueOrThrow({
+          where: { id: renewal.id }
+        })
+      ).resolves.toMatchObject({
+        transactionType: TransactionType.EXPENSE,
+        fromMoneySourceId: fixtures.sourceAId,
+        toMoneySourceId: null
+      });
+      await expect(
+        prisma.activityLog.count({ where: { entityId: renewal.id } })
+      ).resolves.toBe(beforeUpdateActivity);
+    }
+  );
+
+  it("logs canonical persisted changes instead of equivalent raw Decimal input", async () => {
+    const renewal = await createDirectRenewal(fixtures.context.userA.id, {
+      amount: "123.40"
+    });
+
+    await expect(
+      updateRenewal(renewal.id, { amount: "123.4" })
+    ).resolves.toEqual({ ok: true });
+
+    const [persisted, activity] = await Promise.all([
+      prisma.recurringPayment.findUniqueOrThrow({
+        where: { id: renewal.id }
+      }),
+      prisma.activityLog.findFirstOrThrow({
+        where: {
+          userId: fixtures.context.userA.id,
+          action: "RENEWAL_UPDATED",
+          entityId: renewal.id
+        }
+      })
+    ]);
+    expect(persisted.amount.toFixed(2)).toBe("123.40");
+    expect(activity.metadata).toEqual({
+      renewalId: renewal.id,
+      changedFields: {}
+    });
+  });
+
+  it("applies fee-waiver defaults, exclusions, explicit overrides, and update transitions", async () => {
+    const [card, eligibleCategory, excludedCategory] = await prisma.$transaction([
+      prisma.moneySource.create({
+        data: {
+          userId: fixtures.context.userA.id,
+          name: `Renewal waiver card ${randomUUID()}`,
+          type: MoneySourceType.CREDIT_CARD
+        }
+      }),
+      prisma.category.create({
+        data: {
+          userId: fixtures.context.userA.id,
+          name: `Renewal eligible category ${randomUUID()}`,
+          type: CategoryType.EXPENSE,
+          defaultCountTowardFeeWaiver: true
+        }
+      }),
+      prisma.category.create({
+        data: {
+          userId: fixtures.context.userA.id,
+          name: `Renewal excluded category ${randomUUID()}`,
+          type: CategoryType.EXPENSE,
+          defaultCountTowardFeeWaiver: false
+        }
+      })
+    ]);
+    const createCases = [
+      {
+        label: "card default",
+        input: {
+          transactionType: TransactionType.EXPENSE,
+          fromMoneySourceId: card.id
+        },
+        expected: true
+      },
+      {
+        label: "excluded category",
+        input: {
+          transactionType: TransactionType.EXPENSE,
+          fromMoneySourceId: card.id,
+          categoryId: excludedCategory.id
+        },
+        expected: false
+      },
+      {
+        label: "bank source",
+        input: {
+          transactionType: TransactionType.EXPENSE,
+          fromMoneySourceId: fixtures.sourceAId
+        },
+        expected: false
+      },
+      {
+        label: "non-expense",
+        input: {
+          transactionType: TransactionType.INCOME,
+          toMoneySourceId: fixtures.sourceAId,
+          countTowardFeeWaiver: true
+        },
+        expected: false
+      },
+      {
+        label: "explicit false",
+        input: {
+          transactionType: TransactionType.EXPENSE,
+          fromMoneySourceId: card.id,
+          countTowardFeeWaiver: false
+        },
+        expected: false
+      },
+      {
+        label: "explicit true",
+        input: {
+          transactionType: TransactionType.EXPENSE,
+          fromMoneySourceId: card.id,
+          categoryId: excludedCategory.id,
+          countTowardFeeWaiver: true
+        },
+        expected: true
+      }
+    ] as const;
+
+    for (const { label, input, expected } of createCases) {
+      const title = `Renewal waiver ${label} ${randomUUID()}`;
+      await expect(
+        createRenewal({
+          title,
+          amount: "10.00",
+          frequency: RenewalFrequency.MONTHLY,
+          nextDueDate: new Date("2026-07-30T00:00:00.000Z"),
+          ...input
+        })
+      ).resolves.toEqual({ ok: true });
+      await expect(
+        prisma.recurringPayment.findFirstOrThrow({
+          where: { userId: fixtures.context.userA.id, title }
+        })
+      ).resolves.toMatchObject({ countTowardFeeWaiver: expected });
+    }
+
+    const transition = await createDirectRenewal(fixtures.context.userA.id, {
+      fromMoneySourceId: fixtures.sourceAId,
+      categoryId: eligibleCategory.id,
+      countTowardFeeWaiver: false
+    });
+    await expect(
+      updateRenewal(transition.id, { fromMoneySourceId: card.id })
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      prisma.recurringPayment.findUniqueOrThrow({
+        where: { id: transition.id }
+      })
+    ).resolves.toMatchObject({ countTowardFeeWaiver: true });
+
+    await expect(
+      updateRenewal(transition.id, { categoryId: excludedCategory.id })
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      prisma.recurringPayment.findUniqueOrThrow({
+        where: { id: transition.id }
+      })
+    ).resolves.toMatchObject({ countTowardFeeWaiver: false });
+
+    await expect(
+      updateRenewal(transition.id, { countTowardFeeWaiver: true })
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      prisma.recurringPayment.findUniqueOrThrow({
+        where: { id: transition.id }
+      })
+    ).resolves.toMatchObject({ countTowardFeeWaiver: true });
+
+    const incomeForm = new FormData();
+    incomeForm.set("transactionType", TransactionType.INCOME);
+    incomeForm.set("fromMoneySourceId", "");
+    incomeForm.set("toMoneySourceId", fixtures.sourceAId);
+    await expect(updateRenewal(transition.id, incomeForm)).resolves.toEqual({
+      ok: true
+    });
+    await expect(
+      prisma.recurringPayment.findUniqueOrThrow({
+        where: { id: transition.id }
+      })
+    ).resolves.toMatchObject({
+      transactionType: TransactionType.INCOME,
+      fromMoneySourceId: null,
+      toMoneySourceId: fixtures.sourceAId,
+      countTowardFeeWaiver: false
+    });
+
+    const expenseForm = new FormData();
+    expenseForm.set("transactionType", TransactionType.EXPENSE);
+    expenseForm.set("fromMoneySourceId", card.id);
+    expenseForm.set("toMoneySourceId", "");
+    expenseForm.set("categoryId", eligibleCategory.id);
+    await expect(updateRenewal(transition.id, expenseForm)).resolves.toEqual({
+      ok: true
+    });
+    await expect(
+      prisma.recurringPayment.findUniqueOrThrow({
+        where: { id: transition.id }
+      })
+    ).resolves.toMatchObject({
+      transactionType: TransactionType.EXPENSE,
+      fromMoneySourceId: card.id,
+      toMoneySourceId: null,
+      categoryId: eligibleCategory.id,
+      countTowardFeeWaiver: true
+    });
+
+    await expect(
+      updateRenewal(transition.id, { countTowardFeeWaiver: false })
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      prisma.recurringPayment.findUniqueOrThrow({
+        where: { id: transition.id }
+      })
+    ).resolves.toMatchObject({ countTowardFeeWaiver: false });
+  }, 30_000);
+
   it("preserves Decimal input and emits the §20.2 update, skip, and status metadata shapes", async () => {
     const title = `Exact renewal ${randomUUID()}`;
     const createForm = new FormData();
@@ -361,6 +644,85 @@ describe("renewal CRUD and activity contracts", () => {
 });
 
 describe("renewal ownership and atomicity", () => {
+  it("rejects every poisoned foreign transaction reference before mark-paid writes", async () => {
+    const [foreignCategory, foreignProject] = await prisma.$transaction([
+      prisma.category.create({
+        data: {
+          userId: fixtures.context.userB.id,
+          name: `Foreign renewal category ${randomUUID()}`,
+          type: CategoryType.EXPENSE
+        }
+      }),
+      prisma.financialProject.create({
+        data: {
+          userId: fixtures.context.userB.id,
+          name: `Foreign renewal project ${randomUUID()}`
+        }
+      })
+    ]);
+    const cases = [
+      {
+        field: "categoryId",
+        renewal: await createDirectRenewal(),
+        poison: { categoryId: foreignCategory.id }
+      },
+      {
+        field: "projectId",
+        renewal: await createDirectRenewal(),
+        poison: { projectId: foreignProject.id }
+      },
+      {
+        field: "fromMoneySourceId",
+        renewal: await createDirectRenewal(),
+        poison: { fromMoneySourceId: fixtures.sourceBId }
+      },
+      {
+        field: "toMoneySourceId",
+        renewal: await createDirectRenewal(fixtures.context.userA.id, {
+          transactionType: TransactionType.INCOME,
+          fromMoneySourceId: null,
+          toMoneySourceId: fixtures.sourceAId
+        }),
+        poison: { toMoneySourceId: fixtures.sourceBId }
+      }
+    ] as const;
+
+    for (const { field, renewal, poison } of cases) {
+      await prisma.recurringPayment.update({
+        where: { id: renewal.id },
+        data: poison
+      });
+      const before = await Promise.all([
+        prisma.transaction.count({
+          where: { recurringPaymentId: renewal.id }
+        }),
+        prisma.activityLog.count({ where: { entityId: renewal.id } })
+      ]);
+
+      await expect(markRenewalAsPaid(renewal.id), field).rejects.toThrow(
+        /Referenced (record|money source) not found\./
+      );
+
+      await expect(
+        prisma.recurringPayment.findUniqueOrThrow({
+          where: { id: renewal.id }
+        })
+      ).resolves.toMatchObject({
+        ...poison,
+        nextDueDate: renewal.nextDueDate,
+        lastGeneratedDate: null
+      });
+      await expect(
+        Promise.all([
+          prisma.transaction.count({
+            where: { recurringPaymentId: renewal.id }
+          }),
+          prisma.activityLog.count({ where: { entityId: renewal.id } })
+        ])
+      ).resolves.toEqual(before);
+    }
+  }, 30_000);
+
   it("does not reveal or mutate another user's renewal through reads or mutations", async () => {
     const renewal = await createDirectRenewal(fixtures.context.userB.id);
     const before = await Promise.all([

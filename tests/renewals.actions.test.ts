@@ -1,4 +1,5 @@
 import {
+  MoneySourceType,
   QualityRating,
   RenewalFrequency,
   RenewalStatus,
@@ -10,7 +11,8 @@ import {
   markRenewalAsPaid,
   pauseRenewal,
   pauseRenewalFormAction,
-  skipRenewalCycle
+  skipRenewalCycle,
+  updateRenewal
 } from "@/lib/actions/renewals";
 import { prisma } from "@/lib/prisma";
 import {
@@ -76,11 +78,26 @@ vi.mock("@/lib/prisma", () => {
 
   return {
     prisma: {
-    category: { findFirst: vi.fn(async () => null) },
+    category: {
+      findFirst: vi.fn(async ({ where }: any) =>
+        where.id
+          ? {
+              id: where.id,
+              defaultCountTowardFeeWaiver: where.id !== "category-excluded"
+            }
+          : null
+      )
+    },
     financialProject: { findFirst: vi.fn(async () => null) },
     moneySource: {
       findMany: vi.fn(async ({ where }: any) =>
-        where.id.in.map((id: string) => ({ id }))
+        where.id.in.map((id: string) => ({
+          id,
+          type:
+            id === "ms-credit"
+              ? MoneySourceType.CREDIT_CARD
+              : MoneySourceType.BANK_ACCOUNT
+        }))
       )
     },
       recurringPayment,
@@ -244,5 +261,129 @@ describe("createRenewal quality rating validation", () => {
 
     expect(result.ok).toBe(true);
     expect(prisma.recurringPayment.create).toHaveBeenCalled();
+  });
+});
+
+describe("renewal transaction type contract", () => {
+  it.each([TransactionType.REFUND, TransactionType.ADJUSTMENT])(
+    "rejects creating a %s renewal before writes",
+    async (transactionType) => {
+      const result = await createRenewal({
+        title: "Unsupported renewal",
+        amount: 30,
+        transactionType,
+        frequency: RenewalFrequency.MONTHLY,
+        nextDueDate: new Date("2026-02-01"),
+        ...(transactionType === TransactionType.REFUND
+          ? { toMoneySourceId: "ms-a" }
+          : {})
+      });
+
+      expect(result).toEqual({
+        ok: false,
+        error: "Renewals support INCOME, EXPENSE, or TRANSFER only."
+      });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.recurringPayment.create).not.toHaveBeenCalled();
+      expect(prisma.activityLog.create).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([TransactionType.REFUND, TransactionType.ADJUSTMENT])(
+    "rejects updating a renewal to %s before writes",
+    async (transactionType) => {
+      const result = await updateRenewal("renewal-1", {
+        transactionType,
+        ...(transactionType === TransactionType.REFUND
+          ? {
+              fromMoneySourceId: undefined,
+              toMoneySourceId: "ms-a"
+            }
+          : {})
+      });
+
+      expect(result).toEqual({
+        ok: false,
+        error: "Renewals support INCOME, EXPENSE, or TRANSFER only."
+      });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.recurringPayment.updateMany).not.toHaveBeenCalled();
+      expect(prisma.activityLog.create).not.toHaveBeenCalled();
+    }
+  );
+});
+
+describe("createRenewal countTowardFeeWaiver defaults", () => {
+  it.each([
+    {
+      name: "card expense",
+      input: {
+        transactionType: TransactionType.EXPENSE,
+        fromMoneySourceId: "ms-credit"
+      },
+      expected: true
+    },
+    {
+      name: "excluded-category card expense",
+      input: {
+        transactionType: TransactionType.EXPENSE,
+        fromMoneySourceId: "ms-credit",
+        categoryId: "category-excluded"
+      },
+      expected: false
+    },
+    {
+      name: "bank expense",
+      input: {
+        transactionType: TransactionType.EXPENSE,
+        fromMoneySourceId: "ms-a"
+      },
+      expected: false
+    },
+    {
+      name: "non-expense with an explicit true value",
+      input: {
+        transactionType: TransactionType.INCOME,
+        toMoneySourceId: "ms-a",
+        countTowardFeeWaiver: true
+      },
+      expected: false
+    },
+    {
+      name: "card expense with an explicit false override",
+      input: {
+        transactionType: TransactionType.EXPENSE,
+        fromMoneySourceId: "ms-credit",
+        countTowardFeeWaiver: false
+      },
+      expected: false
+    },
+    {
+      name: "excluded-category card expense with an explicit true override",
+      input: {
+        transactionType: TransactionType.EXPENSE,
+        fromMoneySourceId: "ms-credit",
+        categoryId: "category-excluded",
+        countTowardFeeWaiver: true
+      },
+      expected: true
+    }
+  ])("uses $expected for a $name", async ({ input, expected }) => {
+    const result = await createRenewal({
+      title: "Fee waiver renewal",
+      amount: 30,
+      frequency: RenewalFrequency.MONTHLY,
+      nextDueDate: new Date("2026-02-01"),
+      ...input
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(prisma.recurringPayment.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          countTowardFeeWaiver: expected
+        })
+      })
+    );
   });
 });

@@ -15,7 +15,10 @@ import {
   calculateSkippedRenewalCycle,
   isUpcomingRenewal
 } from "@/lib/calc/renewals";
-import { validateTransactionFields } from "@/lib/calc/transactions";
+import {
+  getCountTowardFeeWaiverDefault,
+  validateTransactionFields
+} from "@/lib/calc/transactions";
 import { moneyText } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import {
@@ -24,16 +27,28 @@ import {
 } from "@/lib/security/rate-limit";
 
 const optionalIdSchema = z
-  .string()
-  .trim()
+  .union([z.string(), z.null()])
   .optional()
-  .transform((value) => (value ? value : undefined));
+  .transform((value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  });
 
 const optionalTextSchema = z
-  .string()
-  .trim()
+  .union([z.string(), z.null()])
   .optional()
-  .transform((value) => (value ? value : undefined));
+  .transform((value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  });
 
 const optionalBooleanSchema = z.preprocess((value) => {
   if (value === undefined || value === null || value === "") {
@@ -104,9 +119,9 @@ const renewalSchema = z.object({
   currency: z.string().trim().min(1).default("VND"),
   transactionType: z.nativeEnum(TransactionType),
   qualityRating: z
-    .nativeEnum(QualityRating)
+    .union([z.nativeEnum(QualityRating), z.literal(""), z.null()])
     .optional()
-    .or(z.literal("").transform(() => undefined)),
+    .transform((value) => (value === "" ? null : value)),
   countTowardFeeWaiver: optionalBooleanSchema,
   frequency: z.nativeEnum(RenewalFrequency),
   intervalCount: z.coerce.number().int().positive().default(1),
@@ -141,20 +156,29 @@ function formCheckboxValue(formData: FormData, key: string) {
   return formData.get(key) === "on";
 }
 
+function nullableFormValue(formData: FormData, key: string) {
+  if (!formData.has(key)) {
+    return undefined;
+  }
+
+  const value = formData.get(key);
+  return typeof value === "string" && value.trim() === "" ? null : value;
+}
+
 function parseRenewalInput(data: RenewalInput | FormData) {
   if (data instanceof FormData) {
     return renewalSchema.safeParse({
-      fromMoneySourceId: formValue(data, "fromMoneySourceId"),
-      toMoneySourceId: formValue(data, "toMoneySourceId"),
-      categoryId: formValue(data, "categoryId"),
-      projectId: formValue(data, "projectId"),
+      fromMoneySourceId: nullableFormValue(data, "fromMoneySourceId"),
+      toMoneySourceId: nullableFormValue(data, "toMoneySourceId"),
+      categoryId: nullableFormValue(data, "categoryId"),
+      projectId: nullableFormValue(data, "projectId"),
       title: formValue(data, "title"),
-      description: formValue(data, "description"),
+      description: nullableFormValue(data, "description"),
       amount: formValue(data, "amount"),
       currency: formValue(data, "currency") || "VND",
       transactionType: formValue(data, "transactionType"),
-      qualityRating: formValue(data, "qualityRating"),
-      countTowardFeeWaiver: formCheckboxValue(data, "countTowardFeeWaiver"),
+      qualityRating: nullableFormValue(data, "qualityRating"),
+      countTowardFeeWaiver: formValue(data, "countTowardFeeWaiver"),
       frequency: formValue(data, "frequency"),
       intervalCount: formValue(data, "intervalCount") || 1,
       nextDueDate: formValue(data, "nextDueDate"),
@@ -171,17 +195,17 @@ function parseRenewalInput(data: RenewalInput | FormData) {
 function parseRenewalUpdateInput(data: RenewalUpdateInput | FormData) {
   if (data instanceof FormData) {
     return renewalUpdateSchema.safeParse({
-      fromMoneySourceId: formValue(data, "fromMoneySourceId"),
-      toMoneySourceId: formValue(data, "toMoneySourceId"),
-      categoryId: formValue(data, "categoryId"),
-      projectId: formValue(data, "projectId"),
+      fromMoneySourceId: nullableFormValue(data, "fromMoneySourceId"),
+      toMoneySourceId: nullableFormValue(data, "toMoneySourceId"),
+      categoryId: nullableFormValue(data, "categoryId"),
+      projectId: nullableFormValue(data, "projectId"),
       title: formValue(data, "title"),
-      description: formValue(data, "description"),
+      description: nullableFormValue(data, "description"),
       amount: formValue(data, "amount"),
       currency: formValue(data, "currency"),
       transactionType: formValue(data, "transactionType"),
-      qualityRating: formValue(data, "qualityRating"),
-      countTowardFeeWaiver: formCheckboxValue(data, "countTowardFeeWaiver"),
+      qualityRating: nullableFormValue(data, "qualityRating"),
+      countTowardFeeWaiver: formValue(data, "countTowardFeeWaiver"),
       frequency: formValue(data, "frequency"),
       intervalCount: formValue(data, "intervalCount"),
       nextDueDate: formValue(data, "nextDueDate"),
@@ -230,39 +254,54 @@ async function verifyRenewalOwnership(
 
 async function verifyOptionalRecord(
   db: RenewalDb,
-  model: "category" | "financialProject",
-  id: string | undefined,
+  model: "financialProject",
+  id: string | null | undefined,
   userId: string
 ) {
   if (!id) {
     return;
   }
 
-  const record =
-    model === "category"
-      ? await db.category.findFirst({
-          where: { id, userId },
-          select: { id: true }
-        })
-      : await db.financialProject.findFirst({
-          where: { id, userId },
-          select: { id: true }
-        });
+  const record = await db.financialProject.findFirst({
+    where: { id, userId },
+    select: { id: true }
+  });
 
   if (!record) {
     throw new Error("Referenced record not found.");
   }
 }
 
-async function verifyMoneySources(
+async function getOwnedCategory(
   db: RenewalDb,
-  ids: Array<string | undefined>,
+  id: string | null | undefined,
+  userId: string
+) {
+  if (!id) {
+    return null;
+  }
+
+  const category = await db.category.findFirst({
+    where: { id, userId },
+    select: { id: true, defaultCountTowardFeeWaiver: true }
+  });
+
+  if (!category) {
+    throw new Error("Referenced record not found.");
+  }
+
+  return category;
+}
+
+async function getOwnedMoneySources(
+  db: RenewalDb,
+  ids: Array<string | null | undefined>,
   userId: string
 ) {
   const uniqueIds = Array.from(new Set(ids.filter((id): id is string => Boolean(id))));
 
   if (uniqueIds.length === 0) {
-    return;
+    return [];
   }
 
   const moneySources = await db.moneySource.findMany({
@@ -270,31 +309,51 @@ async function verifyMoneySources(
       id: { in: uniqueIds },
       userId
     },
-    select: { id: true }
+    select: { id: true, type: true }
   });
 
   if (moneySources.length !== uniqueIds.length) {
     throw new Error("Referenced money source not found.");
   }
+
+  return moneySources;
 }
 
 async function verifyReferences(
   db: RenewalDb,
-  data: RenewalData | RenewalUpdateData,
+  data: {
+    categoryId?: string | null;
+    projectId?: string | null;
+    fromMoneySourceId?: string | null;
+    toMoneySourceId?: string | null;
+  },
   userId: string
 ) {
-  await Promise.all([
-    verifyOptionalRecord(db, "category", data.categoryId, userId),
+  const [category, , moneySources] = await Promise.all([
+    getOwnedCategory(db, data.categoryId, userId),
     verifyOptionalRecord(db, "financialProject", data.projectId, userId),
-    verifyMoneySources(
+    getOwnedMoneySources(
       db,
       [data.fromMoneySourceId, data.toMoneySourceId],
       userId
     )
   ]);
+
+  return { category, moneySources };
 }
 
 function validateRenewalTransactionShape(data: RenewalData) {
+  if (
+    data.transactionType !== TransactionType.INCOME &&
+    data.transactionType !== TransactionType.EXPENSE &&
+    data.transactionType !== TransactionType.TRANSFER
+  ) {
+    return {
+      ok: false,
+      errors: ["Renewals support INCOME, EXPENSE, or TRANSFER only."]
+    };
+  }
+
   return validateTransactionFields({
     amount: data.amount,
     type: data.transactionType,
@@ -328,19 +387,36 @@ function activityValue(value: unknown): Prisma.InputJsonValue | null {
   return String(value);
 }
 
+const renewalActivityFields = [
+  "fromMoneySourceId",
+  "toMoneySourceId",
+  "categoryId",
+  "projectId",
+  "title",
+  "description",
+  "amount",
+  "currency",
+  "transactionType",
+  "qualityRating",
+  "countTowardFeeWaiver",
+  "frequency",
+  "intervalCount",
+  "nextDueDate",
+  "reminderDaysBefore",
+  "autoCreateTransaction",
+  "status",
+  "lastGeneratedDate"
+] as const;
+
 function renewalChangedFields(
   existing: Record<string, unknown>,
-  updates: RenewalUpdateData
+  persisted: Record<string, unknown>
 ): Prisma.InputJsonObject {
   const changedFields: Record<string, Prisma.InputJsonValue> = {};
 
-  for (const [field, newValue] of Object.entries(updates)) {
-    if (newValue === undefined) {
-      continue;
-    }
-
+  for (const field of renewalActivityFields) {
     const oldActivityValue = activityValue(existing[field]);
-    const newActivityValue = activityValue(newValue);
+    const newActivityValue = activityValue(persisted[field]);
     if (
       JSON.stringify(oldActivityValue) !== JSON.stringify(newActivityValue)
     ) {
@@ -397,8 +473,9 @@ export async function createRenewal(
     return { ok: false, error: validation.errors.join(" ") };
   }
 
+  let references: Awaited<ReturnType<typeof verifyReferences>>;
   try {
-    await verifyReferences(prisma, parsed.data, user.id);
+    references = await verifyReferences(prisma, parsed.data, user.id);
   } catch (error) {
     return {
       ok: false,
@@ -406,10 +483,24 @@ export async function createRenewal(
     };
   }
 
+  const countTowardFeeWaiver =
+    parsed.data.transactionType === TransactionType.EXPENSE
+      ? (parsed.data.countTowardFeeWaiver ??
+        getCountTowardFeeWaiverDefault(
+          {
+            type: parsed.data.transactionType,
+            fromMoneySourceId: parsed.data.fromMoneySourceId
+          },
+          references.moneySources,
+          references.category
+        ))
+      : false;
+
   await prisma.$transaction(async (db) => {
     const renewal = await db.recurringPayment.create({
       data: {
         ...cleanRenewalData(parsed.data),
+        countTowardFeeWaiver,
         userId: user.id
       },
       select: { id: true, title: true, amount: true, status: true }
@@ -501,8 +592,9 @@ export async function updateRenewal(
     return { ok: false, error: validation.errors.join(" ") };
   }
 
+  let references: Awaited<ReturnType<typeof verifyReferences>>;
   try {
-    await verifyReferences(prisma, mergedData, user.id);
+    references = await verifyReferences(prisma, mergedData, user.id);
   } catch (error) {
     return {
       ok: false,
@@ -510,16 +602,46 @@ export async function updateRenewal(
     };
   }
 
-  const changedFields = renewalChangedFields(
-    existingRenewal as unknown as Record<string, unknown>,
-    parsed.data
-  );
+  const typeChanged =
+    parsed.data.transactionType !== undefined &&
+    parsed.data.transactionType !== existingRenewal.transactionType;
+  const feeWaiverRelevantFieldsChanged =
+    typeChanged ||
+    (parsed.data.fromMoneySourceId !== undefined &&
+      parsed.data.fromMoneySourceId !== existingRenewal.fromMoneySourceId) ||
+    (parsed.data.categoryId !== undefined &&
+      parsed.data.categoryId !== existingRenewal.categoryId);
+  const countTowardFeeWaiver =
+    mergedData.transactionType === TransactionType.EXPENSE
+      ? parsed.data.countTowardFeeWaiver !== undefined
+        ? parsed.data.countTowardFeeWaiver
+        : feeWaiverRelevantFieldsChanged
+          ? getCountTowardFeeWaiverDefault(
+              {
+                type: mergedData.transactionType,
+                fromMoneySourceId: mergedData.fromMoneySourceId
+              },
+              references.moneySources,
+              references.category
+            )
+          : existingRenewal.countTowardFeeWaiver
+      : false;
+  const normalizedData = {
+    ...mergedData,
+    countTowardFeeWaiver
+  } satisfies RenewalData;
+
   await prisma.$transaction(async (db) => {
-    await verifyRenewalOwnership(db, id, user.id);
+    const before = await verifyRenewalOwnership(db, id, user.id);
     await db.recurringPayment.updateMany({
       where: { id, userId: user.id },
-      data: cleanRenewalData(mergedData)
+      data: cleanRenewalData(normalizedData)
     });
+    const persisted = await verifyRenewalOwnership(db, id, user.id);
+    const changedFields = renewalChangedFields(
+      before as unknown as Record<string, unknown>,
+      persisted as unknown as Record<string, unknown>
+    );
 
     await logActivity(user.id, "RENEWAL_UPDATED", id, {
       renewalId: id,
@@ -589,6 +711,7 @@ export async function markRenewalAsPaid(id: string) {
     if (renewal.status !== RenewalStatus.ACTIVE) {
       throw new Error("Renewal is not active.");
     }
+    await verifyReferences(db, renewal, user.id);
 
     const validation = validateTransactionFields({
       amount: renewal.amount,
