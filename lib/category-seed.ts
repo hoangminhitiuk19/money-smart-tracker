@@ -5,6 +5,7 @@ type DefaultCategory = {
   name: string;
   type: CategoryType;
   defaultQualityRating?: QualityRating;
+  defaultCountTowardFeeWaiver?: boolean;
 };
 
 const defaultCategories = [
@@ -64,7 +65,8 @@ const defaultCategories = [
   {
     name: "Annual Fee",
     type: CategoryType.EXPENSE,
-    defaultQualityRating: QualityRating.C
+    defaultQualityRating: QualityRating.C,
+    defaultCountTowardFeeWaiver: false
   },
   { name: "Refund", type: CategoryType.OTHER },
   {

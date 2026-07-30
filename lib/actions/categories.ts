@@ -30,6 +30,7 @@ const categorySchema = z.object({
     .nativeEnum(QualityRating)
     .optional()
     .or(z.literal("").transform(() => undefined)),
+  defaultCountTowardFeeWaiver: z.coerce.boolean().default(true),
   isDefault: z.coerce.boolean().default(false)
 });
 
@@ -48,6 +49,8 @@ function parseCategoryInput(data: CategoryInput | FormData) {
       color: data.get("color"),
       icon: data.get("icon"),
       defaultQualityRating: data.get("defaultQualityRating"),
+      defaultCountTowardFeeWaiver:
+        data.get("defaultCountTowardFeeWaiver") === "on",
       isDefault: data.get("isDefault") === "on"
     });
   }

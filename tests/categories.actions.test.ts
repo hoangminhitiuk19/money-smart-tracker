@@ -37,6 +37,7 @@ type FakeCategory = {
   userId: string;
   name: string;
   type: CategoryType;
+  defaultCountTowardFeeWaiver: boolean;
 };
 
 let categories: FakeCategory[];
@@ -90,7 +91,13 @@ beforeEach(() => {
     retryAfterSeconds: 60
   });
   categories = [
-    { id: "c1", userId: "user-1", name: "Groceries", type: CategoryType.EXPENSE }
+    {
+      id: "c1",
+      userId: "user-1",
+      name: "Groceries",
+      type: CategoryType.EXPENSE,
+      defaultCountTowardFeeWaiver: true
+    }
   ];
 });
 
@@ -158,5 +165,39 @@ describe("category activity logging", () => {
         })
       })
     );
+  });
+});
+
+describe("category fee-waiver defaults", () => {
+  it("persists an explicitly selected fee-waiver default when creating a category", async () => {
+    const formData = new FormData();
+    formData.set("name", "Card purchases");
+    formData.set("type", CategoryType.EXPENSE);
+    formData.set("color", "");
+    formData.set("icon", "");
+    formData.set("defaultQualityRating", "");
+    formData.set("defaultCountTowardFeeWaiver", "on");
+
+    const result = await createCategory(formData);
+
+    expect(result.ok).toBe(true);
+    expect(
+      categories.find((category) => category.id === "new-category")
+        ?.defaultCountTowardFeeWaiver
+    ).toBe(true);
+  });
+
+  it("persists an explicitly cleared fee-waiver default when updating a category", async () => {
+    const formData = new FormData();
+    formData.set("name", "Groceries");
+    formData.set("type", CategoryType.EXPENSE);
+    formData.set("color", "");
+    formData.set("icon", "");
+    formData.set("defaultQualityRating", "");
+
+    const result = await updateCategory("c1", formData);
+
+    expect(result.ok).toBe(true);
+    expect(categories[0].defaultCountTowardFeeWaiver).toBe(false);
   });
 });

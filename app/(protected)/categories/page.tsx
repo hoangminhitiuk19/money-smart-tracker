@@ -142,7 +142,18 @@ async function CategoriesPageContent() {
             <input name="isDefault" type="checkbox" />
             <span className="text-sm font-medium text-slate-700">Default</span>
           </label>
-          <div className="md:col-span-4 md:flex md:justify-end">
+          <label className="flex items-center gap-2 md:col-span-4">
+            <input
+              defaultChecked
+              name="defaultCountTowardFeeWaiver"
+              type="checkbox"
+            />
+            <span className="text-sm font-medium text-slate-700">
+              Count credit-card expenses in this category toward fee waiver by
+              default
+            </span>
+          </label>
+          <div className="md:col-span-6 md:flex md:justify-end">
             <Button className="w-full md:w-auto" type="submit">
               Add Category
             </Button>
@@ -208,6 +219,18 @@ async function CategoriesPageContent() {
                               Default
                             </label>
                           </div>
+                          <label className="flex items-start gap-2 text-sm text-slate-700">
+                            <input
+                              className="mt-0.5"
+                              defaultChecked={
+                                category.defaultCountTowardFeeWaiver
+                              }
+                              name="defaultCountTowardFeeWaiver"
+                              type="checkbox"
+                            />
+                            Count credit-card expenses in this category toward
+                            fee waiver by default
+                          </label>
                         </form>
                       </td>
                       <td className="px-4 py-3">
