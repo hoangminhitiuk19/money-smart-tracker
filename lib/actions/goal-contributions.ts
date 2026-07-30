@@ -9,6 +9,10 @@ import {
   validateContributionAgainstTransaction
 } from "@/lib/calc/goals";
 import { prisma } from "@/lib/prisma";
+import {
+  checkAuthenticatedMutation,
+  RATE_LIMIT_MESSAGE
+} from "@/lib/security/rate-limit";
 
 const optionalTextSchema = z
   .string()
@@ -54,7 +58,6 @@ const contributionUpdateSchema = contributionSchema.partial();
 type ContributionInput = z.input<typeof contributionSchema>;
 type ContributionUpdateInput = z.input<typeof contributionUpdateSchema>;
 type ContributionData = z.infer<typeof contributionSchema>;
-type ContributionUpdateData = z.infer<typeof contributionUpdateSchema>;
 
 export type GoalContributionActionResult = {
   ok: boolean;
@@ -253,6 +256,10 @@ export async function createContribution(
   data: ContributionInput | FormData
 ): Promise<GoalContributionActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const parsed = parseContributionInput(data);
 
   if (!parsed.success) {
@@ -308,6 +315,10 @@ export async function updateContribution(
   data: ContributionUpdateInput | FormData
 ): Promise<GoalContributionActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const existingContribution = await verifyContributionOwnership(id, user.id);
   const parsed = parseContributionUpdateInput(data);
 
@@ -380,6 +391,10 @@ export async function deleteContribution(
   id: string
 ): Promise<GoalContributionActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const contribution = await verifyContributionOwnership(id, user.id);
 
   await prisma.goalContribution.deleteMany({

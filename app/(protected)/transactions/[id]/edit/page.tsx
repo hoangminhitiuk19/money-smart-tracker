@@ -19,25 +19,29 @@ function formatDateInput(date: Date) {
   return date.toISOString().slice(0, 10);
 }
 
-export default function EditTransactionPage({
+type PageProps = {
+  params: Promise<{ id: string }>;
+};
+
+export default async function EditTransactionPage({
   params
-}: {
-  params: { id: string };
-}) {
+}: PageProps) {
+  const { id } = await params;
+
   return (
     <Suspense fallback={<EditTransactionLoading />}>
-      <EditTransactionPageContent params={params} />
+      <EditTransactionPageContent id={id} />
     </Suspense>
   );
 }
 
 async function EditTransactionPageContent({
-  params
+  id
 }: {
-  params: { id: string };
+  id: string;
 }) {
   const user = await requireAuth();
-  const transaction = await getTransaction(params.id).catch(() => notFound());
+  const transaction = await getTransaction(id).catch(() => notFound());
   const [categories, moneySources, projects, expenseTransactions] =
     await Promise.all([
       listCategories(),

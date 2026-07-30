@@ -11,12 +11,15 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireAuth } from "@/lib/auth";
 import {
-  calculateNextDueDate,
   calculatePaidRenewalCycle,
   calculateSkippedRenewalCycle
 } from "@/lib/calc/renewals";
 import { validateTransactionFields } from "@/lib/calc/transactions";
 import { prisma } from "@/lib/prisma";
+import {
+  checkAuthenticatedMutation,
+  RATE_LIMIT_MESSAGE
+} from "@/lib/security/rate-limit";
 
 const optionalIdSchema = z
   .string()
@@ -279,6 +282,10 @@ export async function createRenewal(
   data: RenewalInput | FormData
 ): Promise<RenewalActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const parsed = parseRenewalInput(data);
 
   if (!parsed.success) {
@@ -327,6 +334,10 @@ export async function updateRenewal(
   data: RenewalUpdateInput | FormData
 ): Promise<RenewalActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const existingRenewal = await verifyRenewalOwnership(id, user.id);
   const parsed = parseRenewalUpdateInput(data);
 
@@ -464,6 +475,10 @@ export async function getUpcomingRenewals() {
 
 export async function markRenewalAsPaid(id: string) {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const renewal = await verifyRenewalOwnership(id, user.id);
   const validation = validateTransactionFields({
     amount: Number(renewal.amount),
@@ -539,6 +554,10 @@ export async function markRenewalAsPaidFormAction(id: string) {
 
 export async function skipRenewalCycle(id: string): Promise<RenewalActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const renewal = await verifyRenewalOwnership(id, user.id);
   const cycle = calculateSkippedRenewalCycle({
     frequency: renewal.frequency,
@@ -573,6 +592,10 @@ async function updateRenewalStatus(
     | "RENEWAL_CANCELLED"
 ): Promise<RenewalActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const renewal = await verifyRenewalOwnership(id, user.id);
 
   await prisma.recurringPayment.updateMany({
@@ -614,6 +637,10 @@ export async function cancelRenewalFormAction(id: string) {
 
 export async function deleteRenewal(id: string): Promise<RenewalActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const renewal = await verifyRenewalOwnership(id, user.id);
 
   await prisma.recurringPayment.deleteMany({

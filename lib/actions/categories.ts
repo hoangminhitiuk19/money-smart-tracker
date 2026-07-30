@@ -5,6 +5,10 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireAuth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import {
+  checkAuthenticatedMutation,
+  RATE_LIMIT_MESSAGE
+} from "@/lib/security/rate-limit";
 
 const optionalTextSchema = z
   .string()
@@ -84,6 +88,10 @@ export async function createCategory(
   data: CategoryInput | FormData
 ): Promise<CategoryActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const parsed = parseCategoryInput(data);
 
   if (!parsed.success) {
@@ -116,6 +124,10 @@ export async function updateCategory(
   data: CategoryInput | FormData
 ): Promise<CategoryActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const parsed = parseCategoryInput(data);
 
   if (!parsed.success) {
@@ -147,6 +159,10 @@ export async function deleteCategory(
   id: string
 ): Promise<CategoryActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const category = await verifyCategoryOwnership(id, user.id);
 
   const transactionCount = await prisma.transaction.count({

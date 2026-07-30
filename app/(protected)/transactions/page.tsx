@@ -111,14 +111,18 @@ function exportHref(searchParams: SearchParams) {
     : "/api/export/transactions";
 }
 
-export default function TransactionsPage({
+type PageProps = {
+  searchParams: Promise<SearchParams>;
+};
+
+export default async function TransactionsPage({
   searchParams
-}: {
-  searchParams: SearchParams;
-}) {
+}: PageProps) {
+  const resolvedSearchParams = await searchParams;
+
   return (
     <Suspense fallback={<TransactionsLoading />}>
-      <TransactionsPageContent searchParams={searchParams} />
+      <TransactionsPageContent searchParams={resolvedSearchParams} />
     </Suspense>
   );
 }

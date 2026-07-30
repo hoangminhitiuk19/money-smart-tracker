@@ -2,6 +2,10 @@ import { MoneySourceType, QualityRating, TransactionType } from "@prisma/client"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createTransaction, updateTransaction } from "@/lib/actions/transactions";
 import { prisma } from "@/lib/prisma";
+import {
+  checkAuthenticatedMutation,
+  RATE_LIMIT_MESSAGE
+} from "@/lib/security/rate-limit";
 
 const mockUser = { id: "user-1", email: "user@test.com", name: "Test User" };
 
@@ -11,6 +15,17 @@ vi.mock("@/lib/auth", () => ({
 
 vi.mock("next/cache", () => ({
   revalidatePath: vi.fn()
+}));
+
+vi.mock("@/lib/security/rate-limit", () => ({
+  checkAuthenticatedMutation: vi.fn(async () => ({
+    allowed: true,
+    unavailable: false,
+    limit: 60,
+    remaining: 59,
+    retryAfterSeconds: 60
+  })),
+  RATE_LIMIT_MESSAGE: "Too many requests. Please try again shortly."
 }));
 
 type FakeMoneySource = { id: string; userId: string; type: MoneySourceType };
@@ -68,6 +83,13 @@ vi.mock("@/lib/prisma", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(checkAuthenticatedMutation).mockResolvedValue({
+    allowed: true,
+    unavailable: false,
+    limit: 60,
+    remaining: 59,
+    retryAfterSeconds: 60
+  });
   moneySources = [
     { id: "ms-a", userId: "user-1", type: MoneySourceType.BANK_ACCOUNT },
     { id: "ms-b", userId: "user-1", type: MoneySourceType.BANK_ACCOUNT },
@@ -76,6 +98,32 @@ beforeEach(() => {
   ];
   recurringPayments = [{ id: "rp-own", userId: "user-1" }];
   transactions = [];
+});
+
+describe("transaction mutation rate limiting", () => {
+  it("denies a rate-limited create before checking referenced records or writing", async () => {
+    vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
+      allowed: false,
+      unavailable: false,
+      limit: 60,
+      remaining: 0,
+      retryAfterSeconds: 60
+    });
+
+    const result = await createTransaction({
+      type: TransactionType.EXPENSE,
+      amount: 50,
+      title: "Coffee",
+      transactionDate: new Date("2026-01-01"),
+      fromMoneySourceId: "ms-a",
+      recurringPaymentId: "rp-own"
+    });
+
+    expect(result).toEqual({ ok: false, error: RATE_LIMIT_MESSAGE });
+    expect(prisma.recurringPayment.findFirst).not.toHaveBeenCalled();
+    expect(prisma.moneySource.findMany).not.toHaveBeenCalled();
+    expect(prisma.transaction.create).not.toHaveBeenCalled();
+  });
 });
 
 describe("createTransaction quality rating validation", () => {

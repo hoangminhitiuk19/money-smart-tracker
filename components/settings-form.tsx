@@ -1,6 +1,6 @@
 "use client";
 
-import { useFormState } from "react-dom";
+import { useActionState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
@@ -24,7 +24,7 @@ type SettingsFormProps = {
 const initialState: SettingsState = {};
 
 export function SettingsForm({ initialValues }: SettingsFormProps) {
-  const [state, formAction] = useFormState(updateUserSettings, initialState);
+  const [state, formAction] = useActionState(updateUserSettings, initialState);
 
   return (
     <form action={formAction} className="space-y-6">

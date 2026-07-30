@@ -184,14 +184,18 @@ function pageHref(searchParams: SearchParams, page: number) {
   return `/activity-log?${params.toString()}`;
 }
 
-export default function ActivityLogPage({
+type PageProps = {
+  searchParams: Promise<SearchParams>;
+};
+
+export default async function ActivityLogPage({
   searchParams
-}: {
-  searchParams: SearchParams;
-}) {
+}: PageProps) {
+  const resolvedSearchParams = await searchParams;
+
   return (
     <Suspense fallback={<ActivityLogLoading />}>
-      <ActivityLogPageContent searchParams={searchParams} />
+      <ActivityLogPageContent searchParams={resolvedSearchParams} />
     </Suspense>
   );
 }

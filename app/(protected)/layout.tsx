@@ -36,7 +36,7 @@ export default async function ProtectedLayout({
   children: React.ReactNode;
 }>) {
   const user = await requireAuth();
-  const headerList = headers();
+  const headerList = await headers();
   const currentPath =
     headerList.get("x-next-url") ??
     headerList.get("x-url") ??

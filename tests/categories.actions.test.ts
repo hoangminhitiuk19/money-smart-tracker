@@ -6,6 +6,10 @@ import {
   updateCategory
 } from "@/lib/actions/categories";
 import { prisma } from "@/lib/prisma";
+import {
+  checkAuthenticatedMutation,
+  RATE_LIMIT_MESSAGE
+} from "@/lib/security/rate-limit";
 
 const mockUser = { id: "user-1", email: "user@test.com", name: "Test User" };
 
@@ -15,6 +19,17 @@ vi.mock("@/lib/auth", () => ({
 
 vi.mock("next/cache", () => ({
   revalidatePath: vi.fn()
+}));
+
+vi.mock("@/lib/security/rate-limit", () => ({
+  checkAuthenticatedMutation: vi.fn(async () => ({
+    allowed: true,
+    unavailable: false,
+    limit: 60,
+    remaining: 59,
+    retryAfterSeconds: 60
+  })),
+  RATE_LIMIT_MESSAGE: "Too many requests. Please try again shortly."
 }));
 
 type FakeCategory = {
@@ -67,12 +82,37 @@ vi.mock("@/lib/prisma", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(checkAuthenticatedMutation).mockResolvedValue({
+    allowed: true,
+    unavailable: false,
+    limit: 60,
+    remaining: 59,
+    retryAfterSeconds: 60
+  });
   categories = [
     { id: "c1", userId: "user-1", name: "Groceries", type: CategoryType.EXPENSE }
   ];
 });
 
 describe("category activity logging", () => {
+  it("denies a rate-limited create before creating a category", async () => {
+    vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
+      allowed: false,
+      unavailable: false,
+      limit: 60,
+      remaining: 0,
+      retryAfterSeconds: 60
+    });
+
+    const result = await createCategory({
+      name: "Dining",
+      type: CategoryType.EXPENSE
+    });
+
+    expect(result).toEqual({ ok: false, error: RATE_LIMIT_MESSAGE });
+    expect(prisma.category.create).not.toHaveBeenCalled();
+  });
+
   it("writes a CATEGORY_CREATED entry on create", async () => {
     const result = await createCategory({
       name: "Dining",

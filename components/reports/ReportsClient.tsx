@@ -13,6 +13,7 @@ import {
   PieChart,
   ResponsiveContainer,
   Tooltip,
+  type TooltipContentProps,
   XAxis,
   YAxis
 } from "recharts";
@@ -85,6 +86,8 @@ type ReportsClientProps = {
   upcomingRenewalsByMonth: MoneyPoint[];
   recurringExpensePerMonth: MoneyPoint[];
 };
+
+type CurrencyTooltipProps = Partial<TooltipContentProps>;
 
 const chartColors = [
   "#0f766e",
@@ -167,7 +170,7 @@ function ReportPanel({
   return <Card title={title}>{children}</Card>;
 }
 
-function CurrencyTooltip({ active, payload, label }: any) {
+function CurrencyTooltip({ active, payload, label }: CurrencyTooltipProps) {
   if (!active || !payload?.length) {
     return null;
   }
@@ -175,8 +178,8 @@ function CurrencyTooltip({ active, payload, label }: any) {
   return (
     <div className="rounded-md border border-slate-200 bg-white p-3 text-sm shadow-sm">
       <p className="mb-1 font-medium text-slate-950">{label}</p>
-      {payload.map((item: any) => (
-        <p className="text-slate-600" key={item.dataKey}>
+      {payload.map((item, index) => (
+        <p className="text-slate-600" key={String(item.dataKey ?? item.name ?? index)}>
           {item.name}: {formatMoney(Number(item.value))}
         </p>
       ))}

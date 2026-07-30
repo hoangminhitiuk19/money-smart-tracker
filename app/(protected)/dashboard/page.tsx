@@ -137,14 +137,18 @@ function SectionListEmpty({ text }: { text: string }) {
   return <p className="text-sm text-slate-500">{text}</p>;
 }
 
-export default function DashboardPage({
+type PageProps = {
+  searchParams: Promise<SearchParams>;
+};
+
+export default async function DashboardPage({
   searchParams
-}: {
-  searchParams: SearchParams;
-}) {
+}: PageProps) {
+  const resolvedSearchParams = await searchParams;
+
   return (
     <Suspense fallback={<DashboardLoading />}>
-      <DashboardPageContent searchParams={searchParams} />
+      <DashboardPageContent searchParams={resolvedSearchParams} />
     </Suspense>
   );
 }

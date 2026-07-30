@@ -3,18 +3,80 @@ import { getServerSession, type NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { redirect } from "next/navigation";
 import { z } from "zod";
+import { getServerEnv } from "@/lib/env";
 import { prisma } from "@/lib/prisma";
+import {
+  checkLoginAttempt,
+  type HeaderSource
+} from "@/lib/security/rate-limit";
 
 const credentialsSchema = z.object({
-  email: z.string().email(),
+  email: z.string().trim().toLowerCase().email(),
   password: z.string().min(8)
 });
+
+type CredentialInput = Record<"email" | "password", string> | undefined;
+
+type CredentialRequest = {
+  headers?: HeaderSource;
+};
 
 export type CurrentUser = {
   id: string;
   email: string;
   name: string;
 };
+
+export async function authorizeCredentials(
+  credentials: CredentialInput,
+  request: CredentialRequest
+) {
+  const parsedCredentials = credentialsSchema.safeParse(credentials);
+
+  if (!parsedCredentials.success) {
+    return null;
+  }
+
+  try {
+    const decision = await checkLoginAttempt(
+      request.headers ?? {},
+      parsedCredentials.data.email
+    );
+
+    if (!decision.allowed || decision.unavailable) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  try {
+    const user = await prisma.user.findUnique({
+      where: { email: parsedCredentials.data.email }
+    });
+
+    if (!user) {
+      return null;
+    }
+
+    const passwordMatches = await compare(
+      parsedCredentials.data.password,
+      user.passwordHash
+    );
+
+    if (!passwordMatches) {
+      return null;
+    }
+
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name
+    };
+  } catch {
+    return null;
+  }
+}
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -24,36 +86,7 @@ export const authOptions: NextAuthOptions = {
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" }
       },
-      async authorize(credentials) {
-        const parsedCredentials = credentialsSchema.safeParse(credentials);
-
-        if (!parsedCredentials.success) {
-          return null;
-        }
-
-        const user = await prisma.user.findUnique({
-          where: { email: parsedCredentials.data.email }
-        });
-
-        if (!user) {
-          return null;
-        }
-
-        const passwordMatches = await compare(
-          parsedCredentials.data.password,
-          user.passwordHash
-        );
-
-        if (!passwordMatches) {
-          return null;
-        }
-
-        return {
-          id: user.id,
-          email: user.email,
-          name: user.name
-        };
-      }
+      authorize: authorizeCredentials
     })
   ],
   session: {
@@ -78,7 +111,7 @@ export const authOptions: NextAuthOptions = {
   pages: {
     signIn: "/login"
   },
-  secret: process.env.NEXTAUTH_SECRET
+  secret: getServerEnv().NEXTAUTH_SECRET
 };
 
 export async function getCurrentUser(): Promise<CurrentUser | null> {

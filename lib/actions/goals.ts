@@ -5,6 +5,10 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireAuth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import {
+  checkAuthenticatedMutation,
+  RATE_LIMIT_MESSAGE
+} from "@/lib/security/rate-limit";
 
 const optionalTextSchema = z
   .string()
@@ -124,6 +128,10 @@ export async function createGoal(
   data: GoalInput | FormData
 ): Promise<GoalActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const parsed = parseGoalInput(data);
 
   if (!parsed.success) {
@@ -157,6 +165,10 @@ export async function updateGoal(
   data: GoalUpdateInput | FormData
 ): Promise<GoalActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const parsed = parseGoalUpdateInput(data);
 
   if (!parsed.success) {
@@ -189,6 +201,10 @@ export async function updateGoalFormAction(id: string, formData: FormData) {
 
 export async function deleteGoal(id: string): Promise<GoalActionResult> {
   const user = await requireAuth();
+  const rateLimit = await checkAuthenticatedMutation(user.id);
+  if (!rateLimit.allowed) {
+    return { ok: false, error: RATE_LIMIT_MESSAGE };
+  }
   const goal = await verifyGoalOwnership(id, user.id);
 
   await prisma.savingGoal.deleteMany({
