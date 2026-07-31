@@ -1,32 +1,37 @@
 # Phase 2 Preview Acceptance
 
-## Status
+## Result
 
-Local Chromium acceptance against the disposable database is
-**APPROVED_LOCAL_BROWSER** after the settings-initialization race fix
-(`bbb5935`) and 375px page-header containment fix (`1ba8d31`). The runner
-completed the representative MVP journey with zero browser diagnostics.
+The protected Vercel Preview is **APPROVED_PREVIEW_BROWSER**. Exhaustive
+financial, domain, and mobile follow-up returned:
 
-Vercel Preview acceptance is **BLOCKED**. The intended project is linked and
-deployment preparation is complete, but no deployment remains. Production
-deployment is not authorized by Phase 2.
+- **APPROVED_FINANCE_EDGES**
+- **APPROVED_DOMAIN_EDGES**
+- **APPROVED_MOBILE_STATES**
 
-- Local acceptance date: 2026-07-31
-- Local browser matrix: desktop Chromium, 375px Chromium, reduced motion
-- Preview address: **Pending**
-- Remote Preview acceptance: **Pending**
+The application tree at `13564ee` is deployed to the stable protected
+[Preview](https://money-smart-tracker-preview-minhs-projects-f5a749c2.vercel.app).
+The deployment is `Ready`, targets Preview, runs Node.js 22 in `sin1`, and uses
+the stable alias for `NEXTAUTH_URL`. Deployment Protection remains enabled,
+the temporary test bypass was revoked, and exactly one final Preview remains.
+Production release remains outside Phase 2 authorization.
 
-Only these environment-variable names are approved. Values remain in the
-deployment platform and are not reproduced here:
+- Acceptance date: 2026-07-31
+- Browser matrix: desktop Chromium, 375px Chromium, reduced motion
+- Runtime review: 500 log entries; zero 5xx, error, fatal, or uniqueness events
+- Browser diagnostics: zero console, page, request, or assertion failures
+
+Only the following application environment-variable names are configured for
+Preview. No values are recorded here:
 
 - `DATABASE_URL`
 - `NEXTAUTH_SECRET`
 - `NEXTAUTH_URL`
 
-## Automated and review evidence
+## Automated and platform evidence
 
-These recorded Node.js 22 results establish the local release-candidate
-baseline. They do not substitute for remote Preview verification.
+The automated counts are the latest pre-final-gate baseline. The whole-phase
+gate must rerun them before branch integration.
 
 <!-- markdownlint-disable MD013 -->
 
@@ -34,125 +39,206 @@ baseline. They do not substitute for remote Preview verification.
 | --- | --- | --- |
 | `npm run verify` | Passed | Lint, typecheck, Prisma validation, production dependency audit, and build passed; 44 files and 473 unit/rendered tests passed |
 | `npm run test:integration` | Passed | 16 files and 103 PostgreSQL integration tests passed |
-| Local browser runner | Passed | Representative desktop, 375px, and reduced-motion journey; zero diagnostics |
-| Independent local UX review | Approved | `APPROVED_LOCAL_BROWSER` after `bbb5935` and `1ba8d31` |
-| `git diff --check` | Passed | No whitespace errors in the reviewed local candidate |
+| Vercel deployment | Passed | Final target Preview; state Ready; Node.js 22; function region `sin1`; stable protected alias |
+| Authentication | Passed | Stable `NEXTAUTH_URL`; register, login, persistence, logout, protected redirect, and relogin |
+| Protection | Passed | Deployment Protection enabled; temporary automation bypass revoked after acceptance |
+| Runtime | Passed | Final 500-entry log review found zero 5xx, error, fatal, or uniqueness events |
+| Browser reviews | Approved | `APPROVED_PREVIEW_BROWSER`, `APPROVED_FINANCE_EDGES`, `APPROVED_DOMAIN_EDGES`, and `APPROVED_MOBILE_STATES` |
 
-## Representative local browser evidence
+## Exact financial evidence
 
-| Area | Observed result |
+| Scenario | Observed result |
 | --- | --- |
-| Authentication | Registration, login, session persistence, logout, protected-route redirect, and relogin passed |
-| Reference ledger | Income `1000`, card expense `120`, card payment `150`, and card refund `20` reconciled to debt `0` and card credit `50` |
-| Project | The linked ledger displayed effective expense `100` and profit `-100` |
-| Goal | A `200` contribution toward a `500` target displayed `40%` progress |
-| Renewal | Marking a renewal paid created the expected paid state and transaction |
-| Dashboard and reports | Dashboard, period filters, all ten report views, and their charts rendered without errors |
-| CSV and activity | CSV used the exact required columns and current-user rows; representative mutations appeared in Activity Log |
-| Destructive dialog | Cancel, confirm, keyboard focus, focus restoration, safe failure, and retry behavior passed |
-| Isolation | User B records stayed hidden from User A; direct-object probes settled as safe `404` responses |
-| Mobile and motion | 375px page headers and report content remained contained; reduced-motion behavior passed |
-| Rate limit | Ten CSV requests returned `200`; the next returned `429` with `Retry-After` |
+| Representative card ledger | Income `1000`, expense `120`, payment `150`, and refund `20` reconciled to debt `0` and card credit `50` |
+| Extended balances | Bank A `829.50`; Bank B `480`; card limit `5,000`, debt `20`, available `4,980`, and card credit `15` |
+| Card-credit priority | The initial card expense rendered debt `120` and available credit `4,880`; the linked `70` refund persisted |
+| Fee waiver | Target `1,000`, eligible `130`, remaining `870`, and progress `13%`; the 30-day fee boundary passed |
+| Goal lifecycle | Normal over-limit contribution was rejected; manual override, withdrawal, and deletion ended at `20.0%` with `800` remaining |
+| Project with expense | Income `1000`, effective expense `400`, profit `600`, and ROI `150.0%` |
+| Income-only project | Profit `250` and ROI `N/A` |
+| Renewal skip | Due date advanced from `2026-07-31` to `2026-08-31`, created zero transactions, and left Upcoming |
+| Renewal pause/resume | Pause preserved `2026-07-31` and removed Upcoming; resume restored `ACTIVE`, the date, and Upcoming |
+| Renewal cancel/delete | Cancel produced `CANCELLED` and removed Upcoming; delete removed the record |
+| Activity | 54 entries exercised pagination; the 91-day retention boundary passed |
+| CSV rate limit | Ten exports returned `200`; the next returned `429` with `Retry-After` |
 
 <!-- markdownlint-enable MD013 -->
 
+The normal goal over-limit message was:
+
+> Total contributions to this transaction exceed its amount. Enable manual
+> adjustment to override.
+
+The earlier goal state before deletion was `50.0%` with `500` remaining.
+
 ## Specification §29 manual QA
 
-`[x]` means the behavior was observed locally in the browser. Every checked
-item must still be repeated on the final Preview. `[ ]` means it was not
-exercised by this representative browser run.
+Every item below was exercised against the final protected Preview.
 
-### Confirmed locally
+### Authentication
 
-- [x] Register, login, persist the session, logout, redirect a protected route,
-  and relogin
-- [x] Create account income and a credit-card expense with no existing card
-  credit
-- [x] Pay a credit card beyond its debt and verify debt zero plus card credit
-- [x] Refund a zero-debt credit card and verify card credit increases
-- [x] Filter transactions and reports by the available period and domain
-  filters
-- [x] Export the exact CSV columns with authenticated-user-only rows
-- [x] Create the bank and credit-card sources used by the reference ledger
-- [x] Create a goal, contribute to it, and verify progress and remaining
-- [x] Create a project, link transactions, and verify effective expense and
-  profit
-- [x] Create a renewal and mark it paid
-- [x] Reconcile the dashboard and render all ten reports and their charts
-- [x] Observe representative mutations in Activity Log
-- [x] Exercise the shared destructive confirmation dialog
-- [x] Confirm two-user list/export isolation and safe direct-object denial
-- [x] Confirm CSV rate limiting returns `429` with `Retry-After`
-- [x] Confirm 375px header/report containment and reduced-motion behavior
+- [x] Register a new user
+- [x] Log in and persist the session across reload and navigation
+- [x] Log out and redirect protected routes to login
+- [x] Log in again successfully
 
-### Not yet exercised in a browser
+### Transactions — all types
 
-- [ ] Account expense with quality, card-credit-first expense, bank-to-bank
-  transfer, bank refund, debt-reducing card refund, and all adjustment variants
-- [ ] Category quality prefill, transaction editing, title/note search, and
-  representative CRUD deletion for every domain
-- [ ] Category create/edit/delete and wallet/cash source creation
-- [ ] Goal contribution from existing savings, normal/manual
-  over-contribution, withdrawal, and contribution deletion
-- [ ] Project ROI and zero-expense `N/A`
-- [ ] Annual-fee boundary, fee-waiver inclusion/exclusion/refund, and separate
-  card-credit labeling
-- [ ] Renewal skip, pause, and cancel
-- [ ] Activity pagination and retention behavior
-- [ ] Required response security headers
-- [ ] Every protected page, mobile-keyboard entry, wide-table scrolling, and
-  loading, empty, success, and safe-error states at 375px
+- [x] Create INCOME to an account
+- [x] Create EXPENSE from an account with a quality rating
+- [x] Create a credit-card EXPENSE with no card credit
+- [x] Create a credit-card EXPENSE with card credit and consume credit first
+- [x] Create a bank-to-bank TRANSFER
+- [x] Create a bank-to-card TRANSFER without increasing income
+- [x] Overflow a card payment to debt zero plus card credit
+- [x] Create a REFUND to a bank account
+- [x] Create a REFUND to a card with debt
+- [x] Create a REFUND to a card with zero debt
+- [x] Create account ADJUSTMENT INCREASE and DECREASE
+- [x] Create card-debt ADJUSTMENT
+- [x] Verify category default quality prefill
+- [x] Edit and delete a transaction with confirmation
+- [x] Filter by type, date, category, quality, and source
+- [x] Search by title and note
+- [x] Export authenticated-user-only CSV with the exact columns
+
+The verified CSV columns were Date, Type, Title, Amount, Currency, Category,
+Quality Rating, From Source, To Source, Project, Description, Count Toward Fee
+Waiver, and Created At.
+
+### Categories, accounts, and wallets
+
+- [x] Create a category with a default quality rating
+- [x] Edit and delete a category
+- [x] Create bank, e-wallet, cash, and credit-card sources
+- [x] Verify tracked balances include refunds
+- [x] Verify estimated net position and separate card credit
+- [x] Cancel and confirm representative destructive actions
+
+### Saving goals
+
+- [x] Create a goal
+- [x] Contribute from an income transaction
+- [x] Contribute from existing savings without a transaction link
+- [x] Block normal over-contribution with the exact safe message
+- [x] Allow over-contribution with manual adjustment
+- [x] Withdraw and verify reduced progress
+- [x] Verify progress and remaining values
+- [x] Delete a contribution and goal with confirmation
+
+### Projects
+
+- [x] Create and edit a project
+- [x] Link transactions to the project
+- [x] Verify profit, effective expense, and ROI
+- [x] Verify zero-expense ROI displays `N/A`
+- [x] Delete a project with confirmation
+
+### Credit cards
+
+- [x] Verify the 30-day annual-fee reminder boundary
+- [x] Verify eligible fee-waiver expense progress
+- [x] Verify a linked refund reduces eligible spending
+- [x] Verify an excluded transaction does not affect eligible spending
+- [x] Verify card credit is separate from credit limit and available credit
+
+### Renewals
+
+- [x] Create a renewal
+- [x] Mark it paid and verify the transaction and next due date
+- [x] Skip it and verify the date advances with no transaction
+- [x] Pause and resume it while preserving the due date
+- [x] Cancel it and verify it leaves Upcoming
+- [x] Delete it and verify it is absent
+
+### Dashboard, reports, activity, and security
+
+- [x] Reconcile every dashboard summary card with the reference ledger
+- [x] Verify dashboard and report period filters
+- [x] Verify estimated-net-position labeling
+- [x] Render all ten report views and every chart
+- [x] Verify major mutations in Activity Log
+- [x] Verify 54-entry pagination and the 91-day retention boundary
+- [x] Verify User A cannot list, read, reference, mutate, report, or export
+  User B data
+- [x] Verify direct-object probes settle as safe `404` responses
+- [x] Verify CSV includes only the authenticated user's records
+- [x] Verify CSV rate limiting returns `429` with `Retry-After`
+
+The following exact headers were present on public, dynamic protected, and API
+responses:
+
+- `X-Frame-Options: DENY`
+- `X-Content-Type-Options: nosniff`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+- `Permissions-Policy: camera=(), geolocation=(), microphone=(), payment=(), usb=()`
+
+### 375px browser acceptance
+
+- [x] Navigate all 17 protected route variants with the mobile menu
+- [x] Use forms with the mobile keyboard
+- [x] Contain page headers, reports, charts, and wide tables without page-width
+  overflow
+- [x] Cancel and confirm destructive dialogs with visible keyboard focus
+- [x] Verify mobile empty, validation-error, destructive-error, and retry states
+- [x] Verify reduced-motion behavior
+- [x] Request protected loading-state RSC output
+
+The loading RSC request was observed, but its skeleton frame completed too
+quickly to paint in the browser capture. Existing rendered tests and code
+inspection verify skeleton-only, reduced-motion-aware loading output; this is
+not claimed as a visually observed skeleton frame.
 
 ## Specification §30 deployment checks
 
-### Completed preparation
-
 - [x] Confirm the intended Vercel project before linking
-- [x] Use the disposable Preview-only database, never Production data
-- [x] Configure only `DATABASE_URL`, `NEXTAUTH_SECRET`, and `NEXTAUTH_URL` for
-  Preview
+- [x] Use the disposable Preview database, never Production data
+- [x] Configure only `DATABASE_URL`, `NEXTAUTH_SECRET`, and `NEXTAUTH_URL`
 - [x] Run `prisma migrate deploy`, never `db push`
-- [x] Exclude environment files, local agent state, and build cache from the
-  deployment input
-- [x] Configure the function region as `sin1`, colocated with the database
-- [x] Confirm the local production build passes
-- [x] Confirm README setup, approved variable names, migration command, and
-  release runbook
+- [x] Exclude environment files, local agent state, and build cache
+- [x] Configure Node.js 22 and the `sin1` function region
+- [x] Obtain the stable protected Preview alias
+- [x] Set `NEXTAUTH_URL` to that stable alias and complete the final redeploy
+- [x] Confirm the target is Preview and the final state is Ready
+- [x] Confirm the production build passes
+- [x] Test auth, representative writes, protected routes, dashboard, reports,
+  CSV, headers, and two-user isolation remotely
+- [x] Confirm README setup, variable names, and migration command
+- [x] Revoke the acceptance bypass and retain Deployment Protection
+- [x] Remove the failed bootstrap, policy-blocked, and superseded deployments
+- [ ] Provision and deploy a Production database and application
 
-### Pending Preview-only checks
+The final unchecked item is intentionally outside Phase 2 authorization.
 
-- [ ] Obtain an authorized Preview address
-- [ ] Set `NEXTAUTH_URL` to the actual Preview or stable branch address
-- [ ] Redeploy after setting the final Preview address
-- [ ] Repeat registration, login, logout, and session persistence remotely
-- [ ] Repeat representative transaction, goal, and renewal writes remotely
-- [ ] Test protected routes after logout remotely
-- [ ] Test dashboard and all reports after remote data entry
-- [ ] Repeat CSV, rate-limit, response-header, and two-user isolation checks
-- [ ] Complete every remaining specification §29 browser item
+## Findings and remediation
 
-## Findings
+### Resolved — concurrent settings initialization
 
-### Blocker — first deployment classified as Production
+The first browser run exposed a Prisma uniqueness race during initial settings
+creation. Commit `bbb5935` handles the `P2002` race by reading the concurrently
+created settings. The Preview retest passed without uniqueness errors.
 
-On 2026-07-31, two attempts intended for Preview were unexpectedly classified
-as Production by Vercel's first-deployment behavior:
+### Resolved — 375px page-header overflow
 
-1. The first attempt failed because the upload followed the worktree's `.env`
-   symlink. It was immediately removed, and secure deployment exclusions were
-   added in `d32e65a`.
-2. The second attempt was again classified as Production and was removed while
-   building.
+The first mobile run exposed uncontained PageHeader actions. Commit `1ba8d31`
+allows wrapping and constrains the action region. All 17 protected route
+variants passed the 375px retest.
 
-No deployment remains, no Preview address was issued, and no Production
-release was retained. The behavior is consistent with a
-[Vercel staff confirmation](https://community.vercel.com/t/vercel-cli-ignores-target-preview-and-creates-production-deployment/46384)
-that a project's first deployment is automatically Production.
+### Resolved — first-deployment classification
 
-**Severity:** Release blocker. Continuing would cross the explicit
-no-Production boundary.
+Vercel classified the initial Preview-intended attempts as Production. The
+unsafe `.env` symlink package was fixed in `d32e65a`, and those attempts were
+removed. After explicit authorization, a temporary no-domain Production
+bootstrap failed safely and was removed. A Preview blocked by Git-author policy
+and a superseded Preview were also removed. The remaining deployment is the
+single protected, Ready Preview at the stable alias.
 
-**Decision required:** authorize a controlled one-time first deployment using
-only the disposable database, or choose a supported deployment path that
-guarantees Preview classification. After that decision, set the final
-`NEXTAUTH_URL`, redeploy, and run the complete remote acceptance checklist.
+There are no open Task 17 release blockers.
+
+## Remaining release caveats
+
+- Run the full Task 16 gate again from the final clean tree before integration;
+  the recorded 473 unit/rendered and 103 integration tests predate that gate.
+- Production database provisioning and deployment remain unauthorized.
+- The loading skeleton is supported by rendered tests and code inspection, but
+  did not remain onscreen long enough for a painted browser capture.
