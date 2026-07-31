@@ -1,5 +1,6 @@
 "use server";
 
+import { Prisma } from "@prisma/client";
 import { compare, hash } from "bcryptjs";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
@@ -14,15 +15,29 @@ const dateFormats = ["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"] as const;
 const numberFormats = ["1,000,000", "1.000.000"] as const;
 const dashboardPeriods = ["Week", "Month", "Year"] as const;
 
+function bcryptPassword(fieldName: string) {
+  return z.string().refine(
+    (value) => new TextEncoder().encode(value).byteLength <= 72,
+    `${fieldName} must be 72 bytes or fewer.`
+  );
+}
+
 const settingsSchema = z
   .object({
-    confirmPassword: z.string().optional(),
-    currentPassword: z.string().optional(),
+    currentPassword: bcryptPassword("Current password").optional(),
+    newPassword: bcryptPassword("New password").optional(),
+    confirmPassword: bcryptPassword("Password confirmation").optional(),
     dateFormat: z.enum(dateFormats),
-    defaultCurrency: z.string().trim().min(1).max(8),
+    defaultCurrency: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z]{3}$/, "Use a three-letter currency code."),
     defaultDashboardPeriod: z.enum(dashboardPeriods),
-    name: z.string().trim().min(1),
-    newPassword: z.string().optional(),
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100, "Name must be 100 characters or fewer."),
     numberFormat: z.enum(numberFormats)
   })
   .superRefine((data, context) => {
@@ -66,11 +81,32 @@ export type SettingsState = {
 
 export async function getUserSettings() {
   const user = await requireAuth();
-  const settings = await prisma.userSettings.upsert({
-    where: { userId: user.id },
-    create: { userId: user.id },
-    update: {}
-  });
+  let settings;
+
+  try {
+    settings = await prisma.userSettings.upsert({
+      where: { userId: user.id },
+      create: { userId: user.id },
+      update: {}
+    });
+  } catch (error) {
+    if (
+      !(
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      )
+    ) {
+      throw error;
+    }
+
+    settings = await prisma.userSettings.findUnique({
+      where: { userId: user.id }
+    });
+
+    if (!settings) {
+      throw error;
+    }
+  }
 
   return { settings, user };
 }
@@ -99,15 +135,6 @@ export async function updateUserSettings(
     return { error: parsed.error.issues[0]?.message ?? "Check your settings." };
   }
 
-  const currentUser = await prisma.user.findUnique({
-    where: { id: user.id },
-    select: { passwordHash: true }
-  });
-
-  if (!currentUser) {
-    return { error: "User account not found." };
-  }
-
   const wantsPasswordChange = Boolean(
     parsed.data.currentPassword ||
       parsed.data.newPassword ||
@@ -115,46 +142,69 @@ export async function updateUserSettings(
   );
   let passwordHash: string | undefined;
 
-  if (wantsPasswordChange) {
-    const passwordMatches = await compare(
-      parsed.data.currentPassword ?? "",
-      currentUser.passwordHash
-    );
+  try {
+    const currentUser = await prisma.user.findUnique({
+      where: { id: user.id },
+      select: { passwordHash: true }
+    });
 
-    if (!passwordMatches) {
-      return { error: "Current password is incorrect." };
+    if (!currentUser) {
+      return { error: "User account not found." };
     }
 
-    passwordHash = await hash(parsed.data.newPassword ?? "", 12);
+    if (wantsPasswordChange) {
+      const passwordMatches = await compare(
+        parsed.data.currentPassword ?? "",
+        currentUser.passwordHash
+      );
+
+      if (!passwordMatches) {
+        return { error: "Current password is incorrect." };
+      }
+
+      passwordHash = await hash(parsed.data.newPassword ?? "", 12);
+    }
+  } catch {
+    return { error: "Unable to save settings." };
   }
 
-  await prisma.$transaction([
-    prisma.user.update({
-      where: { id: user.id },
-      data: {
-        name: parsed.data.name,
-        ...(passwordHash ? { passwordHash } : {})
-      }
-    }),
-    prisma.userSettings.upsert({
-      where: { userId: user.id },
-      create: {
-        userId: user.id,
-        defaultCurrency: parsed.data.defaultCurrency.toUpperCase(),
-        dateFormat: parsed.data.dateFormat,
-        numberFormat: parsed.data.numberFormat,
-        defaultDashboardPeriod: parsed.data.defaultDashboardPeriod
-      },
-      update: {
-        defaultCurrency: parsed.data.defaultCurrency.toUpperCase(),
-        dateFormat: parsed.data.dateFormat,
-        numberFormat: parsed.data.numberFormat,
-        defaultDashboardPeriod: parsed.data.defaultDashboardPeriod
-      }
-    })
-  ]);
+  try {
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: user.id },
+        data: {
+          name: parsed.data.name,
+          ...(passwordHash ? { passwordHash } : {})
+        }
+      }),
+      prisma.userSettings.upsert({
+        where: { userId: user.id },
+        create: {
+          userId: user.id,
+          defaultCurrency: parsed.data.defaultCurrency.toUpperCase(),
+          dateFormat: parsed.data.dateFormat,
+          numberFormat: parsed.data.numberFormat,
+          defaultDashboardPeriod: parsed.data.defaultDashboardPeriod
+        },
+        update: {
+          defaultCurrency: parsed.data.defaultCurrency.toUpperCase(),
+          dateFormat: parsed.data.dateFormat,
+          numberFormat: parsed.data.numberFormat,
+          defaultDashboardPeriod: parsed.data.defaultDashboardPeriod
+        }
+      })
+    ]);
+  } catch {
+    return { error: "Unable to save settings." };
+  }
 
   revalidatePath("/settings");
   revalidatePath("/dashboard");
+  revalidatePath("/accounts");
+  revalidatePath("/goals");
+  revalidatePath("/projects");
+  revalidatePath("/renewals");
+  revalidatePath("/reports");
+  revalidatePath("/transactions");
   return { success: "Settings saved." };
 }

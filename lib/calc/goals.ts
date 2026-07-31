@@ -1,11 +1,7 @@
 import { ContributionType } from "@prisma/client";
+import { decimal, percent, type DecimalInput } from "@/lib/money";
 
-type DecimalLike = {
-  toNumber?: () => number;
-  toString?: () => string;
-};
-
-type GoalAmount = number | string | DecimalLike | null | undefined;
+type GoalAmount = DecimalInput | null | undefined;
 
 export type GoalProgressContribution = {
   amount: GoalAmount;
@@ -23,24 +19,8 @@ export type GoalContributionLimitInput = {
 export const overContributionError =
   "Total contributions to this transaction exceed its amount. Enable manual adjustment to override.";
 
-function toNumber(value: GoalAmount) {
-  if (value === null || value === undefined) {
-    return 0;
-  }
-
-  if (typeof value === "number") {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    return Number(value);
-  }
-
-  if (value.toNumber) {
-    return value.toNumber();
-  }
-
-  return Number(value.toString?.() ?? 0);
+function amount(value: GoalAmount) {
+  return decimal(value ?? 0);
 }
 
 export function calculateGoalProgress(
@@ -48,18 +28,20 @@ export function calculateGoalProgress(
   targetAmount: GoalAmount = 0
 ) {
   const netContributed = contributions.reduce((total, contribution) => {
-    const amount = toNumber(contribution.amount);
+    const contributionAmount = amount(contribution.amount);
 
     return contribution.type === ContributionType.CONTRIBUTION
-      ? total + amount
-      : total - amount;
-  }, 0);
-  const target = toNumber(targetAmount);
+      ? total.plus(contributionAmount)
+      : total.minus(contributionAmount);
+  }, decimal(0));
+  const target = amount(targetAmount);
 
   return {
     netContributed,
-    progressPercent: target > 0 ? (netContributed / target) * 100 : 0,
-    remaining: Math.max(0, target - netContributed)
+    progressPercent: target.gt(0) ? percent(netContributed, target) : decimal(0),
+    remaining: target.minus(netContributed).gt(0)
+      ? target.minus(netContributed)
+      : decimal(0)
   };
 }
 
@@ -74,7 +56,11 @@ export function validateContributionAgainstTransaction({
     return { ok: true };
   }
 
-  if (toNumber(existingLinkedAmount) + toNumber(amount) > toNumber(transactionAmount)) {
+  if (
+    decimal(existingLinkedAmount ?? 0)
+      .plus(decimal(amount ?? 0))
+      .gt(decimal(transactionAmount ?? 0))
+  ) {
     return {
       ok: false,
       error: overContributionError

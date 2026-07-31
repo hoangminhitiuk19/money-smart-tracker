@@ -1,10 +1,15 @@
+import {
+  clampedPresentationPercent,
+  type DecimalInput
+} from "@/lib/money";
+
 type ProgressBarProps = {
-  percent: number;
+  percent: DecimalInput;
   color?: string;
 };
 
-function clampWidth(percent: number) {
-  return `${Math.min(100, Math.max(0, percent))}%`;
+function clampWidth(percent: DecimalInput) {
+  return `${clampedPresentationPercent(percent)}%`;
 }
 
 export function ProgressBar({ percent, color = "#4f46e5" }: ProgressBarProps) {

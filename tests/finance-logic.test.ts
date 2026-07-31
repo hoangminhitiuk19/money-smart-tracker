@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 import {
   calculateTrackedBalance,
@@ -69,7 +70,9 @@ function cardTx(
   transaction: Partial<CreditCardTransaction>
 ): CreditCardTransaction {
   return {
+    id: "card-transaction",
     amount: 100,
+    createdAt: new Date("2026-07-10T00:00:01.000Z"),
     transactionDate: new Date("2026-07-10T00:00:00.000Z"),
     type: "EXPENSE",
     ...transaction
@@ -110,7 +113,9 @@ function dashboardTx(
   transaction: Partial<DashboardTransaction>
 ): DashboardTransaction {
   return {
+    id: "dashboard-transaction",
     amount: 100,
+    createdAt: new Date("2026-07-10T00:00:01.000Z"),
     transactionDate: new Date("2026-07-10T00:00:00.000Z"),
     type: "EXPENSE",
     ...transaction
@@ -137,6 +142,58 @@ function reportTx(transaction: Partial<ReportTransaction>): ReportTransaction {
   };
 }
 
+function creditStateText(
+  state: ReturnType<typeof calculateCreditCardState>
+) {
+  return {
+    availableCredit: state.availableCredit.toFixed(2),
+    cardCredit: state.cardCredit.toFixed(2),
+    outstandingDebt: state.outstandingDebt.toFixed(2)
+  };
+}
+
+function goalProgressText(
+  progress: ReturnType<typeof calculateGoalProgress>
+) {
+  return {
+    netContributed: progress.netContributed.toFixed(2),
+    progressPercent: progress.progressPercent.toDecimalPlaces(8).toString(),
+    remaining: progress.remaining.toFixed(2)
+  };
+}
+
+function projectSummaryText(
+  summary: ReturnType<typeof calculateProjectSummary>
+) {
+  return {
+    profit: summary.profit.toFixed(2),
+    roi: summary.roi?.toDecimalPlaces(8).toString() ?? null,
+    totalExpense: summary.totalExpense.toFixed(2),
+    totalIncome: summary.totalIncome.toFixed(2)
+  };
+}
+
+function feeWaiverStateText(
+  state: ReturnType<typeof calculateFeeWaiverState>
+) {
+  return {
+    eligibleSpending: state.eligibleSpending.toFixed(2),
+    progress: state.progress.toDecimalPlaces(8).toString(),
+    remaining: state.remaining.toFixed(2)
+  };
+}
+
+function netSavingsText(
+  result: ReturnType<typeof calculateNetSavings>
+) {
+  return {
+    netSavings: result.netSavings.toFixed(2),
+    savingRate: result.savingRate.toDecimalPlaces(8).toString(),
+    totalExpense: result.totalExpense.toFixed(2),
+    totalIncome: result.totalIncome.toFixed(2)
+  };
+}
+
 describe("finance logic requirements", () => {
   it("calculateTrackedBalance - income increases balance", () => {
     const transactions = [
@@ -147,7 +204,9 @@ describe("finance logic requirements", () => {
       })
     ];
 
-    expect(calculateTrackedBalance(bankSource, transactions)).toBe(1250);
+    expect(calculateTrackedBalance(bankSource, transactions).toFixed(2)).toBe(
+      "1250.00"
+    );
   });
 
   it("calculateTrackedBalance - expense decreases balance", () => {
@@ -159,7 +218,9 @@ describe("finance logic requirements", () => {
       })
     ];
 
-    expect(calculateTrackedBalance(bankSource, transactions)).toBe(825);
+    expect(calculateTrackedBalance(bankSource, transactions).toFixed(2)).toBe(
+      "825.00"
+    );
   });
 
   it("calculateTrackedBalance - REFUND increases balance", () => {
@@ -171,7 +232,9 @@ describe("finance logic requirements", () => {
       })
     ];
 
-    expect(calculateTrackedBalance(bankSource, transactions)).toBe(1060);
+    expect(calculateTrackedBalance(bankSource, transactions).toFixed(2)).toBe(
+      "1060.00"
+    );
   });
 
   it("calculateTrackedBalance - transfer in/out correct", () => {
@@ -188,7 +251,9 @@ describe("finance logic requirements", () => {
       })
     ];
 
-    expect(calculateTrackedBalance(bankSource, transactions)).toBe(1175);
+    expect(calculateTrackedBalance(bankSource, transactions).toFixed(2)).toBe(
+      "1175.00"
+    );
   });
 
   it("calculateTrackedBalance - adjustment INCREASE and DECREASE", () => {
@@ -207,7 +272,9 @@ describe("finance logic requirements", () => {
       })
     ];
 
-    expect(calculateTrackedBalance(bankSource, transactions)).toBe(1055);
+    expect(calculateTrackedBalance(bankSource, transactions).toFixed(2)).toBe(
+      "1055.00"
+    );
   });
 
   it("calculateCreditCardState - expense with no card credit increases debt", () => {
@@ -219,10 +286,12 @@ describe("finance logic requirements", () => {
       })
     ];
 
-    expect(calculateCreditCardState(cardSource(), transactions)).toEqual({
-      availableCredit: 880,
-      cardCredit: 0,
-      outstandingDebt: 120
+    expect(
+      creditStateText(calculateCreditCardState(cardSource(), transactions))
+    ).toEqual({
+      availableCredit: "880.00",
+      cardCredit: "0.00",
+      outstandingDebt: "120.00"
     });
   });
 
@@ -236,11 +305,16 @@ describe("finance logic requirements", () => {
     ];
 
     expect(
-      calculateCreditCardState(cardSource({ initialCardCredit: 200 }), transactions)
+      creditStateText(
+        calculateCreditCardState(
+          cardSource({ initialCardCredit: 200 }),
+          transactions
+        )
+      )
     ).toEqual({
-      availableCredit: 1000,
-      cardCredit: 120,
-      outstandingDebt: 0
+      availableCredit: "1000.00",
+      cardCredit: "120.00",
+      outstandingDebt: "0.00"
     });
   });
 
@@ -254,11 +328,16 @@ describe("finance logic requirements", () => {
     ];
 
     expect(
-      calculateCreditCardState(cardSource({ initialCardCredit: 100 }), transactions)
+      creditStateText(
+        calculateCreditCardState(
+          cardSource({ initialCardCredit: 100 }),
+          transactions
+        )
+      )
     ).toEqual({
-      availableCredit: 850,
-      cardCredit: 0,
-      outstandingDebt: 150
+      availableCredit: "850.00",
+      cardCredit: "0.00",
+      outstandingDebt: "150.00"
     });
   });
 
@@ -272,14 +351,16 @@ describe("finance logic requirements", () => {
     ];
 
     expect(
-      calculateCreditCardState(
-        cardSource({ initialOutstandingDebt: 500 }),
-        transactions
+      creditStateText(
+        calculateCreditCardState(
+          cardSource({ initialOutstandingDebt: 500 }),
+          transactions
+        )
       )
     ).toEqual({
-      availableCredit: 675,
-      cardCredit: 0,
-      outstandingDebt: 325
+      availableCredit: "675.00",
+      cardCredit: "0.00",
+      outstandingDebt: "325.00"
     });
   });
 
@@ -293,14 +374,16 @@ describe("finance logic requirements", () => {
     ];
 
     expect(
-      calculateCreditCardState(
-        cardSource({ initialOutstandingDebt: 125 }),
-        transactions
+      creditStateText(
+        calculateCreditCardState(
+          cardSource({ initialOutstandingDebt: 125 }),
+          transactions
+        )
       )
     ).toEqual({
-      availableCredit: 1000,
-      cardCredit: 175,
-      outstandingDebt: 0
+      availableCredit: "1000.00",
+      cardCredit: "175.00",
+      outstandingDebt: "0.00"
     });
   });
 
@@ -314,14 +397,16 @@ describe("finance logic requirements", () => {
     ];
 
     expect(
-      calculateCreditCardState(
-        cardSource({ initialOutstandingDebt: 300 }),
-        transactions
+      creditStateText(
+        calculateCreditCardState(
+          cardSource({ initialOutstandingDebt: 300 }),
+          transactions
+        )
       )
     ).toEqual({
-      availableCredit: 790,
-      cardCredit: 0,
-      outstandingDebt: 210
+      availableCredit: "790.00",
+      cardCredit: "0.00",
+      outstandingDebt: "210.00"
     });
   });
 
@@ -335,14 +420,16 @@ describe("finance logic requirements", () => {
     ];
 
     expect(
-      calculateCreditCardState(
-        cardSource({ initialOutstandingDebt: 100 }),
-        transactions
+      creditStateText(
+        calculateCreditCardState(
+          cardSource({ initialOutstandingDebt: 100 }),
+          transactions
+        )
       )
     ).toEqual({
-      availableCredit: 1000,
-      cardCredit: 140,
-      outstandingDebt: 0
+      availableCredit: "1000.00",
+      cardCredit: "140.00",
+      outstandingDebt: "0.00"
     });
   });
 
@@ -355,10 +442,12 @@ describe("finance logic requirements", () => {
       })
     ];
 
-    expect(calculateCreditCardState(cardSource(), transactions)).toEqual({
-      availableCredit: 1000,
-      cardCredit: 55,
-      outstandingDebt: 0
+    expect(
+      creditStateText(calculateCreditCardState(cardSource(), transactions))
+    ).toEqual({
+      availableCredit: "1000.00",
+      cardCredit: "55.00",
+      outstandingDebt: "0.00"
     });
   });
 
@@ -369,10 +458,12 @@ describe("finance logic requirements", () => {
       goalContribution({ amount: 125 })
     ];
 
-    expect(calculateGoalProgress(contributions, 1000)).toEqual({
-      netContributed: 450,
-      progressPercent: 45,
-      remaining: 550
+    expect(
+      goalProgressText(calculateGoalProgress(contributions, 1000))
+    ).toEqual({
+      netContributed: "450.00",
+      progressPercent: "45",
+      remaining: "550.00"
     });
   });
 
@@ -421,22 +512,22 @@ describe("finance logic requirements", () => {
       projectTx({ amount: 400, type: "EXPENSE" })
     ];
 
-    expect(calculateProjectSummary(transactions)).toEqual({
-      profit: 600,
-      roi: 150,
-      totalExpense: 400,
-      totalIncome: 1000
+    expect(projectSummaryText(calculateProjectSummary(transactions))).toEqual({
+      profit: "600.00",
+      roi: "150",
+      totalExpense: "400.00",
+      totalIncome: "1000.00"
     });
   });
 
   it("calculateProjectSummary - zero expense -> ROI is null", () => {
     const transactions = [projectTx({ amount: 800, type: "INCOME" })];
 
-    expect(calculateProjectSummary(transactions)).toEqual({
-      profit: 800,
+    expect(projectSummaryText(calculateProjectSummary(transactions))).toEqual({
+      profit: "800.00",
       roi: null,
-      totalExpense: 0,
-      totalIncome: 800
+      totalExpense: "0.00",
+      totalIncome: "800.00"
     });
   });
 
@@ -455,10 +546,12 @@ describe("finance logic requirements", () => {
       })
     ];
 
-    expect(calculateFeeWaiverState(source, transactions)).toEqual({
-      eligibleSpending: 250,
-      progress: 25,
-      remaining: 750
+    expect(
+      feeWaiverStateText(calculateFeeWaiverState(source, transactions))
+    ).toEqual({
+      eligibleSpending: "250.00",
+      progress: "25",
+      remaining: "750.00"
     });
   });
 
@@ -484,10 +577,12 @@ describe("finance logic requirements", () => {
       })
     ];
 
-    expect(calculateFeeWaiverState(source, transactions)).toEqual({
-      eligibleSpending: 220,
-      progress: 22,
-      remaining: 780
+    expect(
+      feeWaiverStateText(calculateFeeWaiverState(source, transactions))
+    ).toEqual({
+      eligibleSpending: "220.00",
+      progress: "22",
+      remaining: "780.00"
     });
   });
 
@@ -519,10 +614,12 @@ describe("finance logic requirements", () => {
       })
     ];
 
-    expect(calculateFeeWaiverState(source, transactions)).toEqual({
-      eligibleSpending: 0,
-      progress: 0,
-      remaining: 1000
+    expect(
+      feeWaiverStateText(calculateFeeWaiverState(source, transactions))
+    ).toEqual({
+      eligibleSpending: "0.00",
+      progress: "0",
+      remaining: "1000.00"
     });
   });
 
@@ -537,24 +634,28 @@ describe("finance logic requirements", () => {
     ];
 
     expect(
-      calculateFeeWaiverState(
-        cardSource({ annualFeeWaiverSpendTarget: 0 }),
-        transactions
+      feeWaiverStateText(
+        calculateFeeWaiverState(
+          cardSource({ annualFeeWaiverSpendTarget: 0 }),
+          transactions
+        )
       )
     ).toEqual({
-      eligibleSpending: 0,
-      progress: 0,
-      remaining: 0
+      eligibleSpending: "0.00",
+      progress: "0",
+      remaining: "0.00"
     });
     expect(
-      calculateFeeWaiverState(
-        cardSource({ annualFeeWaiverSpendTarget: null }),
-        transactions
+      feeWaiverStateText(
+        calculateFeeWaiverState(
+          cardSource({ annualFeeWaiverSpendTarget: null }),
+          transactions
+        )
       )
     ).toEqual({
-      eligibleSpending: 0,
-      progress: 0,
-      remaining: 0
+      eligibleSpending: "0.00",
+      progress: "0",
+      remaining: "0.00"
     });
   });
 
@@ -569,10 +670,12 @@ describe("finance logic requirements", () => {
       })
     ];
 
-    expect(calculateFeeWaiverState(source, transactions)).toEqual({
-      eligibleSpending: 150,
-      progress: 150,
-      remaining: 0
+    expect(
+      feeWaiverStateText(calculateFeeWaiverState(source, transactions))
+    ).toEqual({
+      eligibleSpending: "150.00",
+      progress: "150",
+      remaining: "0.00"
     });
   });
 
@@ -777,12 +880,24 @@ describe("finance logic requirements", () => {
     ).toBe(false);
   });
 
-  it("adjustmentDirectionEffect - INCREASE adds to balance", () => {
-    expect(adjustmentDirectionEffect(75, "INCREASE")).toBe(75);
+  it("adjustmentDirectionEffect - INCREASE preserves an exact Decimal(18,2)", () => {
+    const result = adjustmentDirectionEffect(
+      new Prisma.Decimal("90071992547409.99"),
+      "INCREASE"
+    );
+
+    expect(result).toBeInstanceOf(Prisma.Decimal);
+    expect(result.toFixed(2)).toBe("90071992547409.99");
   });
 
-  it("adjustmentDirectionEffect - DECREASE subtracts from balance", () => {
-    expect(adjustmentDirectionEffect(75, "DECREASE")).toBe(-75);
+  it("adjustmentDirectionEffect - DECREASE preserves an exact Decimal(18,2)", () => {
+    const result = adjustmentDirectionEffect(
+      new Prisma.Decimal("90071992547409.99"),
+      "DECREASE"
+    );
+
+    expect(result).toBeInstanceOf(Prisma.Decimal);
+    expect(result.toFixed(2)).toBe("-90071992547409.99");
   });
 
   it("calculateNetSavings - normal case", () => {
@@ -792,22 +907,22 @@ describe("finance logic requirements", () => {
       dashboardTx({ amount: 100, type: "TRANSFER" })
     ];
 
-    expect(calculateNetSavings(transactions)).toEqual({
-      netSavings: 750,
-      savingRate: 75,
-      totalExpense: 250,
-      totalIncome: 1000
+    expect(netSavingsText(calculateNetSavings(transactions))).toEqual({
+      netSavings: "750.00",
+      savingRate: "75",
+      totalExpense: "250.00",
+      totalIncome: "1000.00"
     });
   });
 
   it("calculateNetSavings - zero income -> saving rate = 0", () => {
     const transactions = [dashboardTx({ amount: 250, type: "EXPENSE" })];
 
-    expect(calculateNetSavings(transactions)).toEqual({
-      netSavings: -250,
-      savingRate: 0,
-      totalExpense: 250,
-      totalIncome: 0
+    expect(netSavingsText(calculateNetSavings(transactions))).toEqual({
+      netSavings: "-250.00",
+      savingRate: "0",
+      totalExpense: "250.00",
+      totalIncome: "0.00"
     });
   });
 
@@ -820,10 +935,14 @@ describe("finance logic requirements", () => {
       reportTx({ amount: 500, type: "INCOME" })
     ];
 
-    expect(getSpendingQualityBreakdown(transactions)).toEqual([
-      { count: 2, rating: "A", total: 150 },
-      { count: 1, rating: "C", total: 75 }
-    ]);
+    const breakdown = getSpendingQualityBreakdown(transactions);
+
+    expect(breakdown[0].count).toBe(2);
+    expect(breakdown[0].rating).toBe("A");
+    expect(breakdown[0].total.toFixed(2)).toBe("150.00");
+    expect(breakdown[1].count).toBe(1);
+    expect(breakdown[1].rating).toBe("C");
+    expect(breakdown[1].total.toFixed(2)).toBe("75.00");
   });
 
   it("calculateEstimatedNetPosition - assets minus card debt", () => {
@@ -864,7 +983,9 @@ describe("finance logic requirements", () => {
       })
     ];
 
-    expect(calculateEstimatedNetPosition(moneySources, transactions)).toBe(1225);
+    expect(
+      calculateEstimatedNetPosition(moneySources, transactions).toFixed(2)
+    ).toBe("1225.00");
   });
 
   it("ownershipGuard - passes when userId matches, throws when not", () => {

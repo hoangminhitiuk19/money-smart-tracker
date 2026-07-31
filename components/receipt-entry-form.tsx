@@ -84,7 +84,7 @@ export function ReceiptEntryForm({
     setError(null);
 
     const payload: TransactionFormInput = {
-      amount: Number(formData.get("amount")),
+      amount: String(formData.get("amount") ?? ""),
       categoryId: categoryId || undefined,
       currency: "VND",
       description: emptyToUndefined(formData.get("description")),

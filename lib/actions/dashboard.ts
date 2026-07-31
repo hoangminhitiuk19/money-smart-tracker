@@ -9,6 +9,8 @@ import {
 import { getDashboardSummary } from "@/lib/calc/dashboard";
 import { calculateGoalProgress } from "@/lib/calc/goals";
 import { calculateProjectSummary } from "@/lib/calc/projects";
+import { isUpcomingRenewal } from "@/lib/calc/renewals";
+import { transactionDateRange } from "@/lib/date-range";
 import { prisma } from "@/lib/prisma";
 
 function normalizeStartDate(date: Date | string) {
@@ -20,28 +22,21 @@ function normalizeEndDate(date: Date | string) {
 }
 
 function getToday() {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return today;
-}
+  const now = new Date();
 
-function getThirtyDaysFrom(date: Date) {
-  const result = new Date(date);
-  result.setDate(result.getDate() + 30);
-  return result;
-}
-
-function isUpcomingRenewal(renewal: {
-  nextDueDate: Date;
-  reminderDaysBefore: number;
-}) {
-  const today = getToday();
-  const reminderWindowEnd = new Date(today);
-  reminderWindowEnd.setDate(
-    reminderWindowEnd.getDate() + renewal.reminderDaysBefore
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
   );
+}
 
-  return renewal.nextDueDate <= reminderWindowEnd;
+function getAnnualFeeWindowExclusiveEnd(utcToday: Date) {
+  return new Date(
+    Date.UTC(
+      utcToday.getUTCFullYear(),
+      utcToday.getUTCMonth(),
+      utcToday.getUTCDate() + 31
+    )
+  );
 }
 
 export async function getDashboardData(
@@ -54,10 +49,12 @@ export async function getDashboardData(
   const periodStart = normalizeStartDate(startDate);
   const periodEnd = normalizeEndDate(endDate);
   const today = getToday();
-  const cardFeeWindowEnd = getThirtyDaysFrom(today);
+  const renewalToday = new Date();
+  const cardFeeWindowExclusiveEnd = getAnnualFeeWindowExclusiveEnd(today);
 
   const [
-    transactions,
+    periodTransactions,
+    ledgerTransactions,
     goals,
     projects,
     moneySources,
@@ -67,11 +64,12 @@ export async function getDashboardData(
     prisma.transaction.findMany({
       where: {
         userId,
-        transactionDate: {
-          gte: periodStart,
-          lte: periodEnd
-        }
+        transactionDate: transactionDateRange(startDate, endDate)
       },
+      orderBy: { transactionDate: "desc" }
+    }),
+    prisma.transaction.findMany({
+      where: { userId },
       orderBy: { transactionDate: "desc" }
     }),
     prisma.savingGoal.findMany({
@@ -81,7 +79,9 @@ export async function getDashboardData(
       },
       orderBy: [{ deadline: "asc" }, { name: "asc" }],
       include: {
-        goalContributions: true
+        goalContributions: {
+          where: { userId }
+        }
       }
     }),
     prisma.financialProject.findMany({
@@ -98,11 +98,13 @@ export async function getDashboardData(
         status: RenewalStatus.ACTIVE
       },
       orderBy: [{ nextDueDate: "asc" }, { title: "asc" }],
-      include: {
-        category: true,
-        fromMoneySource: true,
-        toMoneySource: true,
-        project: true
+      select: {
+        id: true,
+        title: true,
+        amount: true,
+        currency: true,
+        nextDueDate: true,
+        reminderDaysBefore: true
       }
     }),
     prisma.moneySource.findMany({
@@ -112,37 +114,44 @@ export async function getDashboardData(
         hasAnnualFee: true,
         annualFeeChargeDate: {
           gte: today,
-          lte: cardFeeWindowEnd
+          lt: cardFeeWindowExclusiveEnd
         }
       },
       orderBy: { annualFeeChargeDate: "asc" }
     })
   ]);
 
-  const upcomingRenewals = activeRenewals.filter(isUpcomingRenewal);
+  const upcomingRenewals = activeRenewals.filter((renewal) =>
+    isUpcomingRenewal(renewal, renewalToday)
+  );
   const summary = getDashboardSummary(
-    transactions,
+    periodTransactions,
     goals,
     projects,
     moneySources,
     upcomingRenewals,
-    today
+    today,
+    ledgerTransactions
   );
   const creditCards = moneySources
-    .filter((source) => source.type === MoneySourceType.CREDIT_CARD)
+    .filter(
+      (source) =>
+        source.type === MoneySourceType.CREDIT_CARD && source.isActive
+    )
     .map((source) => ({
       source,
-      state: calculateCreditCardState(source, transactions)
+      state: calculateCreditCardState(source, ledgerTransactions)
     }));
   const feeWaivers = moneySources
     .filter(
       (source) =>
         source.type === MoneySourceType.CREDIT_CARD &&
+        source.isActive &&
         source.annualFeeWaiverEnabled
     )
     .map((source) => ({
       source,
-      state: calculateFeeWaiverState(source, transactions)
+      state: calculateFeeWaiverState(source, ledgerTransactions)
     }));
   const goalProgress = goals.map((goal) => ({
     goal,
@@ -151,7 +160,9 @@ export async function getDashboardData(
   const projectSummaries = projects.map((project) => ({
     project,
     summary: calculateProjectSummary(
-      transactions.filter((transaction) => transaction.projectId === project.id)
+      periodTransactions.filter(
+        (transaction) => transaction.projectId === project.id
+      )
     )
   }));
 
@@ -161,7 +172,7 @@ export async function getDashboardData(
       endDate: periodEnd
     },
     summary,
-    transactions,
+    transactions: periodTransactions,
     goals: goalProgress,
     projects: projectSummaries,
     moneySources,

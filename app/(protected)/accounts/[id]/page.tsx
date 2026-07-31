@@ -3,13 +3,22 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { getMoneySource } from "@/lib/actions/money-sources";
-import { requireAuth } from "@/lib/auth";
-import { calculateTrackedBalance } from "@/lib/calc/balance";
+import { getUserSettings } from "@/lib/actions/settings";
+import { buildAccountDetailTransactionScope } from "@/lib/account-transaction-scope";
+import { calculateFeeWaiverState } from "@/lib/calc/credit-card";
+import { calculateAccountProjection } from "@/lib/calc/dashboard";
 import {
-  calculateCreditCardState,
-  calculateFeeWaiverState
-} from "@/lib/calc/credit-card";
+  clampedPresentationPercent,
+  decimal,
+  type DecimalInput
+} from "@/lib/money";
 import { prisma } from "@/lib/prisma";
+import {
+  formatUserDate,
+  formatUserMoney,
+  type UserFormatSettings
+} from "@/lib/user-format";
+import { MoneySourceForm } from "@/components/money-source-form";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
 import { ProgressBar } from "@/components/ui/ProgressBar";
@@ -25,20 +34,12 @@ const typeLabels: Record<MoneySourceType, string> = {
   OTHER: "Other"
 };
 
-function formatMoney(amount: number, currency: string) {
-  return new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: 2,
-    style: "currency",
-    currency
-  }).format(amount);
+function formatPercent(amount: DecimalInput) {
+  return `${clampedPresentationPercent(amount).toFixed(0)}%`;
 }
 
-function formatDate(date: Date) {
-  return date.toLocaleDateString("en-US", {
-    day: "numeric",
-    month: "short",
-    year: "numeric"
-  });
+function dateInputValue(date: Date | null) {
+  return date?.toISOString().slice(0, 10) ?? null;
 }
 
 function formatPeriod(period: string | null) {
@@ -51,13 +52,6 @@ function formatPeriod(period: string | null) {
     .split("_")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
-}
-
-function amountToNumber(amount: {
-  toNumber?: () => number;
-  toString?: () => string;
-}) {
-  return amount.toNumber ? amount.toNumber() : Number(amount.toString?.() ?? 0);
 }
 
 function getMonthRange(date: Date) {
@@ -116,17 +110,15 @@ async function AccountDetailPageContent({
 }: {
   id: string;
 }) {
-  const user = await requireAuth();
+  const { settings, user } = await getUserSettings();
   const source = await getMoneySource(id).catch(() => notFound());
+  const isCreditCard = source.type === MoneySourceType.CREDIT_CARD;
 
-  const transactionScope = {
+  const transactionScope = buildAccountDetailTransactionScope({
     userId: user.id,
-    OR: [
-      { fromMoneySourceId: source.id },
-      { toMoneySourceId: source.id },
-      { adjustedMoneySourceId: source.id }
-    ]
-  };
+    sourceId: source.id,
+    sourceType: source.type
+  });
 
   const sourceTransactions = await prisma.transaction.findMany({
     where: transactionScope,
@@ -138,6 +130,7 @@ async function AccountDetailPageContent({
       amount: true,
       currency: true,
       transactionDate: true,
+      createdAt: true,
       fromMoneySourceId: true,
       toMoneySourceId: true,
       adjustedMoneySourceId: true,
@@ -148,15 +141,13 @@ async function AccountDetailPageContent({
     }
   });
 
-  const trackedBalance = calculateTrackedBalance(source, sourceTransactions);
   const recentTransactions = [...sourceTransactions]
     .sort((a, b) => b.transactionDate.getTime() - a.transactionDate.getTime())
     .slice(0, 10);
   const { start: monthStart, end: nextMonthStart } = getMonthRange(new Date());
-  const isCreditCard = source.type === MoneySourceType.CREDIT_CARD;
-  const creditCardState = isCreditCard
-    ? calculateCreditCardState(source, sourceTransactions)
-    : null;
+  const projection = calculateAccountProjection(source, sourceTransactions);
+  const trackedBalance = projection.trackedAmount;
+  const creditCardState = projection.creditCardState;
   const feeWaiverState = isCreditCard
     ? calculateFeeWaiverState(source, sourceTransactions)
     : null;
@@ -167,8 +158,8 @@ async function AccountDetailPageContent({
       transaction.transactionDate >= monthStart &&
       transaction.transactionDate < nextMonthStart;
 
-    return isPayment ? total + amountToNumber(transaction.amount) : total;
-  }, 0);
+    return isPayment ? total.plus(decimal(transaction.amount)) : total;
+  }, decimal(0));
   const expensesThisMonth = sourceTransactions.reduce((total, transaction) => {
     const isExpense =
       transaction.type === TransactionType.EXPENSE &&
@@ -176,8 +167,17 @@ async function AccountDetailPageContent({
       transaction.transactionDate >= monthStart &&
       transaction.transactionDate < nextMonthStart;
 
-    return isExpense ? total + amountToNumber(transaction.amount) : total;
-  }, 0);
+    return isExpense ? total.plus(decimal(transaction.amount)) : total;
+  }, decimal(0));
+  const formatSettings: UserFormatSettings = {
+    defaultCurrency: settings.defaultCurrency,
+    dateFormat: settings.dateFormat as UserFormatSettings["dateFormat"],
+    numberFormat: settings.numberFormat as UserFormatSettings["numberFormat"]
+  };
+  const formatMoney = (amount: DecimalInput, currency: string) =>
+    formatUserMoney(amount, currency, formatSettings);
+  const formatDate = (date: Date | string) =>
+    formatUserDate(date, formatSettings);
 
   return (
     <div className="mx-auto max-w-5xl space-y-8">
@@ -204,14 +204,15 @@ async function AccountDetailPageContent({
 
       <div className="rounded-xl bg-slate-900 p-6 shadow-sm">
         <p className="text-sm font-medium text-slate-400">
-          Tracked in this app
+          {isCreditCard ? "Tracked debt" : "Tracked in this app"}
         </p>
         <p className="mt-3 text-3xl font-bold tracking-tight text-white">
           {formatMoney(trackedBalance, source.currency)}
         </p>
         <p className="mt-3 text-xs text-slate-500">
-          This is based on opening balance plus app transactions. It may differ
-          from your official provider statement.
+          {isCreditCard
+            ? "Tracked estimate from your records. It may differ from your official card statement."
+            : "This is based on opening balance plus app transactions. It may differ from your official provider statement."}
         </p>
       </div>
 
@@ -220,10 +221,7 @@ async function AccountDetailPageContent({
           <dl className="grid gap-x-6 md:grid-cols-2">
             <MoneyMetric
               label="Credit limit"
-              value={formatMoney(
-                amountToNumber(source.creditLimit ?? 0),
-                source.currency
-              )}
+              value={formatMoney(source.creditLimit ?? 0, source.currency)}
             />
             <MoneyMetric
               label="Tracked debt"
@@ -237,7 +235,7 @@ async function AccountDetailPageContent({
               label="Available credit"
               value={formatMoney(creditCardState.availableCredit, source.currency)}
             />
-            {creditCardState.cardCredit > 0 ? (
+            {creditCardState.cardCredit.gt(0) ? (
               <MoneyMetric
                 label="Card credit"
                 value={formatMoney(
@@ -265,7 +263,7 @@ async function AccountDetailPageContent({
                 <MoneyMetric
                   label="Annual fee"
                   value={formatMoney(
-                    amountToNumber(source.annualFeeAmount ?? 0),
+                    source.annualFeeAmount ?? 0,
                     source.annualFeeCurrency
                   )}
                 />
@@ -303,7 +301,7 @@ async function AccountDetailPageContent({
                 <MoneyMetric
                   label="Target"
                   value={`${formatMoney(
-                    amountToNumber(source.annualFeeWaiverSpendTarget ?? 0),
+                    source.annualFeeWaiverSpendTarget ?? 0,
                     source.currency
                   )}/${formatPeriod(source.annualFeeWaiverPeriod)}`}
                 />
@@ -325,7 +323,7 @@ async function AccountDetailPageContent({
                     Tracked in this app &mdash; verify with your bank
                   </span>
                   <span className="font-semibold text-slate-950">
-                    {Math.min(100, Math.max(0, feeWaiverState.progress)).toFixed(0)}%
+                    {formatPercent(feeWaiverState.progress)}
                   </span>
                 </div>
                 <div className="mt-2">
@@ -336,6 +334,44 @@ async function AccountDetailPageContent({
           ) : null}
         </Card>
       ) : null}
+
+      <MoneySourceForm
+        defaultCurrency={settings.defaultCurrency}
+        initialValues={{
+          id: source.id,
+          name: source.name,
+          type: source.type,
+          providerName: source.providerName,
+          displayIdentifier: source.displayIdentifier,
+          currency: source.currency,
+          openingBalance: source.openingBalance.toFixed(2),
+          description: source.description,
+          isActive: source.isActive,
+          cardLastFourDigits: source.cardLastFourDigits,
+          cardNetwork: source.cardNetwork,
+          openedDate: dateInputValue(source.openedDate),
+          creditLimit: source.creditLimit?.toFixed(2) ?? null,
+          initialOutstandingDebt: source.initialOutstandingDebt.toFixed(2),
+          initialCardCredit: source.initialCardCredit.toFixed(2),
+          billingCycleDay: source.billingCycleDay,
+          paymentDueDay: source.paymentDueDay,
+          hasAnnualFee: source.hasAnnualFee,
+          annualFeeAmount: source.annualFeeAmount?.toFixed(2) ?? null,
+          annualFeeCurrency: source.annualFeeCurrency,
+          annualFeeChargeDate: dateInputValue(source.annualFeeChargeDate),
+          annualFeeFrequency: source.annualFeeFrequency,
+          firstYearFeeWaived: source.firstYearFeeWaived,
+          freeYearsCount: source.freeYearsCount,
+          feeWaivedUntilDate: dateInputValue(source.feeWaivedUntilDate),
+          annualFeeWaiverEnabled: source.annualFeeWaiverEnabled,
+          annualFeeWaiverSpendTarget:
+            source.annualFeeWaiverSpendTarget?.toFixed(2) ?? null,
+          annualFeeWaiverPeriod: source.annualFeeWaiverPeriod,
+          waiverPeriodStartDate: dateInputValue(source.waiverPeriodStartDate),
+          waiverPeriodEndDate: dateInputValue(source.waiverPeriodEndDate),
+          annualFeeWaiverNote: source.annualFeeWaiverNote
+        }}
+      />
 
       <Card padded={false} title="Recent Transactions">
         {recentTransactions.length === 0 ? (
@@ -357,7 +393,7 @@ async function AccountDetailPageContent({
                 {recentTransactions.map((transaction) => (
                   <tr className="transition hover:bg-slate-50/80" key={transaction.id}>
                     <td className="px-4 py-3 text-slate-600">
-                      {transaction.transactionDate.toLocaleDateString("en-US")}
+                      {formatDate(transaction.transactionDate)}
                     </td>
                     <td className="px-4 py-3 font-medium text-slate-950">
                       {transaction.title}
@@ -366,10 +402,7 @@ async function AccountDetailPageContent({
                       {transaction.type}
                     </td>
                     <td className="px-4 py-3 text-slate-950">
-                      {formatMoney(
-                        Number(transaction.amount),
-                        transaction.currency
-                      )}
+                      {formatMoney(transaction.amount, transaction.currency)}
                     </td>
                   </tr>
                 ))}

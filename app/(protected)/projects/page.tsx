@@ -7,9 +7,18 @@ import {
   listProjects,
   updateProjectFormAction
 } from "@/lib/actions/projects";
-import { requireAuth } from "@/lib/auth";
+import { getUserSettings } from "@/lib/actions/settings";
 import { calculateProjectSummary } from "@/lib/calc/projects";
+import {
+  decimal,
+  type DecimalInput
+} from "@/lib/money";
 import { prisma } from "@/lib/prisma";
+import {
+  formatUserMoney,
+  type UserFormatSettings
+} from "@/lib/user-format";
+import { DestructiveActionButton } from "@/components/destructive-action-button";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -27,16 +36,10 @@ const statusVariants = {
   PAUSED: "paused"
 } as const;
 
-function formatMoney(amount: number) {
-  return new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: 2,
-    style: "currency",
-    currency: "VND"
-  }).format(amount);
-}
-
-function formatRoi(roi: number | null) {
-  return roi === null ? "N/A" : `${roi.toFixed(1)}% ROI`;
+function formatRoi(roi: DecimalInput | null) {
+  return roi === null
+    ? "N/A"
+    : `${decimal(roi).toDecimalPlaces(1).toFixed(1)}% ROI`;
 }
 
 export default function ProjectsPage() {
@@ -48,7 +51,7 @@ export default function ProjectsPage() {
 }
 
 async function ProjectsPageContent() {
-  const user = await requireAuth();
+  const { settings, user } = await getUserSettings();
   const [projects, transactions] = await Promise.all([
     listProjects(),
     prisma.transaction.findMany({
@@ -64,6 +67,13 @@ async function ProjectsPageContent() {
       }
     })
   ]);
+  const formatSettings: UserFormatSettings = {
+    defaultCurrency: settings.defaultCurrency,
+    dateFormat: settings.dateFormat as UserFormatSettings["dateFormat"],
+    numberFormat: settings.numberFormat as UserFormatSettings["numberFormat"]
+  };
+  const formatMoney = (amount: DecimalInput) =>
+    formatUserMoney(amount, settings.defaultCurrency, formatSettings);
 
   return (
     <div className="mx-auto max-w-6xl space-y-8">
@@ -210,7 +220,7 @@ async function ProjectsPageContent() {
                           <div>
                             <p
                               className={
-                                summary.profit >= 0
+                                summary.profit.gte(0)
                                   ? "font-semibold text-income"
                                   : "font-semibold text-expense"
                               }
@@ -241,15 +251,12 @@ async function ProjectsPageContent() {
                           >
                             Save
                           </Button>
-                          <form action={deleteAction}>
-                            <Button
-                              size="sm"
-                              variant="danger"
-                              type="submit"
-                            >
-                              Delete
-                            </Button>
-                          </form>
+                          <DestructiveActionButton
+                            action={deleteAction}
+                            description="This project will be permanently removed."
+                            itemLabel={`${project.name} project`}
+                            title="Delete this project?"
+                          />
                         </div>
                       </td>
                     </tr>

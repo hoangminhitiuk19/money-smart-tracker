@@ -7,7 +7,18 @@ import {
   listGoals,
   updateGoalFormAction
 } from "@/lib/actions/goals";
+import { getUserSettings } from "@/lib/actions/settings";
 import { calculateGoalProgress } from "@/lib/calc/goals";
+import {
+  decimal,
+  type DecimalInput
+} from "@/lib/money";
+import {
+  formatUserDate,
+  formatUserMoney,
+  type UserFormatSettings
+} from "@/lib/user-format";
+import { DestructiveActionButton } from "@/components/destructive-action-button";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -26,14 +37,6 @@ const statusVariants = {
   PAUSED: "paused"
 } as const;
 
-function formatMoney(amount: unknown, currency: string) {
-  return new Intl.NumberFormat("en-US", {
-    currency,
-    maximumFractionDigits: 2,
-    style: "currency"
-  }).format(Number(amount));
-}
-
 function formatDateInput(date: Date | null) {
   return date ? date.toISOString().slice(0, 10) : "";
 }
@@ -47,7 +50,17 @@ export default function GoalsPage() {
 }
 
 async function GoalsPageContent() {
-  const goals = await listGoals();
+  const [{ settings }, goals] = await Promise.all([
+    getUserSettings(),
+    listGoals()
+  ]);
+  const formatSettings: UserFormatSettings = {
+    defaultCurrency: settings.defaultCurrency,
+    dateFormat: settings.dateFormat as UserFormatSettings["dateFormat"],
+    numberFormat: settings.numberFormat as UserFormatSettings["numberFormat"]
+  };
+  const formatMoney = (amount: DecimalInput, currency: string) =>
+    formatUserMoney(amount, currency, formatSettings);
 
   return (
     <div className="mx-auto max-w-6xl space-y-8">
@@ -93,7 +106,7 @@ async function GoalsPageContent() {
             </span>
             <Input
               className="mt-1 uppercase"
-              defaultValue="VND"
+              defaultValue={settings.defaultCurrency}
               name="currency"
               required
             />
@@ -166,7 +179,7 @@ async function GoalsPageContent() {
                     </Link>
                     {goal.deadline ? (
                       <p className="mt-1 text-sm text-slate-600">
-                        Deadline {goal.deadline.toLocaleDateString("en-US")}
+                        Deadline {formatUserDate(goal.deadline, formatSettings)}
                       </p>
                     ) : null}
                   </div>
@@ -182,7 +195,7 @@ async function GoalsPageContent() {
                       {formatMoney(progress.netContributed, goal.currency)}
                     </span>
                     <span className="text-slate-600">
-                      {progress.progressPercent.toFixed(1)}%
+                      {decimal(progress.progressPercent).toFixed(1)}%
                     </span>
                   </div>
                   <div className="mt-2">
@@ -248,11 +261,12 @@ async function GoalsPageContent() {
                   >
                     Save
                   </Button>
-                  <form action={deleteAction}>
-                    <Button size="sm" type="submit" variant="danger">
-                      Delete
-                    </Button>
-                  </form>
+                  <DestructiveActionButton
+                    action={deleteAction}
+                    description="This goal and its contribution history will be permanently removed."
+                    itemLabel={`${goal.name} goal`}
+                    title="Delete this goal?"
+                  />
                 </div>
               </Card>
             );

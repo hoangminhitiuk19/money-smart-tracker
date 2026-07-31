@@ -35,6 +35,15 @@ export function TransactionsIcon(props: IconProps) {
   );
 }
 
+export function CategoryIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M20 13 13 20a2 2 0 0 1-2.8 0L4 13.8A2 2 0 0 1 3.4 12V5a2 2 0 0 1 2-2h7a2 2 0 0 1 1.4.6L20 9.8a2 2 0 0 1 0 3.2Z" />
+      <circle cx="8" cy="8" r="1.25" />
+    </svg>
+  );
+}
+
 export function UploadIcon(props: IconProps) {
   return (
     <svg {...base(props)}>

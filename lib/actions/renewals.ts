@@ -5,16 +5,24 @@ import {
   QualityRating,
   RenewalFrequency,
   RenewalStatus,
+  type RecurringPayment,
   TransactionType
 } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireAuth } from "@/lib/auth";
+import { changedFields } from "@/lib/activity";
 import {
   calculatePaidRenewalCycle,
-  calculateSkippedRenewalCycle
+  calculateSkippedRenewalCycle,
+  isUpcomingRenewal
 } from "@/lib/calc/renewals";
-import { validateTransactionFields } from "@/lib/calc/transactions";
+import {
+  getCountTowardFeeWaiverDefault,
+  validateTransactionFields
+} from "@/lib/calc/transactions";
+import { moneyText } from "@/lib/money";
+import { ownedRelation } from "@/lib/owned-relation";
 import { prisma } from "@/lib/prisma";
 import {
   checkAuthenticatedMutation,
@@ -22,16 +30,28 @@ import {
 } from "@/lib/security/rate-limit";
 
 const optionalIdSchema = z
-  .string()
-  .trim()
+  .union([z.string(), z.null()])
   .optional()
-  .transform((value) => (value ? value : undefined));
+  .transform((value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  });
 
 const optionalTextSchema = z
-  .string()
-  .trim()
+  .union([z.string(), z.null()])
   .optional()
-  .transform((value) => (value ? value : undefined));
+  .transform((value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  });
 
 const optionalBooleanSchema = z.preprocess((value) => {
   if (value === undefined || value === null || value === "") {
@@ -57,6 +77,40 @@ const optionalDateSchema = z.preprocess((value) => {
   return value;
 }, z.coerce.date().optional());
 
+const maxDecimal18WithScale2 = new Prisma.Decimal("9999999999999999.99");
+const positiveDecimalSchema = z
+  .union([z.string(), z.number(), z.instanceof(Prisma.Decimal)])
+  .transform((value, context) => {
+    const text = typeof value === "string" ? value.trim() : value.toString();
+    let amount: Prisma.Decimal;
+
+    try {
+      amount = new Prisma.Decimal(text);
+    } catch {
+      context.addIssue({
+        code: "custom",
+        message: "Enter a valid decimal amount."
+      });
+      return z.NEVER;
+    }
+
+    if (
+      !text ||
+      !amount.isFinite() ||
+      !amount.greaterThan(0) ||
+      amount.decimalPlaces() > 2 ||
+      amount.greaterThan(maxDecimal18WithScale2)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Amount must be a positive Decimal(18,2) value."
+      });
+      return z.NEVER;
+    }
+
+    return text;
+  });
+
 const renewalSchema = z.object({
   fromMoneySourceId: optionalIdSchema,
   toMoneySourceId: optionalIdSchema,
@@ -64,13 +118,13 @@ const renewalSchema = z.object({
   projectId: optionalIdSchema,
   title: z.string().trim().min(1),
   description: optionalTextSchema,
-  amount: z.coerce.number().positive(),
+  amount: positiveDecimalSchema,
   currency: z.string().trim().min(1).default("VND"),
   transactionType: z.nativeEnum(TransactionType),
   qualityRating: z
-    .nativeEnum(QualityRating)
+    .union([z.nativeEnum(QualityRating), z.literal(""), z.null()])
     .optional()
-    .or(z.literal("").transform(() => undefined)),
+    .transform((value) => (value === "" ? null : value)),
   countTowardFeeWaiver: optionalBooleanSchema,
   frequency: z.nativeEnum(RenewalFrequency),
   intervalCount: z.coerce.number().int().positive().default(1),
@@ -97,6 +151,52 @@ export type RenewalFilters = {
   status?: RenewalStatus;
 };
 
+const renewalReadInclude = {
+  category: true,
+  fromMoneySource: true,
+  toMoneySource: true,
+  project: true
+} satisfies Prisma.RecurringPaymentInclude;
+
+type RenewalRead = Prisma.RecurringPaymentGetPayload<{
+  include: typeof renewalReadInclude;
+}>;
+
+function sanitizeRenewalRead(renewal: RenewalRead, userId: string) {
+  const category = ownedRelation(renewal.category, userId);
+  const fromMoneySource = ownedRelation(renewal.fromMoneySource, userId);
+  const toMoneySource = ownedRelation(renewal.toMoneySource, userId);
+  const project = ownedRelation(renewal.project, userId);
+
+  return {
+    ...renewal,
+    categoryId: category?.id ?? null,
+    category,
+    fromMoneySourceId: fromMoneySource?.id ?? null,
+    fromMoneySource,
+    toMoneySourceId: toMoneySource?.id ?? null,
+    toMoneySource,
+    projectId: project?.id ?? null,
+    project
+  };
+}
+
+async function findRenewalsForUser(
+  userId: string,
+  where: Prisma.RecurringPaymentWhereInput
+) {
+  const renewals = await prisma.recurringPayment.findMany({
+    where: {
+      ...where,
+      userId
+    },
+    orderBy: [{ nextDueDate: "asc" }, { title: "asc" }],
+    include: renewalReadInclude
+  });
+
+  return renewals.map((renewal) => sanitizeRenewalRead(renewal, userId));
+}
+
 function formValue(formData: FormData, key: string) {
   return formData.get(key) ?? undefined;
 }
@@ -105,20 +205,47 @@ function formCheckboxValue(formData: FormData, key: string) {
   return formData.get(key) === "on";
 }
 
+function optionalFormCheckboxValue(
+  formData: FormData,
+  key: string,
+  presenceKey: string
+) {
+  const values = formData.getAll(key);
+
+  if (values.length === 0) {
+    return formData.has(presenceKey) ? false : undefined;
+  }
+
+  return values.length === 1 && values[0] === "on" ? true : values;
+}
+
+function nullableFormValue(formData: FormData, key: string) {
+  if (!formData.has(key)) {
+    return undefined;
+  }
+
+  const value = formData.get(key);
+  return typeof value === "string" && value.trim() === "" ? null : value;
+}
+
 function parseRenewalInput(data: RenewalInput | FormData) {
   if (data instanceof FormData) {
     return renewalSchema.safeParse({
-      fromMoneySourceId: formValue(data, "fromMoneySourceId"),
-      toMoneySourceId: formValue(data, "toMoneySourceId"),
-      categoryId: formValue(data, "categoryId"),
-      projectId: formValue(data, "projectId"),
+      fromMoneySourceId: nullableFormValue(data, "fromMoneySourceId"),
+      toMoneySourceId: nullableFormValue(data, "toMoneySourceId"),
+      categoryId: nullableFormValue(data, "categoryId"),
+      projectId: nullableFormValue(data, "projectId"),
       title: formValue(data, "title"),
-      description: formValue(data, "description"),
+      description: nullableFormValue(data, "description"),
       amount: formValue(data, "amount"),
       currency: formValue(data, "currency") || "VND",
       transactionType: formValue(data, "transactionType"),
-      qualityRating: formValue(data, "qualityRating"),
-      countTowardFeeWaiver: formCheckboxValue(data, "countTowardFeeWaiver"),
+      qualityRating: nullableFormValue(data, "qualityRating"),
+      countTowardFeeWaiver: optionalFormCheckboxValue(
+        data,
+        "countTowardFeeWaiver",
+        "countTowardFeeWaiverPresent"
+      ),
       frequency: formValue(data, "frequency"),
       intervalCount: formValue(data, "intervalCount") || 1,
       nextDueDate: formValue(data, "nextDueDate"),
@@ -135,17 +262,21 @@ function parseRenewalInput(data: RenewalInput | FormData) {
 function parseRenewalUpdateInput(data: RenewalUpdateInput | FormData) {
   if (data instanceof FormData) {
     return renewalUpdateSchema.safeParse({
-      fromMoneySourceId: formValue(data, "fromMoneySourceId"),
-      toMoneySourceId: formValue(data, "toMoneySourceId"),
-      categoryId: formValue(data, "categoryId"),
-      projectId: formValue(data, "projectId"),
+      fromMoneySourceId: nullableFormValue(data, "fromMoneySourceId"),
+      toMoneySourceId: nullableFormValue(data, "toMoneySourceId"),
+      categoryId: nullableFormValue(data, "categoryId"),
+      projectId: nullableFormValue(data, "projectId"),
       title: formValue(data, "title"),
-      description: formValue(data, "description"),
+      description: nullableFormValue(data, "description"),
       amount: formValue(data, "amount"),
       currency: formValue(data, "currency"),
       transactionType: formValue(data, "transactionType"),
-      qualityRating: formValue(data, "qualityRating"),
-      countTowardFeeWaiver: formCheckboxValue(data, "countTowardFeeWaiver"),
+      qualityRating: nullableFormValue(data, "qualityRating"),
+      countTowardFeeWaiver: optionalFormCheckboxValue(
+        data,
+        "countTowardFeeWaiver",
+        "countTowardFeeWaiverPresent"
+      ),
       frequency: formValue(data, "frequency"),
       intervalCount: formValue(data, "intervalCount"),
       nextDueDate: formValue(data, "nextDueDate"),
@@ -174,8 +305,14 @@ function cleanRenewalData<T extends RenewalData | RenewalUpdateData>(data: T) {
   };
 }
 
-async function verifyRenewalOwnership(id: string, userId: string) {
-  const renewal = await prisma.recurringPayment.findFirst({
+type RenewalDb = Prisma.TransactionClient | typeof prisma;
+
+async function verifyRenewalOwnership(
+  db: RenewalDb,
+  id: string,
+  userId: string
+) {
+  const renewal = await db.recurringPayment.findFirst({
     where: { id, userId }
   });
 
@@ -187,62 +324,107 @@ async function verifyRenewalOwnership(id: string, userId: string) {
 }
 
 async function verifyOptionalRecord(
-  model: "category" | "financialProject",
-  id: string | undefined,
+  db: RenewalDb,
+  model: "financialProject",
+  id: string | null | undefined,
   userId: string
 ) {
   if (!id) {
     return;
   }
 
-  const record =
-    model === "category"
-      ? await prisma.category.findFirst({
-          where: { id, userId },
-          select: { id: true }
-        })
-      : await prisma.financialProject.findFirst({
-          where: { id, userId },
-          select: { id: true }
-        });
+  const record = await db.financialProject.findFirst({
+    where: { id, userId },
+    select: { id: true }
+  });
 
   if (!record) {
     throw new Error("Referenced record not found.");
   }
 }
 
-async function verifyMoneySources(ids: Array<string | undefined>, userId: string) {
+async function getOwnedCategory(
+  db: RenewalDb,
+  id: string | null | undefined,
+  userId: string
+) {
+  if (!id) {
+    return null;
+  }
+
+  const category = await db.category.findFirst({
+    where: { id, userId },
+    select: { id: true, defaultCountTowardFeeWaiver: true }
+  });
+
+  if (!category) {
+    throw new Error("Referenced record not found.");
+  }
+
+  return category;
+}
+
+async function getOwnedMoneySources(
+  db: RenewalDb,
+  ids: Array<string | null | undefined>,
+  userId: string
+) {
   const uniqueIds = Array.from(new Set(ids.filter((id): id is string => Boolean(id))));
 
   if (uniqueIds.length === 0) {
-    return;
+    return [];
   }
 
-  const moneySources = await prisma.moneySource.findMany({
+  const moneySources = await db.moneySource.findMany({
     where: {
       id: { in: uniqueIds },
       userId
     },
-    select: { id: true }
+    select: { id: true, type: true }
   });
 
   if (moneySources.length !== uniqueIds.length) {
     throw new Error("Referenced money source not found.");
   }
+
+  return moneySources;
 }
 
 async function verifyReferences(
-  data: RenewalData | RenewalUpdateData,
+  db: RenewalDb,
+  data: {
+    categoryId?: string | null;
+    projectId?: string | null;
+    fromMoneySourceId?: string | null;
+    toMoneySourceId?: string | null;
+  },
   userId: string
 ) {
-  await Promise.all([
-    verifyOptionalRecord("category", data.categoryId, userId),
-    verifyOptionalRecord("financialProject", data.projectId, userId),
-    verifyMoneySources([data.fromMoneySourceId, data.toMoneySourceId], userId)
+  const [category, , moneySources] = await Promise.all([
+    getOwnedCategory(db, data.categoryId, userId),
+    verifyOptionalRecord(db, "financialProject", data.projectId, userId),
+    getOwnedMoneySources(
+      db,
+      [data.fromMoneySourceId, data.toMoneySourceId],
+      userId
+    )
   ]);
+
+  return { category, moneySources };
 }
 
 function validateRenewalTransactionShape(data: RenewalData) {
+  if (
+    data.transactionType !== TransactionType.INCOME &&
+    data.transactionType !== TransactionType.EXPENSE &&
+    data.transactionType !== TransactionType.TRANSFER
+  ) {
+    return {
+      ok: false,
+      errors: ["Renewals support INCOME, EXPENSE, or TRANSFER only."]
+    };
+  }
+
   return validateTransactionFields({
     amount: data.amount,
     type: data.transactionType,
@@ -250,6 +432,61 @@ function validateRenewalTransactionShape(data: RenewalData) {
     toMoneySourceId: data.toMoneySourceId,
     qualityRating: data.qualityRating
   });
+}
+
+const renewalActivityFields = [
+  "fromMoneySourceId",
+  "toMoneySourceId",
+  "categoryId",
+  "projectId",
+  "title",
+  "description",
+  "amount",
+  "currency",
+  "transactionType",
+  "qualityRating",
+  "countTowardFeeWaiver",
+  "frequency",
+  "intervalCount",
+  "nextDueDate",
+  "reminderDaysBefore",
+  "autoCreateTransaction",
+  "status",
+  "lastGeneratedDate"
+] as const;
+
+function renewalActivitySnapshot(renewal: RecurringPayment) {
+  return {
+    fromMoneySourceId: renewal.fromMoneySourceId,
+    toMoneySourceId: renewal.toMoneySourceId,
+    categoryId: renewal.categoryId,
+    projectId: renewal.projectId,
+    title: renewal.title,
+    description: renewal.description,
+    amount: moneyText(renewal.amount),
+    currency: renewal.currency,
+    transactionType: renewal.transactionType,
+    qualityRating: renewal.qualityRating,
+    countTowardFeeWaiver: renewal.countTowardFeeWaiver,
+    frequency: renewal.frequency,
+    intervalCount: renewal.intervalCount,
+    nextDueDate: renewal.nextDueDate.toISOString(),
+    reminderDaysBefore: renewal.reminderDaysBefore,
+    autoCreateTransaction: renewal.autoCreateTransaction,
+    status: renewal.status,
+    lastGeneratedDate: renewal.lastGeneratedDate?.toISOString() ?? null
+  };
+}
+
+function renewalChangedFields(
+  existing: RecurringPayment,
+  persisted: RecurringPayment
+): Prisma.InputJsonObject {
+  return changedFields(
+    renewalActivitySnapshot(existing),
+    renewalActivitySnapshot(persisted),
+    renewalActivityFields
+  ) as Prisma.InputJsonObject;
 }
 
 async function logActivity(
@@ -298,8 +535,9 @@ export async function createRenewal(
     return { ok: false, error: validation.errors.join(" ") };
   }
 
+  let references: Awaited<ReturnType<typeof verifyReferences>>;
   try {
-    await verifyReferences(parsed.data, user.id);
+    references = await verifyReferences(prisma, parsed.data, user.id);
   } catch (error) {
     return {
       ok: false,
@@ -307,18 +545,34 @@ export async function createRenewal(
     };
   }
 
-  const renewal = await prisma.recurringPayment.create({
-    data: {
-      ...cleanRenewalData(parsed.data),
-      userId: user.id
-    },
-    select: { id: true, title: true, amount: true, status: true }
-  });
+  const countTowardFeeWaiver =
+    parsed.data.transactionType === TransactionType.EXPENSE
+      ? (parsed.data.countTowardFeeWaiver ??
+        getCountTowardFeeWaiverDefault(
+          {
+            type: parsed.data.transactionType,
+            fromMoneySourceId: parsed.data.fromMoneySourceId
+          },
+          references.moneySources,
+          references.category
+        ))
+      : false;
 
-  await logActivity(user.id, "RENEWAL_CREATED", renewal.id, {
-    title: renewal.title,
-    amount: renewal.amount.toString(),
-    status: renewal.status
+  await prisma.$transaction(async (db) => {
+    const renewal = await db.recurringPayment.create({
+      data: {
+        ...cleanRenewalData(parsed.data),
+        countTowardFeeWaiver,
+        userId: user.id
+      },
+      select: { id: true, title: true, amount: true, status: true }
+    });
+
+    await logActivity(user.id, "RENEWAL_CREATED", renewal.id, {
+      title: renewal.title,
+      amount: moneyText(renewal.amount),
+      status: renewal.status
+    }, db);
   });
 
   revalidatePath("/renewals");
@@ -338,7 +592,7 @@ export async function updateRenewal(
   if (!rateLimit.allowed) {
     return { ok: false, error: RATE_LIMIT_MESSAGE };
   }
-  const existingRenewal = await verifyRenewalOwnership(id, user.id);
+  const existingRenewal = await verifyRenewalOwnership(prisma, id, user.id);
   const parsed = parseRenewalUpdateInput(data);
 
   if (!parsed.success) {
@@ -370,7 +624,7 @@ export async function updateRenewal(
     amount:
       parsed.data.amount !== undefined
         ? parsed.data.amount
-        : Number(existingRenewal.amount),
+        : existingRenewal.amount.toString(),
     currency: parsed.data.currency ?? existingRenewal.currency,
     transactionType:
       parsed.data.transactionType ?? existingRenewal.transactionType,
@@ -400,8 +654,9 @@ export async function updateRenewal(
     return { ok: false, error: validation.errors.join(" ") };
   }
 
+  let references: Awaited<ReturnType<typeof verifyReferences>>;
   try {
-    await verifyReferences(mergedData, user.id);
+    references = await verifyReferences(prisma, mergedData, user.id);
   } catch (error) {
     return {
       ok: false,
@@ -409,16 +664,48 @@ export async function updateRenewal(
     };
   }
 
-  await prisma.recurringPayment.updateMany({
-    where: { id, userId: user.id },
-    data: cleanRenewalData(mergedData),
-  });
-  const renewal = await verifyRenewalOwnership(id, user.id);
+  const typeChanged =
+    parsed.data.transactionType !== undefined &&
+    parsed.data.transactionType !== existingRenewal.transactionType;
+  const feeWaiverRelevantFieldsChanged =
+    typeChanged ||
+    (parsed.data.fromMoneySourceId !== undefined &&
+      parsed.data.fromMoneySourceId !== existingRenewal.fromMoneySourceId) ||
+    (parsed.data.categoryId !== undefined &&
+      parsed.data.categoryId !== existingRenewal.categoryId);
+  const countTowardFeeWaiver =
+    mergedData.transactionType === TransactionType.EXPENSE
+      ? parsed.data.countTowardFeeWaiver !== undefined
+        ? parsed.data.countTowardFeeWaiver
+        : feeWaiverRelevantFieldsChanged
+          ? getCountTowardFeeWaiverDefault(
+              {
+                type: mergedData.transactionType,
+                fromMoneySourceId: mergedData.fromMoneySourceId
+              },
+              references.moneySources,
+              references.category
+            )
+          : existingRenewal.countTowardFeeWaiver
+      : false;
+  const normalizedData = {
+    ...mergedData,
+    countTowardFeeWaiver
+  } satisfies RenewalData;
 
-  await logActivity(user.id, "RENEWAL_UPDATED", renewal.id, {
-    title: renewal.title,
-    amount: renewal.amount.toString(),
-    status: renewal.status
+  await prisma.$transaction(async (db) => {
+    const before = await verifyRenewalOwnership(db, id, user.id);
+    await db.recurringPayment.updateMany({
+      where: { id, userId: user.id },
+      data: cleanRenewalData(normalizedData)
+    });
+    const persisted = await verifyRenewalOwnership(db, id, user.id);
+    const changedFields = renewalChangedFields(before, persisted);
+
+    await logActivity(user.id, "RENEWAL_UPDATED", id, {
+      renewalId: id,
+      changedFields
+    }, db);
   });
 
   revalidatePath("/renewals");
@@ -432,45 +719,22 @@ export async function updateRenewalFormAction(id: string, formData: FormData) {
 export async function listRenewals(filter: RenewalFilters = {}) {
   const user = await requireAuth();
 
-  return prisma.recurringPayment.findMany({
-    where: {
-      userId: user.id,
-      status: filter.status
-    },
-    orderBy: [{ nextDueDate: "asc" }, { title: "asc" }],
-    include: {
-      category: true,
-      fromMoneySource: true,
-      toMoneySource: true,
-      project: true
-    }
+  return findRenewalsForUser(user.id, {
+    status: filter.status
   });
 }
 
 export async function getUpcomingRenewals() {
   const user = await requireAuth();
   const today = new Date();
-  today.setHours(0, 0, 0, 0);
 
-  const activeRenewals = await prisma.recurringPayment.findMany({
-    where: {
-      userId: user.id,
-      status: RenewalStatus.ACTIVE
-    },
-    orderBy: [{ nextDueDate: "asc" }, { title: "asc" }],
-    include: {
-      category: true,
-      fromMoneySource: true,
-      toMoneySource: true,
-      project: true
-    }
+  const activeRenewals = await findRenewalsForUser(user.id, {
+    status: RenewalStatus.ACTIVE
   });
 
-  return activeRenewals.filter((renewal) => {
-    const reminderDate = new Date(today);
-    reminderDate.setDate(reminderDate.getDate() + renewal.reminderDaysBefore);
-    return renewal.nextDueDate <= reminderDate;
-  });
+  return activeRenewals.filter((renewal) =>
+    isUpcomingRenewal(renewal, today)
+  );
 }
 
 export async function markRenewalAsPaid(id: string) {
@@ -479,27 +743,48 @@ export async function markRenewalAsPaid(id: string) {
   if (!rateLimit.allowed) {
     return { ok: false, error: RATE_LIMIT_MESSAGE };
   }
-  const renewal = await verifyRenewalOwnership(id, user.id);
-  const validation = validateTransactionFields({
-    amount: Number(renewal.amount),
-    type: renewal.transactionType,
-    fromMoneySourceId: renewal.fromMoneySourceId,
-    toMoneySourceId: renewal.toMoneySourceId,
-    qualityRating: renewal.qualityRating
-  });
-
-  if (!validation.ok) {
-    throw new Error(validation.errors.join(" "));
-  }
-
-  const cycle = calculatePaidRenewalCycle({
-    frequency: renewal.frequency,
-    intervalCount: renewal.intervalCount,
-    nextDueDate: renewal.nextDueDate
-  });
   const today = new Date();
 
   const transaction = await prisma.$transaction(async (db) => {
+    const renewal = await verifyRenewalOwnership(db, id, user.id);
+    if (renewal.status !== RenewalStatus.ACTIVE) {
+      throw new Error("Renewal is not active.");
+    }
+    await verifyReferences(db, renewal, user.id);
+
+    const validation = validateTransactionFields({
+      amount: renewal.amount,
+      type: renewal.transactionType,
+      fromMoneySourceId: renewal.fromMoneySourceId,
+      toMoneySourceId: renewal.toMoneySourceId,
+      qualityRating: renewal.qualityRating
+    });
+
+    if (!validation.ok) {
+      throw new Error(validation.errors.join(" "));
+    }
+
+    const cycle = calculatePaidRenewalCycle({
+      frequency: renewal.frequency,
+      intervalCount: renewal.intervalCount,
+      nextDueDate: renewal.nextDueDate
+    });
+    const claimed = await db.recurringPayment.updateMany({
+      where: {
+        id: renewal.id,
+        userId: user.id,
+        status: RenewalStatus.ACTIVE,
+        nextDueDate: renewal.nextDueDate
+      },
+      data: {
+        nextDueDate: cycle.newNextDueDate,
+        lastGeneratedDate: today
+      }
+    });
+    if (claimed.count !== 1) {
+      throw new Error("Renewal changed. Please try again.");
+    }
+
     const createdTransaction = await db.transaction.create({
       data: {
         userId: user.id,
@@ -520,22 +805,14 @@ export async function markRenewalAsPaid(id: string) {
       }
     });
 
-    await db.recurringPayment.updateMany({
-      where: { id: renewal.id, userId: user.id },
-      data: {
-        nextDueDate: cycle.newNextDueDate,
-        lastGeneratedDate: today
-      }
-    });
-
     await logActivity(
       user.id,
       "RENEWAL_MARKED_PAID",
       renewal.id,
       {
-        title: renewal.title,
-        transactionId: createdTransaction.id,
-        nextDueDate: cycle.newNextDueDate.toISOString()
+        renewalId: renewal.id,
+        amount: moneyText(renewal.amount),
+        newNextDueDate: cycle.newNextDueDate.toISOString()
       },
       db
     );
@@ -558,21 +835,34 @@ export async function skipRenewalCycle(id: string): Promise<RenewalActionResult>
   if (!rateLimit.allowed) {
     return { ok: false, error: RATE_LIMIT_MESSAGE };
   }
-  const renewal = await verifyRenewalOwnership(id, user.id);
-  const cycle = calculateSkippedRenewalCycle({
-    frequency: renewal.frequency,
-    intervalCount: renewal.intervalCount,
-    nextDueDate: renewal.nextDueDate
-  });
+  await prisma.$transaction(async (db) => {
+    const renewal = await verifyRenewalOwnership(db, id, user.id);
+    if (renewal.status !== RenewalStatus.ACTIVE) {
+      throw new Error("Renewal is not active.");
+    }
 
-  await prisma.recurringPayment.updateMany({
-    where: { id, userId: user.id },
-    data: { nextDueDate: cycle.newNextDueDate }
-  });
+    const cycle = calculateSkippedRenewalCycle({
+      frequency: renewal.frequency,
+      intervalCount: renewal.intervalCount,
+      nextDueDate: renewal.nextDueDate
+    });
+    const claimed = await db.recurringPayment.updateMany({
+      where: {
+        id,
+        userId: user.id,
+        status: RenewalStatus.ACTIVE,
+        nextDueDate: renewal.nextDueDate
+      },
+      data: { nextDueDate: cycle.newNextDueDate }
+    });
+    if (claimed.count !== 1) {
+      throw new Error("Renewal changed. Please try again.");
+    }
 
-  await logActivity(user.id, "RENEWAL_SKIPPED", id, {
-    title: renewal.title,
-    nextDueDate: cycle.newNextDueDate.toISOString()
+    await logActivity(user.id, "RENEWAL_SKIPPED", id, {
+      renewalId: id,
+      newNextDueDate: cycle.newNextDueDate.toISOString()
+    }, db);
   });
 
   revalidatePath("/renewals");
@@ -596,16 +886,16 @@ async function updateRenewalStatus(
   if (!rateLimit.allowed) {
     return { ok: false, error: RATE_LIMIT_MESSAGE };
   }
-  const renewal = await verifyRenewalOwnership(id, user.id);
+  await prisma.$transaction(async (db) => {
+    await verifyRenewalOwnership(db, id, user.id);
+    await db.recurringPayment.updateMany({
+      where: { id, userId: user.id },
+      data: { status }
+    });
 
-  await prisma.recurringPayment.updateMany({
-    where: { id, userId: user.id },
-    data: { status }
-  });
-
-  await logActivity(user.id, action, id, {
-    title: renewal.title,
-    status
+    await logActivity(user.id, action, id, {
+      renewalId: id
+    }, db);
   });
   revalidatePath("/renewals");
   return { ok: true };
@@ -641,15 +931,16 @@ export async function deleteRenewal(id: string): Promise<RenewalActionResult> {
   if (!rateLimit.allowed) {
     return { ok: false, error: RATE_LIMIT_MESSAGE };
   }
-  const renewal = await verifyRenewalOwnership(id, user.id);
+  await prisma.$transaction(async (db) => {
+    const renewal = await verifyRenewalOwnership(db, id, user.id);
+    await db.recurringPayment.deleteMany({
+      where: { id, userId: user.id }
+    });
 
-  await prisma.recurringPayment.deleteMany({
-    where: { id, userId: user.id }
-  });
-
-  await logActivity(user.id, "RENEWAL_DELETED", id, {
-    title: renewal.title,
-    amount: renewal.amount.toString()
+    await logActivity(user.id, "RENEWAL_DELETED", id, {
+      renewalId: id,
+      title: renewal.title
+    }, db);
   });
 
   revalidatePath("/renewals");
@@ -662,5 +953,5 @@ export async function deleteRenewalFormAction(id: string) {
 
 export async function getRenewal(id: string) {
   const user = await requireAuth();
-  return verifyRenewalOwnership(id, user.id);
+  return verifyRenewalOwnership(prisma, id, user.id);
 }

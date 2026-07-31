@@ -2,24 +2,26 @@ import { MoneySourceType } from "@prisma/client";
 import Link from "next/link";
 import { Suspense } from "react";
 import {
-  createMoneySourceFormAction,
   deleteMoneySourceFormAction,
   listMoneySources,
   toggleMoneySourceActiveFormAction
 } from "@/lib/actions/money-sources";
-import { requireAuth } from "@/lib/auth";
-import { calculateTrackedBalance } from "@/lib/calc/balance";
+import { getUserSettings } from "@/lib/actions/settings";
+import { calculateAccountProjection } from "@/lib/calc/dashboard";
+import { type DecimalInput } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
+import {
+  formatUserMoney,
+  type UserFormatSettings
+} from "@/lib/user-format";
+import { DestructiveActionButton } from "@/components/destructive-action-button";
+import { MoneySourceForm } from "@/components/money-source-form";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { Input } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { Select } from "@/components/ui/Select";
 import AccountsLoading from "./loading";
-
-const sourceTypes = Object.values(MoneySourceType);
 
 const typeLabels: Record<MoneySourceType, string> = {
   CASH: "Cash",
@@ -51,14 +53,6 @@ const sourceTypeVariants = {
   OTHER: "adjustment"
 } as const;
 
-function formatMoney(amount: number, currency: string) {
-  return new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: 2,
-    style: "currency",
-    currency
-  }).format(amount);
-}
-
 export default function AccountsPage() {
   return (
     <Suspense fallback={<AccountsLoading />}>
@@ -68,7 +62,7 @@ export default function AccountsPage() {
 }
 
 async function AccountsPageContent() {
-  const user = await requireAuth();
+  const { settings, user } = await getUserSettings();
   const [moneySources, transactions] = await Promise.all([
     listMoneySources(),
     prisma.transaction.findMany({
@@ -84,13 +78,23 @@ async function AccountsPageContent() {
         id: true,
         type: true,
         amount: true,
+        transactionDate: true,
+        createdAt: true,
         fromMoneySourceId: true,
         toMoneySourceId: true,
         adjustedMoneySourceId: true,
-        adjustmentDirection: true
+        adjustmentDirection: true,
+        adjustmentTarget: true
       }
     })
   ]);
+  const formatSettings: UserFormatSettings = {
+    defaultCurrency: settings.defaultCurrency,
+    dateFormat: settings.dateFormat as UserFormatSettings["dateFormat"],
+    numberFormat: settings.numberFormat as UserFormatSettings["numberFormat"]
+  };
+  const formatMoney = (amount: DecimalInput, currency: string) =>
+    formatUserMoney(amount, currency, formatSettings);
 
   return (
     <div className="mx-auto max-w-6xl space-y-8">
@@ -109,82 +113,9 @@ async function AccountsPageContent() {
         </p>
       </div>
 
-      <Card
-        className="scroll-mt-6"
-        title="Add Account"
-      >
-        <div className="scroll-mt-6" id="add-account" />
-        <form
-          action={createMoneySourceFormAction}
-          className="mt-4 grid gap-3 md:grid-cols-6"
-        >
-          <label className="md:col-span-2">
-            <span className="text-sm font-medium text-slate-700">Name</span>
-            <Input className="mt-1" name="name" required />
-          </label>
-          <label>
-            <span className="text-sm font-medium text-slate-700">Type</span>
-            <Select
-              className="mt-1"
-              defaultValue={MoneySourceType.BANK_ACCOUNT}
-              name="type"
-              required
-            >
-              {sourceTypes.map((type) => (
-                <option key={type} value={type}>
-                  {typeLabels[type]}
-                </option>
-              ))}
-            </Select>
-          </label>
-          <label>
-            <span className="text-sm font-medium text-slate-700">Currency</span>
-            <Input
-              className="mt-1 uppercase"
-              defaultValue="VND"
-              name="currency"
-              required
-            />
-          </label>
-          <label>
-            <span className="text-sm font-medium text-slate-700">Opening</span>
-            <Input
-              className="mt-1"
-              defaultValue="0"
-              name="openingBalance"
-              step="0.01"
-              type="number"
-            />
-          </label>
-          <label>
-            <span className="text-sm font-medium text-slate-700">Provider</span>
-            <Input className="mt-1" name="providerName" placeholder="Optional" />
-          </label>
-          <label className="md:col-span-2">
-            <span className="text-sm font-medium text-slate-700">Identifier</span>
-            <Input
-              className="mt-1"
-              name="displayIdentifier"
-              placeholder="Optional"
-            />
-          </label>
-          <label className="md:col-span-3">
-            <span className="text-sm font-medium text-slate-700">
-              Description
-            </span>
-            <Input className="mt-1" name="description" placeholder="Optional" />
-          </label>
-          <label className="flex items-center gap-2 md:col-span-1 md:pt-7">
-            <input defaultChecked name="isActive" type="checkbox" />
-            <span className="text-sm font-medium text-slate-700">Active</span>
-          </label>
-          <div className="md:col-span-6 md:flex md:justify-end">
-            <Button className="w-full md:w-auto" type="submit">
-              Add Account
-            </Button>
-          </div>
-        </form>
-      </Card>
+      <div className="scroll-mt-6" id="add-account">
+        <MoneySourceForm defaultCurrency={settings.defaultCurrency} />
+      </div>
 
       {moneySources.length === 0 ? (
         <EmptyState
@@ -215,7 +146,10 @@ async function AccountsPageContent() {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {moneySources.map((source) => {
-                  const balance = calculateTrackedBalance(source, transactions);
+                  const projection = calculateAccountProjection(
+                    source,
+                    transactions
+                  );
                   const toggleAction = toggleMoneySourceActiveFormAction.bind(
                     null,
                     source.id,
@@ -256,9 +190,25 @@ async function AccountsPageContent() {
                       </td>
                       <td className="px-4 py-3">
                         <div className="font-medium text-slate-950">
-                          {formatMoney(balance, source.currency)}
+                          {formatMoney(
+                            projection.trackedAmount,
+                            source.currency
+                          )}
                         </div>
-                        <div className="text-xs text-slate-500">Tracked</div>
+                        <div className="text-xs text-slate-500">
+                          {source.type === MoneySourceType.CREDIT_CARD
+                            ? "Tracked debt"
+                            : "Tracked"}
+                        </div>
+                        {projection.cardCredit?.gt(0) ? (
+                          <div className="mt-1 text-xs font-medium text-emerald-700">
+                            Card credit:{" "}
+                            {formatMoney(
+                              projection.cardCredit,
+                              source.currency
+                            )}
+                          </div>
+                        ) : null}
                       </td>
                       <td className="px-4 py-3">
                         <Badge
@@ -277,15 +227,12 @@ async function AccountsPageContent() {
                               {source.isActive ? "Deactivate" : "Activate"}
                             </Button>
                           </form>
-                          <form action={deleteAction}>
-                            <Button
-                              size="sm"
-                              variant="danger"
-                              type="submit"
-                            >
-                              Delete
-                            </Button>
-                          </form>
+                          <DestructiveActionButton
+                            action={deleteAction}
+                            description="This account or wallet will be permanently removed."
+                            itemLabel={`${source.name} account`}
+                            title="Delete this account?"
+                          />
                         </div>
                       </td>
                     </tr>

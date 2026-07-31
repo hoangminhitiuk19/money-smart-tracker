@@ -18,16 +18,33 @@ export function RenewalDeleteButton({ id }: RenewalDeleteButtonProps) {
   function handleDelete() {
     setError(null);
     startTransition(async () => {
-      const result = await deleteRenewal(id);
+      try {
+        const result = await deleteRenewal(id);
 
-      if (!result.ok) {
-        setError(result.error ?? "Unable to delete renewal.");
-        return;
+        if (!result.ok) {
+          setError(result.error ?? "Unable to delete renewal.");
+          return;
+        }
+
+        setConfirmOpen(false);
+        router.refresh();
+      } catch {
+        setError("Unable to delete renewal. Please try again.");
       }
-
-      setConfirmOpen(false);
-      router.refresh();
     });
+  }
+
+  function handleCancel() {
+    if (isPending) {
+      return;
+    }
+    setError(null);
+    setConfirmOpen(false);
+  }
+
+  function handleOpen() {
+    setError(null);
+    setConfirmOpen(true);
   }
 
   return (
@@ -35,17 +52,17 @@ export function RenewalDeleteButton({ id }: RenewalDeleteButtonProps) {
       <button
         className="min-h-11 w-full rounded-md px-3 py-2 text-left text-sm font-medium text-expense transition hover:bg-expense/10 disabled:cursor-not-allowed disabled:opacity-60 md:min-h-0"
         disabled={isPending}
-        onClick={() => setConfirmOpen(true)}
+        onClick={handleOpen}
         type="button"
       >
         {isPending ? "Deleting..." : "Delete"}
       </button>
-      {error ? <p className="mt-1 text-xs text-red-700">{error}</p> : null}
       {confirmOpen ? (
         <ConfirmDialog
           description="This renewal will be permanently removed."
+          error={error}
           isPending={isPending}
-          onCancel={() => setConfirmOpen(false)}
+          onCancel={handleCancel}
           onConfirm={handleDelete}
           title="Delete this renewal?"
         />

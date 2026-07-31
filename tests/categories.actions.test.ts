@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createCategory,
   deleteCategory,
+  deleteCategoryFormAction,
   updateCategory
 } from "@/lib/actions/categories";
 import { prisma } from "@/lib/prisma";
@@ -37,12 +38,16 @@ type FakeCategory = {
   userId: string;
   name: string;
   type: CategoryType;
+  defaultCountTowardFeeWaiver: boolean;
 };
 
 let categories: FakeCategory[];
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    $transaction: vi.fn(async (operation: any) =>
+      operation((await import("@/lib/prisma")).prisma)
+    ),
     category: {
       findFirst: vi.fn(async ({ where }: any) =>
         categories.find((c) => c.id === where.id && c.userId === where.userId) ?? null
@@ -90,11 +95,32 @@ beforeEach(() => {
     retryAfterSeconds: 60
   });
   categories = [
-    { id: "c1", userId: "user-1", name: "Groceries", type: CategoryType.EXPENSE }
+    {
+      id: "c1",
+      userId: "user-1",
+      name: "Groceries",
+      type: CategoryType.EXPENSE,
+      defaultCountTowardFeeWaiver: true
+    }
   ];
 });
 
 describe("category activity logging", () => {
+  it("returns a safe delete failure through the bound form action", async () => {
+    vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
+      allowed: false,
+      unavailable: false,
+      limit: 60,
+      remaining: 0,
+      retryAfterSeconds: 60
+    });
+
+    await expect(deleteCategoryFormAction("c1")).resolves.toEqual({
+      ok: false,
+      error: RATE_LIMIT_MESSAGE
+    });
+  });
+
   it("denies a rate-limited create before creating a category", async () => {
     vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
       allowed: false,
@@ -125,6 +151,7 @@ describe("category activity logging", () => {
         data: expect.objectContaining({ userId: "user-1", action: "CATEGORY_CREATED" })
       })
     );
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function));
   });
 
   it("writes a CATEGORY_UPDATED entry on update", async () => {
@@ -158,5 +185,39 @@ describe("category activity logging", () => {
         })
       })
     );
+  });
+});
+
+describe("category fee-waiver defaults", () => {
+  it("persists an explicitly selected fee-waiver default when creating a category", async () => {
+    const formData = new FormData();
+    formData.set("name", "Card purchases");
+    formData.set("type", CategoryType.EXPENSE);
+    formData.set("color", "");
+    formData.set("icon", "");
+    formData.set("defaultQualityRating", "");
+    formData.set("defaultCountTowardFeeWaiver", "on");
+
+    const result = await createCategory(formData);
+
+    expect(result.ok).toBe(true);
+    expect(
+      categories.find((category) => category.id === "new-category")
+        ?.defaultCountTowardFeeWaiver
+    ).toBe(true);
+  });
+
+  it("persists an explicitly cleared fee-waiver default when updating a category", async () => {
+    const formData = new FormData();
+    formData.set("name", "Groceries");
+    formData.set("type", CategoryType.EXPENSE);
+    formData.set("color", "");
+    formData.set("icon", "");
+    formData.set("defaultQualityRating", "");
+
+    const result = await updateCategory("c1", formData);
+
+    expect(result.ok).toBe(true);
+    expect(categories[0].defaultCountTowardFeeWaiver).toBe(false);
   });
 });

@@ -11,7 +11,7 @@ phase is complete.
 
 ## Architecture
 
-- `app/`: Next.js 14 App Router pages. Public authentication routes live in
+- `app/`: Next.js 15 App Router pages. Public authentication routes live in
   `app/(auth)`; authenticated pages live in `app/(protected)` and must use
   `requireAuth()`. API routes live in `app/api`.
 - `components/`: domain forms and reusable UI. Prefer primitives in
@@ -74,6 +74,7 @@ After `npm ci` and local environment setup:
 npm run dev
 npm run lint
 npm run test:run
+npm run test:integration
 npm run build
 npx prisma validate
 npm run prisma:migrate

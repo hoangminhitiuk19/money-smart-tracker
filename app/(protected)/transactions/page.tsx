@@ -14,6 +14,12 @@ import {
   searchTransactions,
   type TransactionFilters as TransactionFilterValues
 } from "@/lib/actions/transactions";
+import { getUserSettings } from "@/lib/actions/settings";
+import {
+  formatUserDate,
+  formatUserMoney,
+  type UserFormatSettings
+} from "@/lib/user-format";
 import TransactionsLoading from "./loading";
 
 type SearchParams = Record<string, string | string[] | undefined>;
@@ -67,14 +73,6 @@ function buildFilters(searchParams: SearchParams): TransactionFilterValues {
     startDate: getParam(searchParams, "startDate"),
     type: parseEnumValue(getParam(searchParams, "type"), Object.values(TransactionType))
   };
-}
-
-function formatMoney(amount: unknown, currency: string) {
-  return new Intl.NumberFormat("en-US", {
-    currency,
-    maximumFractionDigits: 2,
-    style: "currency"
-  }).format(Number(amount));
 }
 
 function pageHref(searchParams: SearchParams, page: number) {
@@ -134,16 +132,23 @@ async function TransactionsPageContent({
 }) {
   const filters = buildFilters(searchParams);
   const [
+    { settings },
     { transactions, total, page, pageSize },
     categories,
     moneySources,
     projects
   ] = await Promise.all([
+    getUserSettings(),
     searchTransactions(filters),
     listCategories(),
     listMoneySources(),
     listProjects()
   ]);
+  const formatSettings: UserFormatSettings = {
+    defaultCurrency: settings.defaultCurrency,
+    dateFormat: settings.dateFormat as UserFormatSettings["dateFormat"],
+    numberFormat: settings.numberFormat as UserFormatSettings["numberFormat"]
+  };
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const startResult = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const endResult = Math.min(total, page * pageSize);
@@ -225,7 +230,10 @@ async function TransactionsPageContent({
                 {transactions.map((transaction) => (
                   <tr className="transition hover:bg-slate-50/80" key={transaction.id}>
                     <td className="whitespace-nowrap px-4 py-3 text-slate-600">
-                      {transaction.transactionDate.toLocaleDateString("en-US")}
+                      {formatUserDate(
+                        transaction.transactionDate,
+                        formatSettings
+                      )}
                     </td>
                     <td className="min-w-56 px-4 py-3">
                       <p className="font-medium text-slate-950">
@@ -244,7 +252,11 @@ async function TransactionsPageContent({
                       />
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 font-medium text-slate-950">
-                      {formatMoney(transaction.amount, transaction.currency)}
+                      {formatUserMoney(
+                        transaction.amount,
+                        transaction.currency,
+                        formatSettings
+                      )}
                     </td>
                     <td className="px-4 py-3 text-slate-700">
                       {transaction.category?.name ?? "None"}

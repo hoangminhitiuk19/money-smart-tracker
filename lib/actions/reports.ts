@@ -2,9 +2,12 @@
 
 import {
   MoneySourceType,
+  QualityRating,
   RenewalStatus,
-  TransactionType
+  TransactionType,
+  type Prisma
 } from "@prisma/client";
+import { z } from "zod";
 import { requireAuth } from "@/lib/auth";
 import {
   calculateCreditCardState,
@@ -21,10 +24,84 @@ import {
   getUpcomingRenewalsTotal,
   type ReportGroupBy
 } from "@/lib/calc/reports";
+import { transactionDateRange } from "@/lib/date-range";
 import { prisma } from "@/lib/prisma";
 
-function normalizeDate(date: Date | string) {
-  return new Date(date);
+export type ReportFilters = {
+  startDate?: Date | string;
+  endDate?: Date | string;
+  type?: TransactionType;
+  categoryId?: string;
+  qualityRating?: QualityRating;
+  moneySourceId?: string;
+  projectId?: string;
+  savingGoalId?: string;
+  groupBy?: ReportGroupBy;
+};
+
+const reportFiltersSchema = z
+  .object({
+    startDate: z.union([z.date(), z.string()]).optional(),
+    endDate: z.union([z.date(), z.string()]).optional(),
+    type: z.nativeEnum(TransactionType).optional(),
+    categoryId: z.string().min(1).optional(),
+    qualityRating: z.nativeEnum(QualityRating).optional(),
+    moneySourceId: z.string().min(1).optional(),
+    projectId: z.string().min(1).optional(),
+    savingGoalId: z.string().min(1).optional(),
+    groupBy: z.enum(["day", "week", "month"]).optional()
+  })
+  .strict();
+
+function parseReportFilters(filters: ReportFilters) {
+  const result = reportFiltersSchema.safeParse(filters);
+
+  if (!result.success) {
+    throw new Error("Invalid report filters.");
+  }
+
+  return result.data;
+}
+
+function buildReportTransactionWhere(
+  userId: string,
+  filters: ReportFilters
+): Prisma.TransactionWhereInput {
+  const parsed = parseReportFilters(filters);
+
+  return {
+    userId,
+    ...(parsed.type ? { type: parsed.type } : {}),
+    ...(parsed.categoryId ? { categoryId: parsed.categoryId } : {}),
+    ...(parsed.qualityRating
+      ? { qualityRating: parsed.qualityRating }
+      : {}),
+    ...(parsed.projectId ? { projectId: parsed.projectId } : {}),
+    ...(parsed.moneySourceId
+      ? {
+          OR: [
+            { fromMoneySourceId: parsed.moneySourceId },
+            { toMoneySourceId: parsed.moneySourceId },
+            { adjustedMoneySourceId: parsed.moneySourceId }
+          ]
+        }
+      : {}),
+    ...(parsed.savingGoalId
+      ? {
+          goalContributions: {
+            some: { savingGoalId: parsed.savingGoalId }
+          }
+        }
+      : {}),
+    ...(parsed.startDate || parsed.endDate
+      ? {
+          transactionDate: transactionDateRange(
+            parsed.startDate,
+            parsed.endDate
+          )
+        }
+      : {})
+  };
 }
 
 function addMonths(date: Date, months: number) {
@@ -41,43 +118,90 @@ async function getSessionUserId() {
 
 async function getTransactionsInRange(
   userId: string,
-  startDate: Date | string,
-  endDate: Date | string
+  filters: ReportFilters
 ) {
   return prisma.transaction.findMany({
-    where: {
-      userId,
-      transactionDate: {
-        gte: normalizeDate(startDate),
-        lte: normalizeDate(endDate)
-      }
-    },
+    where: buildReportTransactionWhere(userId, filters),
     orderBy: [{ transactionDate: "asc" }, { createdAt: "asc" }]
   });
 }
 
-export async function loadIncomeVsExpenseOverTime(
-  startDate: Date | string,
-  endDate: Date | string,
-  groupBy: ReportGroupBy
+async function getEffectiveReportTransactions(
+  userId: string,
+  filters: ReportFilters
 ) {
-  const scopedUserId = await getSessionUserId();
-  const transactions = await getTransactionsInRange(
-    scopedUserId,
-    startDate,
-    endDate
+  const selectedTransactions = await getTransactionsInRange(userId, filters);
+  const reportTransactions = selectedTransactions.filter(
+    ({ type }) =>
+      type === TransactionType.INCOME || type === TransactionType.EXPENSE
+  );
+  const selectedExpenseIds = reportTransactions.flatMap((transaction) =>
+    transaction.type === TransactionType.EXPENSE ? [transaction.id] : []
   );
 
-  return getIncomeVsExpenseOverTime(transactions, groupBy);
+  if (selectedExpenseIds.length === 0) {
+    return reportTransactions;
+  }
+
+  const linkedRefunds = await prisma.transaction.findMany({
+    where: {
+      userId,
+      type: TransactionType.REFUND,
+      relatedTransactionId: { in: selectedExpenseIds }
+    },
+    orderBy: [{ transactionDate: "asc" }, { createdAt: "asc" }]
+  });
+
+  return [...reportTransactions, ...linkedRefunds];
+}
+
+export async function loadReportFilterOptions() {
+  const scopedUserId = await getSessionUserId();
+  const [categories, moneySources, projects, savingGoals] = await Promise.all([
+    prisma.category.findMany({
+      where: { userId: scopedUserId },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true }
+    }),
+    prisma.moneySource.findMany({
+      where: { userId: scopedUserId },
+      orderBy: [{ isActive: "desc" }, { name: "asc" }],
+      select: { id: true, name: true }
+    }),
+    prisma.financialProject.findMany({
+      where: { userId: scopedUserId },
+      orderBy: [{ status: "asc" }, { name: "asc" }],
+      select: { id: true, name: true }
+    }),
+    prisma.savingGoal.findMany({
+      where: { userId: scopedUserId },
+      orderBy: [{ status: "asc" }, { deadline: "asc" }, { name: "asc" }],
+      select: { id: true, name: true }
+    })
+  ]);
+
+  return { categories, moneySources, projects, savingGoals };
+}
+
+export async function loadIncomeVsExpenseOverTime(
+  filters: ReportFilters = {}
+) {
+  const scopedUserId = await getSessionUserId();
+  const parsed = parseReportFilters(filters);
+  const transactions = await getEffectiveReportTransactions(
+    scopedUserId,
+    parsed
+  );
+
+  return getIncomeVsExpenseOverTime(transactions, parsed.groupBy ?? "month");
 }
 
 export async function loadExpenseByCategory(
-  startDate: Date | string,
-  endDate: Date | string
+  filters: ReportFilters = {}
 ) {
   const scopedUserId = await getSessionUserId();
   const [transactions, categories] = await Promise.all([
-    getTransactionsInRange(scopedUserId, startDate, endDate),
+    getEffectiveReportTransactions(scopedUserId, filters),
     prisma.category.findMany({
       where: { userId: scopedUserId },
       orderBy: { name: "asc" }
@@ -88,26 +212,43 @@ export async function loadExpenseByCategory(
 }
 
 export async function loadSpendingQualityBreakdown(
-  startDate: Date | string,
-  endDate: Date | string
+  filters: ReportFilters = {}
 ) {
   const scopedUserId = await getSessionUserId();
-  const transactions = await getTransactionsInRange(
+  const transactions = await getEffectiveReportTransactions(
     scopedUserId,
-    startDate,
-    endDate
+    filters
   );
 
   return getSpendingQualityBreakdown(transactions);
 }
 
-export async function loadGoalProgressReport() {
+export async function loadGoalProgressReport(filters: ReportFilters = {}) {
   const scopedUserId = await getSessionUserId();
+  const parsed = parseReportFilters(filters);
   const goals = await prisma.savingGoal.findMany({
-    where: { userId: scopedUserId },
+    where: {
+      userId: scopedUserId,
+      ...(parsed.savingGoalId ? { id: parsed.savingGoalId } : {})
+    },
     orderBy: [{ status: "asc" }, { deadline: "asc" }, { name: "asc" }],
     include: {
-      goalContributions: true
+      goalContributions: {
+        where: {
+          userId: scopedUserId,
+          ...(parsed.moneySourceId
+            ? { fromMoneySourceId: parsed.moneySourceId }
+            : {}),
+          ...(parsed.startDate || parsed.endDate
+            ? {
+                contributionDate: transactionDateRange(
+                  parsed.startDate,
+                  parsed.endDate
+                )
+              }
+            : {})
+        }
+      }
     }
   });
 
@@ -117,31 +258,35 @@ export async function loadGoalProgressReport() {
   }));
 }
 
-export async function loadProjectProfitLoss() {
+export async function loadProjectProfitLoss(filters: ReportFilters = {}) {
   const scopedUserId = await getSessionUserId();
+  const parsed = parseReportFilters(filters);
   const [projects, transactions] = await Promise.all([
     prisma.financialProject.findMany({
-      where: { userId: scopedUserId },
+      where: {
+        userId: scopedUserId,
+        ...(parsed.projectId ? { id: parsed.projectId } : {})
+      },
       orderBy: [{ status: "asc" }, { name: "asc" }]
     }),
-    prisma.transaction.findMany({
-      where: { userId: scopedUserId },
-      orderBy: [{ transactionDate: "asc" }, { createdAt: "asc" }]
-    })
+    getEffectiveReportTransactions(scopedUserId, parsed)
   ]);
 
   return getProjectProfitLoss(transactions, projects);
 }
 
 export async function loadSpendingBySource(
-  startDate: Date | string,
-  endDate: Date | string
+  filters: ReportFilters = {}
 ) {
   const scopedUserId = await getSessionUserId();
+  const parsed = parseReportFilters(filters);
   const [transactions, sources] = await Promise.all([
-    getTransactionsInRange(scopedUserId, startDate, endDate),
+    getEffectiveReportTransactions(scopedUserId, parsed),
     prisma.moneySource.findMany({
-      where: { userId: scopedUserId },
+      where: {
+        userId: scopedUserId,
+        ...(parsed.moneySourceId ? { id: parsed.moneySourceId } : {})
+      },
       orderBy: [{ isActive: "desc" }, { name: "asc" }]
     })
   ]);
@@ -149,18 +294,30 @@ export async function loadSpendingBySource(
   return getSpendingBySource(transactions, sources);
 }
 
-export async function loadCreditCardDebtReport() {
+export async function loadCreditCardDebtReport(filters: ReportFilters = {}) {
   const scopedUserId = await getSessionUserId();
+  const parsed = parseReportFilters(filters);
   const [creditCards, transactions] = await Promise.all([
     prisma.moneySource.findMany({
       where: {
         userId: scopedUserId,
-        type: MoneySourceType.CREDIT_CARD
+        type: MoneySourceType.CREDIT_CARD,
+        ...(parsed.moneySourceId ? { id: parsed.moneySourceId } : {})
       },
       orderBy: [{ isActive: "desc" }, { name: "asc" }]
     }),
     prisma.transaction.findMany({
-      where: { userId: scopedUserId },
+      where: {
+        userId: scopedUserId,
+        ...(parsed.endDate
+          ? {
+              transactionDate: transactionDateRange(
+                undefined,
+                parsed.endDate
+              )
+            }
+          : {})
+      },
       orderBy: [{ transactionDate: "asc" }, { createdAt: "asc" }]
     })
   ]);
@@ -171,14 +328,16 @@ export async function loadCreditCardDebtReport() {
   }));
 }
 
-export async function loadFeeWaiverReport() {
+export async function loadFeeWaiverReport(filters: ReportFilters = {}) {
   const scopedUserId = await getSessionUserId();
+  const parsed = parseReportFilters(filters);
   const [creditCards, transactions] = await Promise.all([
     prisma.moneySource.findMany({
       where: {
         userId: scopedUserId,
         type: MoneySourceType.CREDIT_CARD,
-        annualFeeWaiverEnabled: true
+        annualFeeWaiverEnabled: true,
+        ...(parsed.moneySourceId ? { id: parsed.moneySourceId } : {})
       },
       orderBy: [{ isActive: "desc" }, { name: "asc" }]
     }),
@@ -194,22 +353,50 @@ export async function loadFeeWaiverReport() {
   }));
 }
 
+function buildRenewalWhere(
+  userId: string,
+  filters: ReportFilters,
+  fallbackRange?: { startDate: Date; endDate: Date }
+): Prisma.RecurringPaymentWhereInput {
+  const parsed = parseReportFilters(filters);
+  const startDate = parsed.startDate ?? fallbackRange?.startDate;
+  const endDate = parsed.endDate ?? fallbackRange?.endDate;
+
+  return {
+    userId,
+    status: RenewalStatus.ACTIVE,
+    ...(parsed.type ? { transactionType: parsed.type } : {}),
+    ...(parsed.categoryId ? { categoryId: parsed.categoryId } : {}),
+    ...(parsed.qualityRating
+      ? { qualityRating: parsed.qualityRating }
+      : {}),
+    ...(parsed.projectId ? { projectId: parsed.projectId } : {}),
+    ...(parsed.moneySourceId
+      ? {
+          OR: [
+            { fromMoneySourceId: parsed.moneySourceId },
+            { toMoneySourceId: parsed.moneySourceId }
+          ]
+        }
+      : {}),
+    ...(startDate || endDate
+      ? { nextDueDate: transactionDateRange(startDate, endDate) }
+      : {})
+  };
+}
+
 export async function loadUpcomingRenewalsTotal(
-  months: number
+  filters: ReportFilters = {}
 ) {
   const scopedUserId = await getSessionUserId();
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const endDate = addMonths(today, months);
+  const endDate = addMonths(today, 12);
   const renewals = await prisma.recurringPayment.findMany({
-    where: {
-      userId: scopedUserId,
-      status: RenewalStatus.ACTIVE,
-      nextDueDate: {
-        gte: today,
-        lte: endDate
-      }
-    },
+    where: buildRenewalWhere(scopedUserId, filters, {
+      startDate: today,
+      endDate
+    }),
     orderBy: [{ nextDueDate: "asc" }, { title: "asc" }]
   });
 
@@ -220,20 +407,11 @@ export async function loadUpcomingRenewalsTotal(
 }
 
 export async function loadRecurringExpensePerMonth(
-  startDate: Date | string,
-  endDate: Date | string
+  filters: ReportFilters = {}
 ) {
   const scopedUserId = await getSessionUserId();
   const renewals = await prisma.recurringPayment.findMany({
-    where: {
-      userId: scopedUserId,
-      status: RenewalStatus.ACTIVE,
-      transactionType: TransactionType.EXPENSE,
-      nextDueDate: {
-        gte: normalizeDate(startDate),
-        lte: normalizeDate(endDate)
-      }
-    },
+    where: buildRenewalWhere(scopedUserId, filters),
     orderBy: [{ nextDueDate: "asc" }, { title: "asc" }]
   });
 

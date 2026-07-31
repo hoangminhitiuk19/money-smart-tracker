@@ -1,11 +1,7 @@
 import { TransactionType } from "@prisma/client";
+import { decimal, percent, type DecimalInput } from "@/lib/money";
 
-type DecimalLike = {
-  toNumber?: () => number;
-  toString?: () => string;
-};
-
-type ProjectAmount = number | string | DecimalLike;
+type ProjectAmount = DecimalInput;
 
 export type ProjectSummaryTransaction = {
   type: TransactionType;
@@ -13,22 +9,11 @@ export type ProjectSummaryTransaction = {
   projectId?: string | null;
 };
 
-function toNumber(value: ProjectAmount) {
-  if (typeof value === "number") {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    return Number(value);
-  }
-
-  if (value.toNumber) {
-    return value.toNumber();
-  }
-
-  return Number(value.toString?.() ?? 0);
-}
-
+/**
+ * Calculates the raw project summary from specification §10.
+ * Refunds are intentionally excluded here; project reports apply linked
+ * refunds as effective expense under specification §16.1.
+ */
 export function calculateProjectSummary(
   transactions: ProjectSummaryTransaction[]
 ) {
@@ -37,28 +22,28 @@ export function calculateProjectSummary(
       if (transaction.type === TransactionType.INCOME) {
         return {
           ...summary,
-          totalIncome: summary.totalIncome + toNumber(transaction.amount)
+          totalIncome: summary.totalIncome.plus(decimal(transaction.amount))
         };
       }
 
       if (transaction.type === TransactionType.EXPENSE) {
         return {
           ...summary,
-          totalExpense: summary.totalExpense + toNumber(transaction.amount)
+          totalExpense: summary.totalExpense.plus(decimal(transaction.amount))
         };
       }
 
       return summary;
     },
     {
-      totalIncome: 0,
-      totalExpense: 0
+      totalIncome: decimal(0),
+      totalExpense: decimal(0)
     }
   );
 
-  const profit = totals.totalIncome - totals.totalExpense;
+  const profit = totals.totalIncome.minus(totals.totalExpense);
   const roi =
-    totals.totalExpense > 0 ? (profit / totals.totalExpense) * 100 : null;
+    totals.totalExpense.gt(0) ? percent(profit, totals.totalExpense) : null;
 
   return {
     ...totals,

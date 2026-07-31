@@ -6,6 +6,7 @@ import {
   listCategories,
   updateCategoryFormAction
 } from "@/lib/actions/categories";
+import { DestructiveActionButton } from "@/components/destructive-action-button";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -138,11 +139,22 @@ async function CategoriesPageContent() {
             <span className="text-sm font-medium text-slate-700">Icon</span>
             <Input className="mt-1" name="icon" placeholder="Optional" />
           </label>
-          <label className="flex items-center gap-2 md:col-span-2">
+          <label className="flex min-h-11 items-center gap-2 md:col-span-2 md:min-h-0">
             <input name="isDefault" type="checkbox" />
             <span className="text-sm font-medium text-slate-700">Default</span>
           </label>
-          <div className="md:col-span-4 md:flex md:justify-end">
+          <label className="flex min-h-11 items-center gap-2 md:col-span-4 md:min-h-0">
+            <input
+              defaultChecked
+              name="defaultCountTowardFeeWaiver"
+              type="checkbox"
+            />
+            <span className="text-sm font-medium text-slate-700">
+              Count credit-card expenses in this category toward fee waiver by
+              default
+            </span>
+          </label>
+          <div className="md:col-span-6 md:flex md:justify-end">
             <Button className="w-full md:w-auto" type="submit">
               Add Category
             </Button>
@@ -208,6 +220,18 @@ async function CategoriesPageContent() {
                               Default
                             </label>
                           </div>
+                          <label className="flex items-start gap-2 text-sm text-slate-700">
+                            <input
+                              className="mt-0.5"
+                              defaultChecked={
+                                category.defaultCountTowardFeeWaiver
+                              }
+                              name="defaultCountTowardFeeWaiver"
+                              type="checkbox"
+                            />
+                            Count credit-card expenses in this category toward
+                            fee waiver by default
+                          </label>
                         </form>
                       </td>
                       <td className="px-4 py-3">
@@ -260,15 +284,12 @@ async function CategoriesPageContent() {
                           >
                             Save
                           </Button>
-                          <form action={deleteAction}>
-                            <Button
-                              size="sm"
-                              variant="danger"
-                              type="submit"
-                            >
-                              Delete
-                            </Button>
-                          </form>
+                          <DestructiveActionButton
+                            action={deleteAction}
+                            description="This category will be permanently removed."
+                            itemLabel={`${category.name} category`}
+                            title="Delete this category?"
+                          />
                         </div>
                       </td>
                     </tr>

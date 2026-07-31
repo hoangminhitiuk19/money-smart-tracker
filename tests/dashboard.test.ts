@@ -3,12 +3,61 @@ import {
   QualityRating,
   TransactionType
 } from "@prisma/client";
-import { describe, expect, it } from "vitest";
+import type { ReactElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import DashboardPage from "@/app/(protected)/dashboard/page";
+import { getDashboardData } from "@/lib/actions/dashboard";
 import {
+  calculateAccountProjection,
   getDashboardSummary,
   type DashboardMoneySource,
   type DashboardTransaction
 } from "@/lib/calc/dashboard";
+
+const dashboardMocks = vi.hoisted(() => ({
+  getUserSettings: vi.fn(),
+  requireAuth: vi.fn(),
+  transactionFindMany: vi.fn(),
+  savingGoalFindMany: vi.fn(),
+  financialProjectFindMany: vi.fn(),
+  moneySourceFindMany: vi.fn(),
+  recurringPaymentFindMany: vi.fn()
+}));
+
+vi.mock("@/lib/auth", () => ({ requireAuth: dashboardMocks.requireAuth }));
+vi.mock("@/lib/actions/settings", () => ({
+  getUserSettings: dashboardMocks.getUserSettings
+}));
+vi.mock("@/lib/prisma", () => ({
+  prisma: {
+    transaction: { findMany: dashboardMocks.transactionFindMany },
+    savingGoal: { findMany: dashboardMocks.savingGoalFindMany },
+    financialProject: { findMany: dashboardMocks.financialProjectFindMany },
+    moneySource: { findMany: dashboardMocks.moneySourceFindMany },
+    recurringPayment: { findMany: dashboardMocks.recurringPaymentFindMany }
+  }
+}));
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.useRealTimers();
+  dashboardMocks.getUserSettings.mockResolvedValue({
+    settings: {
+      defaultCurrency: "VND",
+      dateFormat: "DD/MM/YYYY",
+      numberFormat: "1,000,000",
+      defaultDashboardPeriod: "Month"
+    },
+    user: { id: "dashboard-user" }
+  });
+  dashboardMocks.requireAuth.mockResolvedValue({ id: "dashboard-user" });
+  dashboardMocks.transactionFindMany.mockResolvedValue([]);
+  dashboardMocks.savingGoalFindMany.mockResolvedValue([]);
+  dashboardMocks.financialProjectFindMany.mockResolvedValue([]);
+  dashboardMocks.moneySourceFindMany.mockResolvedValue([]);
+  dashboardMocks.recurringPaymentFindMany.mockResolvedValue([]);
+});
 
 const today = new Date("2026-07-15T00:00:00.000Z");
 
@@ -16,7 +65,9 @@ function tx(
   transaction: Partial<DashboardTransaction>
 ): DashboardTransaction {
   return {
+    id: "dashboard-transaction",
     amount: 100,
+    createdAt: new Date("2026-07-10T00:00:01.000Z"),
     transactionDate: new Date("2026-07-10T00:00:00.000Z"),
     type: TransactionType.EXPENSE,
     ...transaction
@@ -51,6 +102,27 @@ function summary({
   );
 }
 
+type DashboardContentElement = ReactElement<{
+  searchParams: Record<string, string | string[] | undefined>;
+}> & {
+  type: (props: {
+    searchParams: Record<string, string | string[] | undefined>;
+  }) => Promise<ReactElement>;
+};
+
+async function renderDashboardMarkup(
+  searchParams: Record<string, string | string[] | undefined> = {
+    period: "month"
+  }
+) {
+  const shell = (await DashboardPage({
+    searchParams: Promise.resolve(searchParams)
+  })) as ReactElement<{ children: DashboardContentElement }>;
+  const contentElement = shell.props.children;
+  const content = await contentElement.type(contentElement.props);
+  return renderToStaticMarkup(content);
+}
+
 describe("getDashboardSummary", () => {
   it("calculates total income correctly", () => {
     expect(
@@ -59,8 +131,8 @@ describe("getDashboardSummary", () => {
           tx({ amount: 800, type: TransactionType.INCOME }),
           tx({ amount: 200, type: TransactionType.INCOME })
         ]
-      }).totalIncome
-    ).toBe(1000);
+      }).totalIncome.toFixed(2)
+    ).toBe("1000.00");
   });
 
   it("calculates total expense correctly", () => {
@@ -70,8 +142,8 @@ describe("getDashboardSummary", () => {
           tx({ amount: 250, type: TransactionType.EXPENSE }),
           tx({ amount: 150, type: TransactionType.EXPENSE })
         ]
-      }).totalExpense
-    ).toBe(400);
+      }).totalExpense.toFixed(2)
+    ).toBe("400.00");
   });
 
   it("calculates net savings correctly", () => {
@@ -81,8 +153,8 @@ describe("getDashboardSummary", () => {
           tx({ amount: 1000, type: TransactionType.INCOME }),
           tx({ amount: 350, type: TransactionType.EXPENSE })
         ]
-      }).netSavings
-    ).toBe(650);
+      }).netSavings.toFixed(2)
+    ).toBe("650.00");
   });
 
   it("calculates saving rate for a normal case", () => {
@@ -92,16 +164,16 @@ describe("getDashboardSummary", () => {
           tx({ amount: 1000, type: TransactionType.INCOME }),
           tx({ amount: 250, type: TransactionType.EXPENSE })
         ]
-      }).savingRate
-    ).toBe(75);
+      }).savingRate.toDecimalPlaces(8).toString()
+    ).toBe("75");
   });
 
   it("returns zero saving rate when income is zero", () => {
     expect(
       summary({
         transactions: [tx({ amount: 250, type: TransactionType.EXPENSE })]
-      }).savingRate
-    ).toBe(0);
+      }).savingRate.toDecimalPlaces(8).toString()
+    ).toBe("0");
   });
 
   it("counts all five quality ratings separately", () => {
@@ -115,11 +187,16 @@ describe("getDashboardSummary", () => {
       ]
     }).qualityBreakdown;
 
-    expect(result.S).toEqual({ count: 1, amount: 10 });
-    expect(result.A).toEqual({ count: 1, amount: 20 });
-    expect(result.B).toEqual({ count: 1, amount: 30 });
-    expect(result.C).toEqual({ count: 1, amount: 40 });
-    expect(result.D).toEqual({ count: 1, amount: 50 });
+    expect(result.S.count).toBe(1);
+    expect(result.S.amount.toFixed(2)).toBe("10.00");
+    expect(result.A.count).toBe(1);
+    expect(result.A.amount.toFixed(2)).toBe("20.00");
+    expect(result.B.count).toBe(1);
+    expect(result.B.amount.toFixed(2)).toBe("30.00");
+    expect(result.C.count).toBe(1);
+    expect(result.C.amount.toFixed(2)).toBe("40.00");
+    expect(result.D.count).toBe(1);
+    expect(result.D.amount.toFixed(2)).toBe("50.00");
   });
 
   it("calculates high-quality percent as S plus A over total rated", () => {
@@ -131,8 +208,8 @@ describe("getDashboardSummary", () => {
           tx({ amount: 200, qualityRating: QualityRating.C }),
           tx({ amount: 300, qualityRating: QualityRating.D })
         ]
-      }).highQualityPercent
-    ).toBe(50);
+      }).highQualityPercent.toDecimalPlaces(8).toString()
+    ).toBe("50");
   });
 
   it("returns zero high-quality percent when there are no rated expenses", () => {
@@ -142,8 +219,8 @@ describe("getDashboardSummary", () => {
           tx({ amount: 100, qualityRating: null }),
           tx({ amount: 100, qualityRating: undefined })
         ]
-      }).highQualityPercent
-    ).toBe(0);
+      }).highQualityPercent.toDecimalPlaces(8).toString()
+    ).toBe("0");
   });
 
   it("calculates low-quality amount as C plus D", () => {
@@ -154,13 +231,12 @@ describe("getDashboardSummary", () => {
           tx({ amount: 125, qualityRating: QualityRating.D }),
           tx({ amount: 900, qualityRating: QualityRating.B })
         ]
-      }).lowQualityAmount
-    ).toBe(225);
+      }).lowQualityAmount.toFixed(2)
+    ).toBe("225.00");
   });
 
   it("groups spending by source correctly", () => {
-    expect(
-      summary({
+    const result = summary({
         transactions: [
           tx({ amount: 200, fromMoneySourceId: "cash" }),
           tx({ amount: 125, fromMoneySourceId: "cash" }),
@@ -171,11 +247,10 @@ describe("getDashboardSummary", () => {
             type: TransactionType.INCOME
           })
         ]
-      }).spendingBySource
-    ).toEqual({
-      bank: 75,
-      cash: 325
-    });
+      }).spendingBySource;
+
+    expect(result.bank.toFixed(2)).toBe("75.00");
+    expect(result.cash.toFixed(2)).toBe("325.00");
   });
 
   it("calculates estimated net position as assets minus card debt", () => {
@@ -208,8 +283,8 @@ describe("getDashboardSummary", () => {
             type: TransactionType.EXPENSE
           })
         ]
-      }).estimatedNetPosition
-    ).toBe(900);
+      }).estimatedNetPosition.toFixed(2)
+    ).toBe("900.00");
   });
 
   it("includes only non-card sources in assets for estimated net position", () => {
@@ -232,7 +307,319 @@ describe("getDashboardSummary", () => {
             type: TransactionType.INCOME
           })
         ]
-      }).estimatedNetPosition
-    ).toBe(1000);
+      }).estimatedNetPosition.toFixed(2)
+    ).toBe("1000.00");
+  });
+
+  it("includes only the exact asset whitelist and excludes OTHER from net position", () => {
+    expect(
+      summary({
+        moneySources: [
+          source({
+            id: "cash",
+            openingBalance: 100,
+            type: MoneySourceType.CASH
+          }),
+          source({
+            id: "bank",
+            openingBalance: 200,
+            type: MoneySourceType.BANK_ACCOUNT
+          }),
+          source({
+            id: "debit",
+            openingBalance: 300,
+            type: MoneySourceType.DEBIT_CARD
+          }),
+          source({
+            id: "wallet",
+            openingBalance: 400,
+            type: MoneySourceType.E_WALLET
+          }),
+          source({
+            id: "investment",
+            openingBalance: 500,
+            type: MoneySourceType.INVESTMENT
+          }),
+          source({
+            id: "other",
+            openingBalance: 999,
+            type: MoneySourceType.OTHER
+          }),
+          source({
+            id: "card",
+            initialCardCredit: 0,
+            initialOutstandingDebt: 100,
+            openingBalance: 0,
+            type: MoneySourceType.CREDIT_CARD
+          })
+        ]
+      }).estimatedNetPosition.toFixed(2)
+    ).toBe("1400.00");
+  });
+});
+
+describe("calculateAccountProjection", () => {
+  it("uses tracked debt as the card primary amount and keeps card credit separate", () => {
+    const result = calculateAccountProjection(
+      source({
+        id: "card",
+        type: MoneySourceType.CREDIT_CARD,
+        openingBalance: 9999,
+        creditLimit: 2000,
+        initialOutstandingDebt: 85,
+        initialCardCredit: 15
+      }),
+      []
+    );
+
+    expect(result.trackedAmount.toFixed(2)).toBe("85.00");
+    expect(result.cardCredit?.toFixed(2)).toBe("15.00");
+    expect(result.creditCardState?.availableCredit.toFixed(2)).toBe("1915.00");
+  });
+
+  it("retains the generic tracked balance for non-card sources", () => {
+    const result = calculateAccountProjection(
+      source({ id: "bank", openingBalance: 100 }),
+      [
+        tx({
+          id: "bank-income",
+          amount: 25,
+          type: TransactionType.INCOME,
+          toMoneySourceId: "bank"
+        })
+      ]
+    );
+
+    expect(result.trackedAmount.toFixed(2)).toBe("125.00");
+    expect(result.cardCredit).toBeNull();
+    expect(result.creditCardState).toBeNull();
+  });
+});
+
+describe("getDashboardData date filtering", () => {
+  it("queries through the UTC start of the day after an inclusive end date", async () => {
+    await getDashboardData("2026-07-01", "2026-07-30");
+
+    expect(dashboardMocks.transactionFindMany).toHaveBeenCalledWith({
+      where: {
+        userId: "dashboard-user",
+        transactionDate: {
+          gte: new Date("2026-07-01T00:00:00.000Z"),
+          lt: new Date("2026-07-31T00:00:00.000Z")
+        }
+      },
+      orderBy: { transactionDate: "desc" }
+    });
+    expect(dashboardMocks.transactionFindMany).toHaveBeenNthCalledWith(2, {
+      where: { userId: "dashboard-user" },
+      orderBy: { transactionDate: "desc" }
+    });
+  });
+
+  it("queries annual fees from UTC day 0 through all of UTC day 30", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T12:34:56.000Z"));
+
+    await getDashboardData("2026-07-01", "2026-07-31");
+
+    expect(dashboardMocks.moneySourceFindMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        userId: "dashboard-user",
+        type: MoneySourceType.CREDIT_CARD,
+        hasAnnualFee: true,
+        annualFeeChargeDate: {
+          gte: new Date("2026-07-15T00:00:00.000Z"),
+          lt: new Date("2026-08-15T00:00:00.000Z")
+        }
+      },
+      orderBy: { annualFeeChargeDate: "asc" }
+    });
+  });
+});
+
+describe("dashboard card visibility", () => {
+  it("shows only active card widgets while retaining inactive card debt in net position", async () => {
+    dashboardMocks.moneySourceFindMany
+      .mockResolvedValueOnce([
+        {
+          id: "bank",
+          userId: "dashboard-user",
+          name: "Dashboard bank",
+          type: MoneySourceType.BANK_ACCOUNT,
+          currency: "VND",
+          openingBalance: 200,
+          isActive: true
+        },
+        {
+          id: "active-card",
+          userId: "dashboard-user",
+          name: "Active dashboard card",
+          type: MoneySourceType.CREDIT_CARD,
+          currency: "VND",
+          openingBalance: 0,
+          creditLimit: 1000,
+          initialOutstandingDebt: 25,
+          initialCardCredit: 0,
+          isActive: true,
+          annualFeeWaiverEnabled: true,
+          annualFeeWaiverSpendTarget: 100
+        },
+        {
+          id: "inactive-card",
+          userId: "dashboard-user",
+          name: "Inactive dashboard card",
+          type: MoneySourceType.CREDIT_CARD,
+          currency: "VND",
+          openingBalance: 0,
+          creditLimit: 1000,
+          initialOutstandingDebt: 75,
+          initialCardCredit: 0,
+          isActive: false,
+          annualFeeWaiverEnabled: true,
+          annualFeeWaiverSpendTarget: 100
+        }
+      ])
+      .mockResolvedValueOnce([]);
+
+    const result = await getDashboardData("2026-07-01", "2026-07-31");
+
+    expect(result.summary.estimatedNetPosition.toFixed(2)).toBe("100.00");
+    expect(result.creditCards.map(({ source }) => source.id)).toEqual([
+      "active-card"
+    ]);
+    expect(result.feeWaivers.map(({ source }) => source.id)).toEqual([
+      "active-card"
+    ]);
+  });
+});
+
+describe("dashboard horizon labels", () => {
+  it("labels selected-period metrics and current tracked state", async () => {
+    dashboardMocks.moneySourceFindMany
+      .mockResolvedValueOnce([
+        {
+          id: "dashboard-card",
+          userId: "dashboard-user",
+          name: "Dashboard card",
+          type: MoneySourceType.CREDIT_CARD,
+          currency: "VND",
+          openingBalance: 0,
+          creditLimit: 1000,
+          initialOutstandingDebt: 0,
+          initialCardCredit: 0,
+          isActive: true,
+          annualFeeWaiverEnabled: false
+        }
+      ])
+      .mockResolvedValueOnce([]);
+
+    const markup = await renderDashboardMarkup();
+
+    expect(markup.match(/Selected period/g) ?? []).toHaveLength(4);
+    expect(markup.match(/Current tracked estimate/g) ?? []).toHaveLength(2);
+  });
+});
+
+describe("dashboard persisted display settings", () => {
+  it("uses the persisted period when the URL omits period", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T12:00:00.000Z"));
+    dashboardMocks.getUserSettings.mockResolvedValueOnce({
+      settings: {
+        defaultCurrency: "VND",
+        dateFormat: "DD/MM/YYYY",
+        numberFormat: "1,000,000",
+        defaultDashboardPeriod: "Year"
+      },
+      user: { id: "dashboard-user" }
+    });
+
+    await renderDashboardMarkup({});
+
+    expect(dashboardMocks.transactionFindMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        userId: "dashboard-user",
+        transactionDate: {
+          gte: new Date("2026-01-01T00:00:00.000Z"),
+          lt: new Date("2027-01-01T00:00:00.000Z")
+        }
+      },
+      orderBy: { transactionDate: "desc" }
+    });
+  });
+
+  it("lets an explicit URL period override the persisted period", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T12:00:00.000Z"));
+    dashboardMocks.getUserSettings.mockResolvedValueOnce({
+      settings: {
+        defaultCurrency: "VND",
+        dateFormat: "DD/MM/YYYY",
+        numberFormat: "1,000,000",
+        defaultDashboardPeriod: "Year"
+      },
+      user: { id: "dashboard-user" }
+    });
+
+    await renderDashboardMarkup({ period: "week" });
+
+    expect(dashboardMocks.transactionFindMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        userId: "dashboard-user",
+        transactionDate: {
+          gte: new Date("2026-07-13T00:00:00.000Z"),
+          lt: new Date("2026-07-20T00:00:00.000Z")
+        }
+      },
+      orderBy: { transactionDate: "desc" }
+    });
+  });
+
+  it("lets an explicit month period override a persisted year default", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T12:00:00.000Z"));
+    dashboardMocks.getUserSettings.mockResolvedValueOnce({
+      settings: {
+        defaultCurrency: "VND",
+        dateFormat: "DD/MM/YYYY",
+        numberFormat: "1,000,000",
+        defaultDashboardPeriod: "Year"
+      },
+      user: { id: "dashboard-user" }
+    });
+
+    await renderDashboardMarkup({ period: "month" });
+
+    expect(dashboardMocks.transactionFindMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        userId: "dashboard-user",
+        transactionDate: {
+          gte: new Date("2026-07-01T00:00:00.000Z"),
+          lt: new Date("2026-08-01T00:00:00.000Z")
+        }
+      },
+      orderBy: { transactionDate: "desc" }
+    });
+  });
+
+  it("formats the selected range with the persisted date format", async () => {
+    dashboardMocks.getUserSettings.mockResolvedValueOnce({
+      settings: {
+        defaultCurrency: "VND",
+        dateFormat: "YYYY-MM-DD",
+        numberFormat: "1.000.000",
+        defaultDashboardPeriod: "Month"
+      },
+      user: { id: "dashboard-user" }
+    });
+
+    const markup = await renderDashboardMarkup({
+      period: "custom",
+      startDate: "2026-07-01",
+      endDate: "2026-07-30"
+    });
+
+    expect(markup).toContain("2026-07-01 to 2026-07-30");
+    expect(dashboardMocks.getUserSettings).toHaveBeenCalledTimes(1);
   });
 });

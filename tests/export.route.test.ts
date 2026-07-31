@@ -91,11 +91,18 @@ describe("GET /api/export/transactions", () => {
         title: "Coffee",
         amount: { toString: () => "4.50" },
         currency: "USD",
-        category: { name: "Food" },
+        category: { id: "category-1", userId: "user-1", name: "Food" },
         qualityRating: "A",
-        fromMoneySource: { name: "Cash" },
+        fromMoneySource: {
+          id: "source-1",
+          userId: "user-1",
+          name: "Cash"
+        },
         toMoneySource: null,
+        adjustedMoneySource: null,
         project: null,
+        relatedTransaction: null,
+        recurringPayment: null,
         description: "Morning coffee",
         countTowardFeeWaiver: true,
         createdAt: new Date("2026-01-02T03:04:06.000Z")
@@ -119,13 +126,16 @@ describe("GET /api/export/transactions", () => {
     );
     expect(checkExport).toHaveBeenCalledWith("user-1");
     expect(prisma.transaction.findMany).toHaveBeenCalledWith({
-      where: { userId: "user-1", transactionDate: undefined },
+      where: { userId: "user-1", transactionDate: {} },
       orderBy: [{ transactionDate: "desc" }, { createdAt: "desc" }],
       include: {
         category: true,
         fromMoneySource: true,
         toMoneySource: true,
-        project: true
+        adjustedMoneySource: true,
+        project: true,
+        relatedTransaction: true,
+        recurringPayment: true
       }
     });
     expect(prisma.activityLog.create).toHaveBeenCalledWith({
@@ -137,4 +147,43 @@ describe("GET /api/export/transactions", () => {
       })
     });
   });
+
+  it("queries through the UTC start of the day after an inclusive end date", async () => {
+    await GET(
+      new Request(
+        "http://localhost/api/export/transactions?startDate=2026-07-01&endDate=2026-07-30"
+      )
+    );
+
+    expect(prisma.transaction.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          userId: "user-1",
+          transactionDate: {
+            gte: new Date("2026-07-01T00:00:00.000Z"),
+            lt: new Date("2026-07-31T00:00:00.000Z")
+          }
+        }
+      })
+    );
+  });
+
+  it.each(["", "2026-02-30", "not-a-date"])(
+    "returns 400 without querying for an invalid date boundary: %s",
+    async (startDate) => {
+      const response = await GET(
+        new Request(
+          `http://localhost/api/export/transactions?startDate=${encodeURIComponent(startDate)}`
+        )
+      );
+
+      expect(response.status).toBe(400);
+      await expect(response.text()).resolves.toBe(
+        "Date filters must use valid YYYY-MM-DD calendar dates."
+      );
+      expect(checkExport).not.toHaveBeenCalled();
+      expect(prisma.transaction.findMany).not.toHaveBeenCalled();
+      expect(prisma.activityLog.create).not.toHaveBeenCalled();
+    }
+  );
 });

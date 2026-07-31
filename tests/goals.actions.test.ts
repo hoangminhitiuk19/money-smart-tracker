@@ -1,6 +1,6 @@
 import { GoalStatus } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createGoal } from "@/lib/actions/goals";
+import { createGoal, deleteGoalFormAction } from "@/lib/actions/goals";
 import { prisma } from "@/lib/prisma";
 import {
   checkAuthenticatedMutation,
@@ -30,6 +30,9 @@ vi.mock("@/lib/security/rate-limit", () => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    $transaction: vi.fn(async (operation: any) =>
+      operation((await import("@/lib/prisma")).prisma)
+    ),
     savingGoal: {
       create: vi.fn(async ({ data }: any) => ({
         id: "new-goal",
@@ -56,6 +59,21 @@ beforeEach(() => {
 });
 
 describe("goal mutation rate limiting", () => {
+  it("returns a safe delete failure through the bound form action", async () => {
+    vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
+      allowed: false,
+      unavailable: false,
+      limit: 60,
+      remaining: 0,
+      retryAfterSeconds: 60
+    });
+
+    await expect(deleteGoalFormAction("goal-1")).resolves.toEqual({
+      ok: false,
+      error: RATE_LIMIT_MESSAGE
+    });
+  });
+
   it("denies a rate-limited create before creating a saving goal", async () => {
     vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
       allowed: false,
@@ -67,11 +85,22 @@ describe("goal mutation rate limiting", () => {
 
     const result = await createGoal({
       name: "Emergency fund",
-      targetAmount: 1000000,
+      targetAmount: "1000000.00",
       status: GoalStatus.ACTIVE
     });
 
     expect(result).toEqual({ ok: false, error: RATE_LIMIT_MESSAGE });
     expect(prisma.savingGoal.create).not.toHaveBeenCalled();
+  });
+
+  it("creates a goal and its activity inside one database transaction", async () => {
+    const result = await createGoal({
+      name: "Emergency fund",
+      targetAmount: "1000000.00",
+      status: GoalStatus.ACTIVE
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function));
   });
 });

@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
+import { parseTransactionDateRange } from "@/lib/date-range";
 import { prisma } from "@/lib/prisma";
 import { checkExport, RATE_LIMIT_MESSAGE } from "@/lib/security/rate-limit";
+import {
+  sanitizeTransactionRead,
+  transactionReadInclude
+} from "@/lib/transaction-read";
 
 const columns = [
   "Date",
@@ -18,26 +23,6 @@ const columns = [
   "Count Toward Fee Waiver",
   "Created At"
 ];
-
-function parseDateParam(value: string | null, boundary: "start" | "end") {
-  if (!value) {
-    return undefined;
-  }
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return undefined;
-  }
-
-  if (boundary === "start") {
-    date.setHours(0, 0, 0, 0);
-  } else {
-    date.setHours(23, 59, 59, 999);
-  }
-
-  return date;
-}
 
 function csvCell(value: unknown) {
   const text =
@@ -61,6 +46,16 @@ export async function GET(request: Request) {
     return new NextResponse("Unauthorized", { status: 401 });
   }
 
+  const url = new URL(request.url);
+  const dateRange = parseTransactionDateRange(
+    url.searchParams.get("startDate") ?? undefined,
+    url.searchParams.get("endDate") ?? undefined
+  );
+
+  if (!dateRange.ok) {
+    return new NextResponse(dateRange.error, { status: 400 });
+  }
+
   const rateLimit = await checkExport(user.id);
   if (!rateLimit.allowed) {
     return new NextResponse(RATE_LIMIT_MESSAGE, {
@@ -72,32 +67,21 @@ export async function GET(request: Request) {
     });
   }
 
-  const url = new URL(request.url);
-  const startDate = parseDateParam(url.searchParams.get("startDate"), "start");
-  const endDate = parseDateParam(url.searchParams.get("endDate"), "end");
   const now = new Date();
   const transactions = await prisma.transaction.findMany({
     where: {
       userId: user.id,
-      transactionDate:
-        startDate || endDate
-          ? {
-              gte: startDate,
-              lte: endDate
-            }
-          : undefined
+      transactionDate: dateRange.range
     },
     orderBy: [{ transactionDate: "desc" }, { createdAt: "desc" }],
-    include: {
-      category: true,
-      fromMoneySource: true,
-      toMoneySource: true,
-      project: true
-    }
+    include: transactionReadInclude
   });
+  const safeTransactions = transactions.map((transaction) =>
+    sanitizeTransactionRead(transaction, user.id)
+  );
   const csv = [
     columns.join(","),
-    ...transactions.map((transaction) =>
+    ...safeTransactions.map((transaction) =>
       csvRow([
         transaction.transactionDate,
         transaction.type,
@@ -123,7 +107,7 @@ export async function GET(request: Request) {
       entityType: "Transaction",
       metadata: {
         exportedAt: now.toISOString(),
-        rowCount: transactions.length
+        rowCount: safeTransactions.length
       }
     }
   });

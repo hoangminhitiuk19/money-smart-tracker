@@ -1,5 +1,6 @@
 "use client";
 
+import { QualityRating, TransactionType } from "@prisma/client";
 import { useMemo, useState } from "react";
 import {
   Bar,
@@ -20,14 +21,25 @@ import {
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { Input } from "@/components/ui/Input";
 import { LoadingSkeleton } from "@/components/ui/LoadingSkeleton";
 import { ProgressBar } from "@/components/ui/ProgressBar";
+import { Select } from "@/components/ui/Select";
+import {
+  presentationNumber,
+  type DecimalInput
+} from "@/lib/money";
+import {
+  formatUserDate,
+  formatUserMoney,
+  type UserFormatSettings
+} from "@/lib/user-format";
 
 type MoneyPoint = {
   period: string;
-  income?: number;
-  expense?: number;
-  total?: number;
+  income?: string;
+  expense?: string;
+  total?: string;
 };
 
 type NamedTotal = {
@@ -35,46 +47,73 @@ type NamedTotal = {
   sourceName?: string;
   rating?: string;
   count?: number;
-  total: number;
+  total: string;
 };
 
 type GoalReport = {
   id: string;
   name: string;
   currency: string;
-  targetAmount: number;
-  netContributed: number;
-  progressPercent: number;
-  remaining: number;
+  targetAmount: string;
+  netContributed: string;
+  progressPercent: string;
+  remaining: string;
 };
 
 type ProjectReport = {
   projectName: string;
-  totalIncome: number;
-  totalExpense: number;
-  profit: number;
-  roi: number | null;
+  totalIncome: string;
+  totalExpense: string;
+  profit: string;
+  roi: string | null;
 };
 
 type CreditCardDebtReport = {
   id: string;
   name: string;
   currency: string;
-  outstandingDebt: number;
-  availableCredit: number;
-  cardCredit: number;
+  outstandingDebt: string;
+  availableCredit: string;
+  cardCredit: string;
 };
 
 type FeeWaiverReport = {
   id: string;
   name: string;
   currency: string;
-  eligibleSpending: number;
-  progress: number;
-  remaining: number;
+  eligibleSpending: string;
+  progress: string;
+  remaining: string;
+};
+
+type FilterOption = {
+  id: string;
+  name: string;
+};
+
+type ReportFilterState = {
+  startDate: string;
+  endDate: string;
+  type?: TransactionType;
+  categoryId?: string;
+  qualityRating?: QualityRating;
+  moneySourceId?: string;
+  projectId?: string;
+  savingGoalId?: string;
+  groupBy: "day" | "week" | "month";
+};
+
+type ReportFilterOptions = {
+  categories: FilterOption[];
+  moneySources: FilterOption[];
+  projects: FilterOption[];
+  savingGoals: FilterOption[];
 };
 
 type ReportsClientProps = {
+  formatSettings: UserFormatSettings;
+  filters: ReportFilterState;
+  filterOptions: ReportFilterOptions;
   incomeVsExpense: MoneyPoint[];
   expenseByCategory: NamedTotal[];
   qualityBreakdown: NamedTotal[];
@@ -87,7 +126,9 @@ type ReportsClientProps = {
   recurringExpensePerMonth: MoneyPoint[];
 };
 
-type CurrencyTooltipProps = Partial<TooltipContentProps>;
+type CurrencyTooltipProps = Partial<TooltipContentProps> & {
+  formatSettings: UserFormatSettings;
+};
 
 const chartColors = [
   "#0f766e",
@@ -114,16 +155,11 @@ const tabs = [
 
 type TabId = (typeof tabs)[number]["id"];
 
-function formatMoney(amount: number, currency = "VND") {
-  return new Intl.NumberFormat("en-US", {
-    currency,
-    maximumFractionDigits: 0,
-    style: "currency"
-  }).format(amount);
-}
+const transactionTypes = Object.values(TransactionType);
+const qualityRatings = Object.values(QualityRating);
 
-function formatPercent(amount: number) {
-  return `${amount.toFixed(1)}%`;
+function formatPercent(amount: DecimalInput) {
+  return `${presentationNumber(amount).toFixed(1)}%`;
 }
 
 function reportIsEmpty(data: unknown[]) {
@@ -153,8 +189,11 @@ function ReportPanel({
     return (
       <EmptyState
         cta={
-          <a href="#report-range">
-            <Button variant="outline">Change Date Range</Button>
+          <a
+            className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary md:min-h-0"
+            href="#report-filters"
+          >
+            Change filters
           </a>
         }
         title={
@@ -170,7 +209,12 @@ function ReportPanel({
   return <Card title={title}>{children}</Card>;
 }
 
-function CurrencyTooltip({ active, payload, label }: CurrencyTooltipProps) {
+function CurrencyTooltip({
+  active,
+  formatSettings,
+  payload,
+  label
+}: CurrencyTooltipProps) {
   if (!active || !payload?.length) {
     return null;
   }
@@ -180,7 +224,14 @@ function CurrencyTooltip({ active, payload, label }: CurrencyTooltipProps) {
       <p className="mb-1 font-medium text-slate-950">{label}</p>
       {payload.map((item, index) => (
         <p className="text-slate-600" key={String(item.dataKey ?? item.name ?? index)}>
-          {item.name}: {formatMoney(Number(item.value))}
+          {item.name}:{" "}
+          {formatUserMoney(
+            String(
+              item.payload?.[`${String(item.dataKey)}Text`] ?? item.value ?? 0
+            ),
+            formatSettings.defaultCurrency,
+            formatSettings
+          )}
         </p>
       ))}
     </div>
@@ -188,11 +239,13 @@ function CurrencyTooltip({ active, payload, label }: CurrencyTooltipProps) {
 }
 
 function TotalTable({
+  formatSettings,
   label,
   rows
 }: {
+  formatSettings: UserFormatSettings;
   label: string;
-  rows: Array<{ name: string; total: number; count?: number }>;
+  rows: Array<{ name: string; total: number; totalText: string; count?: number }>;
 }) {
   return (
     <div className="mt-6 overflow-x-auto">
@@ -212,7 +265,11 @@ function TotalTable({
               </td>
               <td className="px-4 py-3 text-slate-600">{row.count ?? "-"}</td>
               <td className="px-4 py-3 text-right font-semibold text-slate-950">
-                {formatMoney(row.total)}
+                {formatUserMoney(
+                  row.totalText,
+                  formatSettings.defaultCurrency,
+                  formatSettings
+                )}
               </td>
             </tr>
           ))}
@@ -222,10 +279,269 @@ function TotalTable({
   );
 }
 
+function selectedOptionName(options: FilterOption[], selectedId?: string) {
+  if (!selectedId) {
+    return undefined;
+  }
+
+  return options.find(({ id }) => id === selectedId)?.name ?? selectedId;
+}
+
+function ReportFilterPanel({
+  filters,
+  formatSettings,
+  options
+}: {
+  filters: ReportFilterState;
+  formatSettings: UserFormatSettings;
+  options: ReportFilterOptions;
+}) {
+  const activeFilters = [
+    filters.startDate
+      ? {
+          label: "From",
+          value: formatUserDate(filters.startDate, formatSettings)
+        }
+      : null,
+    filters.endDate
+      ? {
+          label: "Through",
+          value: formatUserDate(filters.endDate, formatSettings)
+        }
+      : null,
+    filters.type ? { label: "Type", value: filters.type } : null,
+    filters.categoryId
+      ? {
+          label: "Category",
+          value: selectedOptionName(options.categories, filters.categoryId)
+        }
+      : null,
+    filters.qualityRating
+      ? { label: "Quality", value: filters.qualityRating }
+      : null,
+    filters.moneySourceId
+      ? {
+          label: "Source",
+          value: selectedOptionName(
+            options.moneySources,
+            filters.moneySourceId
+          )
+        }
+      : null,
+    filters.projectId
+      ? {
+          label: "Project",
+          value: selectedOptionName(options.projects, filters.projectId)
+        }
+      : null,
+    filters.savingGoalId
+      ? {
+          label: "Goal",
+          value: selectedOptionName(options.savingGoals, filters.savingGoalId)
+        }
+      : null,
+    filters.groupBy
+      ? {
+          label: "Group",
+          value:
+            filters.groupBy.charAt(0).toUpperCase() + filters.groupBy.slice(1)
+        }
+      : null
+  ].filter(
+    (filter): filter is { label: string; value: string } =>
+      filter !== null && filter.value !== undefined
+  );
+
+  return (
+    <section
+      className="scroll-mt-6 overflow-hidden rounded-xl border border-slate-200/70 bg-card-bg shadow-sm"
+      id="report-filters"
+    >
+      <div className="border-b border-slate-200/70 px-4 py-3 sm:px-5">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h2 className="font-semibold text-slate-950">Report filters</h2>
+            <p className="mt-0.5 text-xs text-slate-500" id="report-filter-help">
+              Use the dimensions that matter to this audit. Every selection
+              stays in the URL.
+            </p>
+          </div>
+          <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
+            {activeFilters.length} active filters
+          </span>
+        </div>
+      </div>
+
+      <form
+        aria-describedby="report-filter-help"
+        className="grid gap-3 p-4 sm:grid-cols-2 sm:p-5 lg:grid-cols-3 xl:grid-cols-5"
+        method="get"
+      >
+        <label>
+          <span className="text-xs font-medium text-slate-700">Start date</span>
+          <Input
+            className="mt-1"
+            defaultValue={filters.startDate}
+            name="startDate"
+            type="date"
+          />
+        </label>
+        <label>
+          <span className="text-xs font-medium text-slate-700">End date</span>
+          <Input
+            className="mt-1"
+            defaultValue={filters.endDate}
+            name="endDate"
+            type="date"
+          />
+        </label>
+        <label>
+          <span className="text-xs font-medium text-slate-700">
+            Transaction type
+          </span>
+          <Select className="mt-1" defaultValue={filters.type ?? ""} name="type">
+            <option value="">All types</option>
+            {transactionTypes.map((type) => (
+              <option key={type} value={type}>
+                {type}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label>
+          <span className="text-xs font-medium text-slate-700">Category</span>
+          <Select
+            className="mt-1"
+            defaultValue={filters.categoryId ?? ""}
+            name="categoryId"
+          >
+            <option value="">All categories</option>
+            {options.categories.map((category) => (
+              <option key={category.id} value={category.id}>
+                {category.name}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label>
+          <span className="text-xs font-medium text-slate-700">Quality</span>
+          <Select
+            className="mt-1"
+            defaultValue={filters.qualityRating ?? ""}
+            name="qualityRating"
+          >
+            <option value="">All ratings</option>
+            {qualityRatings.map((rating) => (
+              <option key={rating} value={rating}>
+                {rating}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label>
+          <span className="text-xs font-medium text-slate-700">
+            Account or wallet
+          </span>
+          <Select
+            className="mt-1"
+            defaultValue={filters.moneySourceId ?? ""}
+            name="moneySourceId"
+          >
+            <option value="">All sources</option>
+            {options.moneySources.map((source) => (
+              <option key={source.id} value={source.id}>
+                {source.name}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label>
+          <span className="text-xs font-medium text-slate-700">Project</span>
+          <Select
+            className="mt-1"
+            defaultValue={filters.projectId ?? ""}
+            name="projectId"
+          >
+            <option value="">All projects</option>
+            {options.projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label>
+          <span className="text-xs font-medium text-slate-700">Saving goal</span>
+          <Select
+            className="mt-1"
+            defaultValue={filters.savingGoalId ?? ""}
+            name="savingGoalId"
+          >
+            <option value="">All goals</option>
+            {options.savingGoals.map((goal) => (
+              <option key={goal.id} value={goal.id}>
+                {goal.name}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label>
+          <span className="text-xs font-medium text-slate-700">Group by</span>
+          <Select
+            className="mt-1"
+            defaultValue={filters.groupBy}
+            name="groupBy"
+          >
+            <option value="day">Day</option>
+            <option value="week">Week</option>
+            <option value="month">Month</option>
+          </Select>
+        </label>
+        <div className="flex items-end gap-2 sm:col-span-2 lg:col-span-3 xl:col-span-1">
+          <Button className="flex-1" type="submit">
+            Apply filters
+          </Button>
+          <a
+            className="inline-flex min-h-11 flex-1 items-center justify-center rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary md:min-h-0"
+            href="/reports"
+          >
+            Reset filters
+          </a>
+        </div>
+      </form>
+
+      <div
+        aria-label="Active report filters"
+        className="border-t border-slate-200/70 bg-slate-50/80 px-4 py-3 sm:px-5"
+      >
+        <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.14em] text-slate-500">
+          Active filter context
+        </p>
+        <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+          {activeFilters.map((filter) => (
+            <span
+              className="shrink-0 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 shadow-sm"
+              key={filter.label}
+            >
+              <span className="font-semibold text-slate-950">
+                {filter.label}
+              </span>{" "}
+              {filter.value}
+            </span>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function ReportsClient({
   creditCardDebt,
   expenseByCategory,
   feeWaivers,
+  filterOptions,
+  filters,
+  formatSettings,
   goalProgress,
   incomeVsExpense,
   projectProfitLoss,
@@ -234,12 +550,34 @@ export function ReportsClient({
   spendingBySource,
   upcomingRenewalsByMonth
 }: ReportsClientProps) {
+  const formatMoney = (
+    amount: DecimalInput,
+    currency = formatSettings.defaultCurrency
+  ) => formatUserMoney(amount, currency, formatSettings);
   const [activeTab, setActiveTab] = useState<TabId>("income-expense");
+  const incomeExpenseChartData = useMemo(
+    () =>
+      incomeVsExpense.map((item) => ({
+        period: item.period,
+        income:
+          item.income === undefined
+            ? undefined
+            : presentationNumber(item.income),
+        incomeText: item.income,
+        expense:
+          item.expense === undefined
+            ? undefined
+            : presentationNumber(item.expense),
+        expenseText: item.expense
+      })),
+    [incomeVsExpense]
+  );
   const categoryChartData = useMemo(
     () =>
       expenseByCategory.map((item) => ({
         name: item.categoryName ?? "Uncategorized",
-        total: item.total
+        total: presentationNumber(item.total),
+        totalText: item.total
       })),
     [expenseByCategory]
   );
@@ -248,7 +586,8 @@ export function ReportsClient({
       qualityBreakdown.map((item) => ({
         count: item.count,
         name: item.rating ?? "Unrated",
-        total: item.total
+        total: presentationNumber(item.total),
+        totalText: item.total
       })),
     [qualityBreakdown]
   );
@@ -256,22 +595,64 @@ export function ReportsClient({
     () =>
       spendingBySource.map((item) => ({
         name: item.sourceName ?? "Unknown source",
-        total: item.total
+        total: presentationNumber(item.total),
+        totalText: item.total
       })),
     [spendingBySource]
+  );
+  const projectChartData = useMemo(
+    () =>
+      projectProfitLoss.map((project) => ({
+        ...project,
+        totalIncome: presentationNumber(project.totalIncome),
+        totalIncomeText: project.totalIncome,
+        totalExpense: presentationNumber(project.totalExpense),
+        totalExpenseText: project.totalExpense,
+        profit: presentationNumber(project.profit),
+        profitText: project.profit
+      })),
+    [projectProfitLoss]
+  );
+  const upcomingRenewalChartData = useMemo(
+    () =>
+      upcomingRenewalsByMonth.map((item) => ({
+        period: item.period,
+        total: presentationNumber(item.total ?? 0),
+        totalText: item.total
+      })),
+    [upcomingRenewalsByMonth]
+  );
+  const recurringExpenseChartData = useMemo(
+    () =>
+      recurringExpensePerMonth.map((item) => ({
+        period: item.period,
+        total: presentationNumber(item.total ?? 0),
+        totalText: item.total
+      })),
+    [recurringExpensePerMonth]
   );
 
   return (
     <section className="space-y-5">
-      <nav className="flex gap-2 overflow-x-auto rounded-xl border border-slate-200/70 bg-card-bg p-2 shadow-sm">
+      <ReportFilterPanel
+        filters={filters}
+        formatSettings={formatSettings}
+        options={filterOptions}
+      />
+
+      <nav
+        aria-label="Report views"
+        className="flex gap-2 overflow-x-auto rounded-xl border border-slate-200/70 bg-card-bg p-2 shadow-sm"
+      >
         {tabs.map((tab) => (
           <button
             className={[
-              "min-h-11 shrink-0 rounded-md px-3 py-2 text-sm font-medium transition md:min-h-0",
+              "min-h-11 shrink-0 rounded-md px-3 py-2 text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary md:min-h-0",
               activeTab === tab.id
                 ? "bg-primary text-white"
                 : "text-slate-600 hover:bg-slate-100 hover:text-slate-950"
             ].join(" ")}
+            aria-pressed={activeTab === tab.id}
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
             type="button"
@@ -288,11 +669,17 @@ export function ReportsClient({
         >
           <div className="h-80">
             <ResponsiveContainer height="100%" width="100%">
-              <LineChart data={incomeVsExpense}>
+              <LineChart data={incomeExpenseChartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="period" />
-                <YAxis tickFormatter={(value) => formatMoney(Number(value))} />
-                <Tooltip content={<CurrencyTooltip />} />
+                <YAxis
+                  tickFormatter={(value) =>
+                    formatMoney(presentationNumber(value))
+                  }
+                />
+                <Tooltip
+                  content={<CurrencyTooltip formatSettings={formatSettings} />}
+                />
                 <Legend />
                 <Line
                   dataKey="income"
@@ -335,12 +722,18 @@ export function ReportsClient({
                     />
                   ))}
                 </Pie>
-                <Tooltip content={<CurrencyTooltip />} />
+                <Tooltip
+                  content={<CurrencyTooltip formatSettings={formatSettings} />}
+                />
                 <Legend />
               </PieChart>
             </ResponsiveContainer>
           </div>
-          <TotalTable label="Category" rows={categoryChartData} />
+          <TotalTable
+            formatSettings={formatSettings}
+            label="Category"
+            rows={categoryChartData}
+          />
         </ReportPanel>
       ) : null}
 
@@ -365,12 +758,18 @@ export function ReportsClient({
                     />
                   ))}
                 </Pie>
-                <Tooltip content={<CurrencyTooltip />} />
+                <Tooltip
+                  content={<CurrencyTooltip formatSettings={formatSettings} />}
+                />
                 <Legend />
               </PieChart>
             </ResponsiveContainer>
           </div>
-          <TotalTable label="Rating" rows={qualityChartData} />
+          <TotalTable
+            formatSettings={formatSettings}
+            label="Rating"
+            rows={qualityChartData}
+          />
         </ReportPanel>
       ) : null}
 
@@ -411,11 +810,17 @@ export function ReportsClient({
         >
           <div className="h-80">
             <ResponsiveContainer height="100%" width="100%">
-              <BarChart data={projectProfitLoss}>
+              <BarChart data={projectChartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="projectName" />
-                <YAxis tickFormatter={(value) => formatMoney(Number(value))} />
-                <Tooltip content={<CurrencyTooltip />} />
+                <YAxis
+                  tickFormatter={(value) =>
+                    formatMoney(presentationNumber(value))
+                  }
+                />
+                <Tooltip
+                  content={<CurrencyTooltip formatSettings={formatSettings} />}
+                />
                 <Legend />
                 <Bar dataKey="totalIncome" fill="#16a34a" name="Income" />
                 <Bar dataKey="totalExpense" fill="#dc2626" name="Expense" />
@@ -470,8 +875,14 @@ export function ReportsClient({
               <BarChart data={sourceChartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="name" />
-                <YAxis tickFormatter={(value) => formatMoney(Number(value))} />
-                <Tooltip content={<CurrencyTooltip />} />
+                <YAxis
+                  tickFormatter={(value) =>
+                    formatMoney(presentationNumber(value))
+                  }
+                />
+                <Tooltip
+                  content={<CurrencyTooltip formatSettings={formatSettings} />}
+                />
                 <Bar dataKey="total" fill="#0f766e" name="Total" />
               </BarChart>
             </ResponsiveContainer>
@@ -550,11 +961,17 @@ export function ReportsClient({
         >
           <div className="h-80">
             <ResponsiveContainer height="100%" width="100%">
-              <BarChart data={upcomingRenewalsByMonth}>
+              <BarChart data={upcomingRenewalChartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="period" />
-                <YAxis tickFormatter={(value) => formatMoney(Number(value))} />
-                <Tooltip content={<CurrencyTooltip />} />
+                <YAxis
+                  tickFormatter={(value) =>
+                    formatMoney(presentationNumber(value))
+                  }
+                />
+                <Tooltip
+                  content={<CurrencyTooltip formatSettings={formatSettings} />}
+                />
                 <Bar dataKey="total" fill="#f97316" name="Total" />
               </BarChart>
             </ResponsiveContainer>
@@ -569,11 +986,17 @@ export function ReportsClient({
         >
           <div className="h-80">
             <ResponsiveContainer height="100%" width="100%">
-              <BarChart data={recurringExpensePerMonth}>
+              <BarChart data={recurringExpenseChartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="period" />
-                <YAxis tickFormatter={(value) => formatMoney(Number(value))} />
-                <Tooltip content={<CurrencyTooltip />} />
+                <YAxis
+                  tickFormatter={(value) =>
+                    formatMoney(presentationNumber(value))
+                  }
+                />
+                <Tooltip
+                  content={<CurrencyTooltip formatSettings={formatSettings} />}
+                />
                 <Bar dataKey="total" fill="#9333ea" name="Total" />
               </BarChart>
             </ResponsiveContainer>

@@ -1,11 +1,7 @@
 import { AdjustmentDirection, TransactionType } from "@prisma/client";
+import { decimal, type DecimalInput } from "@/lib/money";
 
-type DecimalLike = {
-  toNumber?: () => number;
-  toString?: () => string;
-};
-
-type BalanceAmount = number | string | DecimalLike;
+type BalanceAmount = DecimalInput;
 
 export type BalanceSource = {
   id: string;
@@ -21,28 +17,12 @@ export type BalanceTransaction = {
   adjustmentDirection?: AdjustmentDirection | null;
 };
 
-function toNumber(value: BalanceAmount) {
-  if (typeof value === "number") {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    return Number(value);
-  }
-
-  if (value.toNumber) {
-    return value.toNumber();
-  }
-
-  return Number(value.toString?.() ?? 0);
-}
-
 export function calculateTrackedBalance(
   source: BalanceSource,
   transactions: BalanceTransaction[]
 ) {
   return transactions.reduce((balance, transaction) => {
-    const amount = toNumber(transaction.amount);
+    const amount = decimal(transaction.amount);
     let next = balance;
 
     if (
@@ -51,7 +31,7 @@ export function calculateTrackedBalance(
         transaction.type === TransactionType.REFUND) &&
       transaction.toMoneySourceId === source.id
     ) {
-      next += amount;
+      next = next.plus(amount);
     }
 
     if (
@@ -59,19 +39,19 @@ export function calculateTrackedBalance(
         transaction.type === TransactionType.TRANSFER) &&
       transaction.fromMoneySourceId === source.id
     ) {
-      next -= amount;
+      next = next.minus(amount);
     }
 
     if (
       transaction.type === TransactionType.ADJUSTMENT &&
       transaction.adjustedMoneySourceId === source.id
     ) {
-      next +=
+      next =
         transaction.adjustmentDirection === AdjustmentDirection.INCREASE
-          ? amount
-          : -amount;
+          ? next.plus(amount)
+          : next.minus(amount);
     }
 
     return next;
-  }, toNumber(source.openingBalance));
+  }, decimal(source.openingBalance));
 }
