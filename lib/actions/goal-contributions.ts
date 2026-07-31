@@ -17,6 +17,7 @@ import {
   validateContributionAgainstTransaction
 } from "@/lib/calc/goals";
 import { runSerializable } from "@/lib/db/serializable";
+import { ownedRelation } from "@/lib/owned-relation";
 import { prisma } from "@/lib/prisma";
 import {
   checkAuthenticatedMutation,
@@ -106,6 +107,34 @@ export type GoalContributionActionResult = {
   ok: boolean;
   error?: string;
 };
+
+const goalContributionReadInclude = {
+  transaction: true,
+  fromMoneySource: true
+} satisfies Prisma.GoalContributionInclude;
+
+type GoalContributionRead = Prisma.GoalContributionGetPayload<{
+  include: typeof goalContributionReadInclude;
+}>;
+
+function sanitizeGoalContributionRead(
+  contribution: GoalContributionRead,
+  userId: string
+) {
+  const transaction = ownedRelation(contribution.transaction, userId);
+  const fromMoneySource = ownedRelation(
+    contribution.fromMoneySource,
+    userId
+  );
+
+  return {
+    ...contribution,
+    transactionId: transaction?.id ?? null,
+    transaction,
+    fromMoneySourceId: fromMoneySource?.id ?? null,
+    fromMoneySource
+  };
+}
 
 const contributionSaveError =
   "Unable to save contribution. Please try again.";
@@ -608,15 +637,16 @@ export async function listContributionsForGoal(goalId: string) {
   const user = await requireAuth();
   await verifyGoalOwnership(prisma, goalId, user.id);
 
-  return prisma.goalContribution.findMany({
+  const contributions = await prisma.goalContribution.findMany({
     where: {
       savingGoalId: goalId,
       userId: user.id
     },
     orderBy: { contributionDate: "desc" },
-    include: {
-      transaction: true,
-      fromMoneySource: true
-    }
+    include: goalContributionReadInclude
   });
+
+  return contributions.map((contribution) =>
+    sanitizeGoalContributionRead(contribution, user.id)
+  );
 }

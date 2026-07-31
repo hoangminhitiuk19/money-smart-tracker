@@ -48,6 +48,7 @@ import {
   createRenewal,
   deleteRenewal,
   getRenewal,
+  getUpcomingRenewals,
   listRenewals,
   markRenewalAsPaid,
   pauseRenewal,
@@ -799,5 +800,170 @@ describe("two-user ownership boundary", () => {
     expect(JSON.stringify(exportRecords)).not.toContain(
       `${fixtures.prefix} project B`
     );
+  }, 30_000);
+
+  it("sanitizes poisoned goal-contribution relations while preserving owned links", async () => {
+    authState.userId = fixtures.context.userA.id;
+    const ownedIncome = await prisma.transaction.create({
+      data: {
+        userId: fixtures.context.userA.id,
+        type: TransactionType.INCOME,
+        amount: "50.00",
+        title: `${fixtures.prefix} owned contribution income`,
+        transactionDate: new Date("2026-07-26T00:00:00.000Z"),
+        toMoneySourceId: fixtures.bankAId
+      }
+    });
+    const [poisoned, valid] = await prisma.$transaction([
+      prisma.goalContribution.create({
+        data: {
+          userId: fixtures.context.userA.id,
+          savingGoalId: fixtures.goalAId,
+          transactionId: fixtures.transactionBId,
+          fromMoneySourceId: fixtures.bankBId,
+          amount: "2.00",
+          type: ContributionType.CONTRIBUTION,
+          note: `${fixtures.prefix} poisoned contribution`,
+          contributionDate: new Date("2026-07-27T00:00:00.000Z")
+        }
+      }),
+      prisma.goalContribution.create({
+        data: {
+          userId: fixtures.context.userA.id,
+          savingGoalId: fixtures.goalAId,
+          transactionId: ownedIncome.id,
+          fromMoneySourceId: fixtures.bankAId,
+          amount: "3.00",
+          type: ContributionType.CONTRIBUTION,
+          note: `${fixtures.prefix} valid contribution`,
+          contributionDate: new Date("2026-07-28T00:00:00.000Z")
+        }
+      })
+    ]);
+
+    const contributions = await listContributionsForGoal(fixtures.goalAId);
+    const byId = new Map(
+      contributions.map((contribution) => [contribution.id, contribution])
+    );
+
+    expect(byId.get(poisoned.id)).toMatchObject({
+      id: poisoned.id,
+      transactionId: null,
+      fromMoneySourceId: null,
+      transaction: null,
+      fromMoneySource: null
+    });
+    const serializedPoisoned = JSON.stringify(byId.get(poisoned.id));
+    expect(serializedPoisoned).not.toContain(fixtures.transactionBId);
+    expect(serializedPoisoned).not.toContain(fixtures.bankBId);
+    expect(serializedPoisoned).not.toContain(`${fixtures.prefix} income B`);
+    expect(serializedPoisoned).not.toContain(`${fixtures.prefix} bank B`);
+
+    expect(byId.get(valid.id)).toMatchObject({
+      id: valid.id,
+      transactionId: ownedIncome.id,
+      fromMoneySourceId: fixtures.bankAId,
+      transaction: {
+        id: ownedIncome.id,
+        title: `${fixtures.prefix} owned contribution income`
+      },
+      fromMoneySource: {
+        id: fixtures.bankAId,
+        name: `${fixtures.prefix} bank A`
+      }
+    });
+  }, 30_000);
+
+  it("sanitizes poisoned renewal relations consistently across list reads", async () => {
+    authState.userId = fixtures.context.userA.id;
+    const today = new Date();
+    const [poisoned, valid] = await prisma.$transaction([
+      prisma.recurringPayment.create({
+        data: {
+          userId: fixtures.context.userA.id,
+          title: `${fixtures.prefix} poisoned renewal read`,
+          amount: "4.00",
+          transactionType: TransactionType.TRANSFER,
+          frequency: RenewalFrequency.MONTHLY,
+          nextDueDate: today,
+          reminderDaysBefore: 3,
+          categoryId: fixtures.categoryBId,
+          fromMoneySourceId: fixtures.bankBId,
+          toMoneySourceId: fixtures.bankB2Id,
+          projectId: fixtures.projectBId
+        }
+      }),
+      prisma.recurringPayment.create({
+        data: {
+          userId: fixtures.context.userA.id,
+          title: `${fixtures.prefix} valid renewal read`,
+          amount: "5.00",
+          transactionType: TransactionType.TRANSFER,
+          frequency: RenewalFrequency.MONTHLY,
+          nextDueDate: today,
+          reminderDaysBefore: 3,
+          categoryId: fixtures.categoryAId,
+          fromMoneySourceId: fixtures.bankAId,
+          toMoneySourceId: fixtures.bankAId,
+          projectId: fixtures.projectAId
+        }
+      })
+    ]);
+
+    const [listed, upcoming] = await Promise.all([
+      listRenewals(),
+      getUpcomingRenewals()
+    ]);
+
+    for (const renewals of [listed, upcoming]) {
+      const byId = new Map(renewals.map((renewal) => [renewal.id, renewal]));
+      expect(byId.get(poisoned.id)).toMatchObject({
+        id: poisoned.id,
+        categoryId: null,
+        fromMoneySourceId: null,
+        toMoneySourceId: null,
+        projectId: null,
+        category: null,
+        fromMoneySource: null,
+        toMoneySource: null,
+        project: null
+      });
+      const serializedPoisoned = JSON.stringify(byId.get(poisoned.id));
+      expect(serializedPoisoned).not.toContain(fixtures.categoryBId);
+      expect(serializedPoisoned).not.toContain(fixtures.bankBId);
+      expect(serializedPoisoned).not.toContain(fixtures.bankB2Id);
+      expect(serializedPoisoned).not.toContain(fixtures.projectBId);
+      expect(serializedPoisoned).not.toContain(
+        `${fixtures.prefix} category B`
+      );
+      expect(serializedPoisoned).not.toContain(`${fixtures.prefix} bank B`);
+      expect(serializedPoisoned).not.toContain(
+        `${fixtures.prefix} project B`
+      );
+
+      expect(byId.get(valid.id)).toMatchObject({
+        id: valid.id,
+        categoryId: fixtures.categoryAId,
+        fromMoneySourceId: fixtures.bankAId,
+        toMoneySourceId: fixtures.bankAId,
+        projectId: fixtures.projectAId,
+        category: {
+          id: fixtures.categoryAId,
+          name: `${fixtures.prefix} category A`
+        },
+        fromMoneySource: {
+          id: fixtures.bankAId,
+          name: `${fixtures.prefix} bank A`
+        },
+        toMoneySource: {
+          id: fixtures.bankAId,
+          name: `${fixtures.prefix} bank A`
+        },
+        project: {
+          id: fixtures.projectAId,
+          name: `${fixtures.prefix} project A`
+        }
+      });
+    }
   }, 30_000);
 });

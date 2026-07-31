@@ -22,6 +22,7 @@ import {
   validateTransactionFields
 } from "@/lib/calc/transactions";
 import { moneyText } from "@/lib/money";
+import { ownedRelation } from "@/lib/owned-relation";
 import { prisma } from "@/lib/prisma";
 import {
   checkAuthenticatedMutation,
@@ -149,6 +150,52 @@ export type RenewalActionResult = {
 export type RenewalFilters = {
   status?: RenewalStatus;
 };
+
+const renewalReadInclude = {
+  category: true,
+  fromMoneySource: true,
+  toMoneySource: true,
+  project: true
+} satisfies Prisma.RecurringPaymentInclude;
+
+type RenewalRead = Prisma.RecurringPaymentGetPayload<{
+  include: typeof renewalReadInclude;
+}>;
+
+function sanitizeRenewalRead(renewal: RenewalRead, userId: string) {
+  const category = ownedRelation(renewal.category, userId);
+  const fromMoneySource = ownedRelation(renewal.fromMoneySource, userId);
+  const toMoneySource = ownedRelation(renewal.toMoneySource, userId);
+  const project = ownedRelation(renewal.project, userId);
+
+  return {
+    ...renewal,
+    categoryId: category?.id ?? null,
+    category,
+    fromMoneySourceId: fromMoneySource?.id ?? null,
+    fromMoneySource,
+    toMoneySourceId: toMoneySource?.id ?? null,
+    toMoneySource,
+    projectId: project?.id ?? null,
+    project
+  };
+}
+
+async function findRenewalsForUser(
+  userId: string,
+  where: Prisma.RecurringPaymentWhereInput
+) {
+  const renewals = await prisma.recurringPayment.findMany({
+    where: {
+      ...where,
+      userId
+    },
+    orderBy: [{ nextDueDate: "asc" }, { title: "asc" }],
+    include: renewalReadInclude
+  });
+
+  return renewals.map((renewal) => sanitizeRenewalRead(renewal, userId));
+}
 
 function formValue(formData: FormData, key: string) {
   return formData.get(key) ?? undefined;
@@ -672,18 +719,8 @@ export async function updateRenewalFormAction(id: string, formData: FormData) {
 export async function listRenewals(filter: RenewalFilters = {}) {
   const user = await requireAuth();
 
-  return prisma.recurringPayment.findMany({
-    where: {
-      userId: user.id,
-      status: filter.status
-    },
-    orderBy: [{ nextDueDate: "asc" }, { title: "asc" }],
-    include: {
-      category: true,
-      fromMoneySource: true,
-      toMoneySource: true,
-      project: true
-    }
+  return findRenewalsForUser(user.id, {
+    status: filter.status
   });
 }
 
@@ -691,18 +728,8 @@ export async function getUpcomingRenewals() {
   const user = await requireAuth();
   const today = new Date();
 
-  const activeRenewals = await prisma.recurringPayment.findMany({
-    where: {
-      userId: user.id,
-      status: RenewalStatus.ACTIVE
-    },
-    orderBy: [{ nextDueDate: "asc" }, { title: "asc" }],
-    include: {
-      category: true,
-      fromMoneySource: true,
-      toMoneySource: true,
-      project: true
-    }
+  const activeRenewals = await findRenewalsForUser(user.id, {
+    status: RenewalStatus.ACTIVE
   });
 
   return activeRenewals.filter((renewal) =>
