@@ -1,6 +1,7 @@
 # Money Smart Tracker
 
-Next.js 15 App Router project with React 19, TypeScript, Tailwind CSS, Prisma, NextAuth v4, React Hook Form, Zod, Recharts, bcryptjs, and Vitest.
+Next.js 15 App Router project with React 19, TypeScript, Tailwind CSS, Prisma,
+NextAuth v4, React Hook Form, Zod, Recharts, bcryptjs, and Vitest.
 
 ## Prerequisites
 
@@ -36,11 +37,15 @@ npm run verify
 
 Configure only these environment variables in each environment:
 
+<!-- markdownlint-disable MD013 -->
+
 | Environment | `DATABASE_URL` | `NEXTAUTH_SECRET` | `NEXTAUTH_URL` |
 | --- | --- | --- | --- |
 | Local | `postgresql://<local-user>:<local-password>@<local-endpoint>-pooler.<neon-host>/<local-database>?sslmode=require` | `<generated-local-secret-at-least-32-characters>` | `http://localhost:3000` |
 | Vercel Preview | `postgresql://<preview-user>:<preview-password>@<preview-endpoint>-pooler.<neon-host>/<preview-database>?sslmode=require` | `<generated-preview-secret-at-least-32-characters>` | `https://<preview-deployment-or-branch-url>` |
 | Vercel Production | `postgresql://<production-user>:<production-password>@<production-endpoint>-pooler.<neon-host>/<production-database>?sslmode=require` | `<generated-production-secret-at-least-32-characters>` | `https://<canonical-production-domain>` |
+
+<!-- markdownlint-enable MD013 -->
 
 Keep local values in the uncommitted `.env` file. Configure Vercel values with
 [Preview and Production environment targeting](https://vercel.com/docs/environment-variables).
@@ -68,28 +73,32 @@ After deployment, smoke test registration, login, logout, session persistence,
 access to a protected route after logout, a representative write and read, CSV
 export, a rate-limited CSV export returning 429, and the response headers.
 
-## Phase 2 backend release evidence
+## Phase 2 release evidence
 
-The post-fix sequential Node.js 22 Task 16 gate at audited head
-`5a28eb7a33f71d9a23cc925e0a2f84ace2fa2aee` completed at
-`2026-07-31T01:40:27Z`. Schema validation, all four migrations, zero-warning
-lint, typecheck, 444 unit/rendered tests, 103 PostgreSQL integration tests, the
-production dependency audit with zero vulnerabilities, and the 19-page
-production build all passed. Independent whole-branch review returned
-`APPROVED_BACKEND_GATE`, so the Phase 2 backend release gate is closed.
+The current Node.js 22 release baseline includes:
 
-See `docs/quality/phase-2-backend-audit-report.md` for exact command evidence
-and deferred development-only advisories. Vercel Preview, browser/manual QA,
-mobile QA, Preview security smoke tests, and Production deployment remain
-pending and were not run as part of the backend gate.
+- zero-warning lint, typecheck, Prisma validation, and a passing production
+  build;
+- 44 files and 473 unit/rendered tests;
+- 16 files and 105 PostgreSQL integration tests, including the
+  poisoned-relation regressions;
+- all four migrations applied with none pending;
+- 199/199 traceability rows `Covered`, with no `Missing`, `Failing`, or
+  `Ambiguous` rows; and
+- a production dependency audit with 0 vulnerabilities.
 
-Task 17 local UX safeguards prepare shared destructive-action confirmation,
-the remaining protected-page skeletons, and the 375px code preflight. See
-`docs/quality/phase-2-preview-acceptance.md` for the pending Preview and manual
-checklist. Fresh local Node.js 22 automation passes 450 unit/rendered tests,
-103 PostgreSQL integration tests, the production dependency audit, and the
-19-page production build. This is not evidence of a deployment or browser
-pass.
+The protected
+[Vercel Preview](https://money-smart-tracker-preview-minhs-projects-f5a749c2.vercel.app)
+passed browser, financial-edge, domain-edge, mobile, security, and
+two-user-isolation acceptance. See the
+[Phase 2 Preview acceptance report](docs/quality/phase-2-preview-acceptance.md)
+for the complete evidence and remaining caveats. Production has not been
+deployed and is not authorized by Phase 2.
+
+The development-inclusive dependency audit still reports 7 maintenance
+advisories in test and build tooling: 3 moderate, 3 high, and 1 critical. These
+are tracked separately from the production audit in the
+[backend audit report](docs/quality/phase-2-backend-audit-report.md).
 
 ## Prisma
 
