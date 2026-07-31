@@ -1,5 +1,6 @@
+import { Prisma } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { updateUserSettings } from "@/lib/actions/settings";
+import { getUserSettings, updateUserSettings } from "@/lib/actions/settings";
 import { prisma } from "@/lib/prisma";
 import {
   checkAuthenticatedMutation,
@@ -40,7 +41,10 @@ vi.mock("@/lib/prisma", () => ({
       findUnique: vi.fn(async () => ({ passwordHash: "current-password-hash" })),
       update: vi.fn(async () => ({}))
     },
-    userSettings: { upsert: vi.fn(async () => ({})) },
+    userSettings: {
+      findUnique: vi.fn(async () => null),
+      upsert: vi.fn(async () => ({}))
+    },
     $transaction: vi.fn(async () => [])
   }
 }));
@@ -83,6 +87,39 @@ describe("settings mutation rate limiting", () => {
     expect(compare).not.toHaveBeenCalled();
     expect(hash).not.toHaveBeenCalled();
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("settings initialization", () => {
+  it("returns the persisted row to both concurrent initializers when one loses the unique race", async () => {
+    const persistedSettings = {
+      id: "settings-1",
+      userId: "user-1",
+      defaultCurrency: "VND",
+      dateFormat: "DD/MM/YYYY",
+      numberFormat: "1,000,000",
+      defaultDashboardPeriod: "Month",
+      createdAt: new Date("2026-07-31T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-31T00:00:00.000Z")
+    };
+    vi.mocked(prisma.userSettings.upsert)
+      .mockResolvedValueOnce(persistedSettings)
+      .mockRejectedValueOnce(
+        new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+          code: "P2002",
+          clientVersion: "6.19.0"
+        })
+      );
+    vi.mocked(prisma.userSettings.findUnique).mockResolvedValueOnce(
+      persistedSettings
+    );
+
+    await expect(
+      Promise.all([getUserSettings(), getUserSettings()])
+    ).resolves.toEqual([
+      { settings: persistedSettings, user: mockUser },
+      { settings: persistedSettings, user: mockUser }
+    ]);
   });
 });
 

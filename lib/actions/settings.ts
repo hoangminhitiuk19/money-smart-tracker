@@ -1,5 +1,6 @@
 "use server";
 
+import { Prisma } from "@prisma/client";
 import { compare, hash } from "bcryptjs";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
@@ -80,11 +81,32 @@ export type SettingsState = {
 
 export async function getUserSettings() {
   const user = await requireAuth();
-  const settings = await prisma.userSettings.upsert({
-    where: { userId: user.id },
-    create: { userId: user.id },
-    update: {}
-  });
+  let settings;
+
+  try {
+    settings = await prisma.userSettings.upsert({
+      where: { userId: user.id },
+      create: { userId: user.id },
+      update: {}
+    });
+  } catch (error) {
+    if (
+      !(
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      )
+    ) {
+      throw error;
+    }
+
+    settings = await prisma.userSettings.findUnique({
+      where: { userId: user.id }
+    });
+
+    if (!settings) {
+      throw error;
+    }
+  }
 
   return { settings, user };
 }
