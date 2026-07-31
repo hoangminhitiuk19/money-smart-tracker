@@ -8,11 +8,14 @@ financial, domain, and mobile follow-up returned:
 - **APPROVED_FINANCE_EDGES**
 - **APPROVED_DOMAIN_EDGES**
 - **APPROVED_MOBILE_STATES**
+- **APPROVED_POISON_SANITIZATION**
+- **APPROVED_REMOTE_RENEWAL_SANITIZATION**
 
-The application tree at `13564ee` is deployed to the stable protected
+The application tree at `5714d83` is deployed to the stable protected
 [Preview](https://money-smart-tracker-preview-minhs-projects-f5a749c2.vercel.app).
-The deployment is `Ready`, targets Preview, runs Node.js 22 in `sin1`, and uses
-the stable alias for `NEXTAUTH_URL`. Deployment Protection remains enabled,
+The final redeployment is `Ready`, targets Preview, runs Node.js 22 in `sin1`,
+and uses the stable alias for `NEXTAUTH_URL`. The alias was moved to the new
+deployment, the old Preview was removed, Deployment Protection remains enabled,
 the temporary test bypass was revoked, and exactly one final Preview remains.
 Production release remains outside Phase 2 authorization.
 
@@ -38,12 +41,12 @@ gate must rerun them before branch integration.
 | Check | Status | Evidence |
 | --- | --- | --- |
 | `npm run verify` | Passed | Lint, typecheck, Prisma validation, production dependency audit, and build passed; 44 files and 473 unit/rendered tests passed |
-| `npm run test:integration` | Passed | 16 files and 103 PostgreSQL integration tests passed |
-| Vercel deployment | Passed | Final target Preview; state Ready; Node.js 22; function region `sin1`; stable protected alias |
+| `npm run test:integration` | Passed | 16 files and 105 PostgreSQL integration tests passed, including two poisoned-relation regressions |
+| Vercel deployment | Passed | Tree `5714d83`; final target Preview; state Ready; Node.js 22; `sin1`; stable alias moved; old Preview removed |
 | Authentication | Passed | Stable `NEXTAUTH_URL`; register, login, persistence, logout, protected redirect, and relogin |
 | Protection | Passed | Deployment Protection enabled; temporary automation bypass revoked after acceptance |
 | Runtime | Passed | Final 500-entry log review found zero 5xx, error, fatal, or uniqueness events |
-| Browser reviews | Approved | `APPROVED_PREVIEW_BROWSER`, `APPROVED_FINANCE_EDGES`, `APPROVED_DOMAIN_EDGES`, and `APPROVED_MOBILE_STATES` |
+| Browser reviews | Approved | Preview, finance, domain, mobile, goal sanitization, and remote renewal sanitization reviews approved |
 
 ## Exact financial evidence
 
@@ -70,6 +73,27 @@ The normal goal over-limit message was:
 > adjustment to override.
 
 The earlier goal state before deletion was `50.0%` with `500` remaining.
+
+## Ownership-hardening evidence
+
+The final whole-branch review found that goal-contribution and renewal reads
+could expose poisoned foreign relations and identifiers. RED integration
+evidence reproduced both read-side exposures. Commit `f8c3b49` added the shared
+owned-relation sanitizer and GREEN PostgreSQL regressions for both paths,
+raising the integration total from 103 to 105. Independent review returned
+**APPROVED_POISON_SANITIZATION**.
+
+The protected Preview was redeployed and retested:
+
+- Goal-contribution evidence showed poisoned relations as `None` while valid
+  owned relation names remained visible.
+- Renewal list/detail evidence returned poisoned From `None` and To `None`.
+- Renewal edit relations were empty or `None`, with no User B identifiers or
+  names in the rendered or serialized output.
+- Valid User A renewal relations remained visible.
+- The remote renewal run returned
+  **APPROVED_REMOTE_RENEWAL_SANITIZATION**, recorded zero diagnostics, and
+  cleaned up its test records.
 
 ## Specification §29 manual QA
 
@@ -233,12 +257,22 @@ bootstrap failed safely and was removed. A Preview blocked by Git-author policy
 and a superseded Preview were also removed. The remaining deployment is the
 single protected, Ready Preview at the stable alias.
 
+### Resolved — poisoned owned-relation reads
+
+The whole-branch review identified goal-contribution and renewal read paths
+that could expose cross-user poisoned foreign relations or identifiers. Strict
+RED evidence reproduced both cases. Commit `f8c3b49` sanitized the read models,
+added two PostgreSQL regressions, and preserved valid owned relations.
+Independent review returned **APPROVED_POISON_SANITIZATION**. The final
+protected Preview goal and renewal retests passed with no User B identifiers or
+names, zero browser diagnostics, and bounded cleanup.
+
 There are no open Task 17 release blockers.
 
 ## Remaining release caveats
 
 - Run the full Task 16 gate again from the final clean tree before integration;
-  the recorded 473 unit/rendered and 103 integration tests predate that gate.
+  the recorded 473 unit/rendered and 105 integration tests predate that gate.
 - Production database provisioning and deployment remain unauthorized.
 - The loading skeleton is supported by rendered tests and code inspection, but
   did not remain onscreen long enough for a painted browser capture.
