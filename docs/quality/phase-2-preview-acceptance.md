@@ -10,6 +10,7 @@ financial, domain, and mobile follow-up returned:
 - **APPROVED_MOBILE_STATES**
 - **APPROVED_POISON_SANITIZATION**
 - **APPROVED_REMOTE_RENEWAL_SANITIZATION**
+- **APPROVED_FINAL_GATE_V2**
 
 The application tree at `5714d83` is deployed to the stable protected
 [Preview](https://money-smart-tracker-preview-minhs-projects-f5a749c2.vercel.app).
@@ -33,20 +34,27 @@ Preview. No values are recorded here:
 
 ## Automated and platform evidence
 
-The automated counts are the latest pre-final-gate baseline. The whole-phase
-gate must rerun them before branch integration.
+The clean Node.js 22 whole-phase gate at `ccde00e` returned
+**APPROVED_FINAL_GATE_V2**. This closes the Phase 2 release gate; it does not
+claim that the branch has been merged or integrated.
 
 <!-- markdownlint-disable MD013 -->
 
 | Check | Status | Evidence |
 | --- | --- | --- |
+| Clean install | Passed | Node.js 22 `npm ci` completed from the audited tree |
 | `npm run verify` | Passed | Lint, typecheck, Prisma validation, production dependency audit, and build passed; 44 files and 473 unit/rendered tests passed |
 | `npm run test:integration` | Passed | 16 files and 105 PostgreSQL integration tests passed, including two poisoned-relation regressions |
+| Prisma migrations | Passed | Four migrations current; none pending; migration-safety scan passed |
+| Traceability | Passed | 199/199 rows `Covered`; no `Missing`, `Failing`, or `Ambiguous` rows |
+| Production audit and build | Passed | Production dependency audit found 0 vulnerabilities; production build passed |
 | Vercel deployment | Passed | Tree `5714d83`; final target Preview; state Ready; Node.js 22; `sin1`; stable alias moved; old Preview removed |
+| Deployment inventory | Passed | Exactly one protected Ready Preview and zero Production deployments |
 | Authentication | Passed | Stable `NEXTAUTH_URL`; register, login, persistence, logout, protected redirect, and relogin |
 | Protection | Passed | Deployment Protection enabled; temporary automation bypass revoked after acceptance |
 | Runtime | Passed | Final 500-entry log review found zero 5xx, error, fatal, or uniqueness events |
 | Browser reviews | Approved | Preview, finance, domain, mobile, goal sanitization, and remote renewal sanitization reviews approved |
+| Final repository state | Passed | Audited worktree was clean at gate completion |
 
 ## Exact financial evidence
 
@@ -271,8 +279,6 @@ There are no open Task 17 release blockers.
 
 ## Remaining release caveats
 
-- Run the full Task 16 gate again from the final clean tree before integration;
-  the recorded 473 unit/rendered and 105 integration tests predate that gate.
 - Production database provisioning and deployment remain unauthorized.
 - The loading skeleton is supported by rendered tests and code inspection, but
   did not remain onscreen long enough for a painted browser capture.
