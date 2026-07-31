@@ -263,7 +263,7 @@ export async function deleteGoal(id: string): Promise<GoalActionResult> {
 }
 
 export async function deleteGoalFormAction(id: string) {
-  await deleteGoal(id);
+  return deleteGoal(id);
 }
 
 export async function listGoals() {

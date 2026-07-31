@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createCategory,
   deleteCategory,
+  deleteCategoryFormAction,
   updateCategory
 } from "@/lib/actions/categories";
 import { prisma } from "@/lib/prisma";
@@ -105,6 +106,21 @@ beforeEach(() => {
 });
 
 describe("category activity logging", () => {
+  it("returns a safe delete failure through the bound form action", async () => {
+    vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
+      allowed: false,
+      unavailable: false,
+      limit: 60,
+      remaining: 0,
+      retryAfterSeconds: 60
+    });
+
+    await expect(deleteCategoryFormAction("c1")).resolves.toEqual({
+      ok: false,
+      error: RATE_LIMIT_MESSAGE
+    });
+  });
+
   it("denies a rate-limited create before creating a category", async () => {
     vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
       allowed: false,

@@ -28,11 +28,13 @@ does not complete browser acceptance.
 
 | Command | Status | Evidence |
 | --- | --- | --- |
-| Focused destructive-action rendered tests | Passed | 1 file; 4/4 tests |
+| Focused confirmation-dialog rendered tests | Passed | 1 file; 6/6 keyboard and focus tests |
+| Focused destructive-action rendered tests | Passed | 1 file; 8/8 success, failure, retry, and pending tests |
+| Focused delete form-action result tests | Passed | 5 files; 78/78 tests, including all five result-forwarding contracts |
 | Focused loading-state rendered tests | Passed | 1 file; 2/2 tests |
-| `npm run verify` | Passed | Lint and typecheck passed; 40/40 files and 450/450 unit/rendered tests; Prisma schema valid; production audit found 0 vulnerabilities; build compiled with 19/19 static pages |
+| `npm run verify` | Passed | Lint and typecheck passed; 41/41 files and 465/465 unit/rendered tests; Prisma schema valid; production audit found 0 vulnerabilities; build compiled with 19/19 static pages |
 | `npm run test:integration` | Passed | 16/16 files; 103/103 PostgreSQL tests |
-| `git diff --check` | Passed | No whitespace errors |
+| `git diff --check` | Passed | No whitespace errors after confirmation hardening |
 
 The host npm 11 wrapper exports its outer `--call` value as `npm_config_call`,
 which conflicts with the verify script’s nested `npx prisma validate`.
@@ -49,7 +51,8 @@ This preflight is code/rendered inspection only, not browser acceptance.
 | Forms | Shared input, select, and button primitives use 44px mobile targets; raw checkbox/disclosure blockers were corrected | Pending |
 | Tables | Protected-page and report tables are wrapped in horizontal overflow containers | Pending |
 | Charts | Every Recharts chart is wrapped in `ResponsiveContainer` | Pending |
-| Destructive dialogs | Shared dialog is full-width on mobile, visibly focusable, named for assistive technology, and guarded against double submission | Pending |
+| Destructive dialogs | Shared dialog is full-width on mobile, starts on Cancel, traps forward/reverse focus, restores the invoking trigger, closes with Escape only when safe, and blocks duplicate submission | Pending |
+| Destructive failures | Returned safe failures and caught unexpected failures stay in the dialog as persistent alerts; controls re-enable for retry and stale errors clear after cancel/reopen | Pending |
 | Loading | Settings and Receipt Upload use skeleton-only route loading states with reduced-motion behavior | Pending |
 | Reduced motion | Global reduced-motion fallback disables smooth scrolling and shortens animation/transition duration | Pending |
 

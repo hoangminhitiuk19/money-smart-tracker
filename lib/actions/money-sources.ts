@@ -340,7 +340,7 @@ export async function deleteMoneySource(
 }
 
 export async function deleteMoneySourceFormAction(id: string) {
-  await deleteMoneySource(id);
+  return deleteMoneySource(id);
 }
 
 export async function listMoneySources() {

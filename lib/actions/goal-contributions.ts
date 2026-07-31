@@ -601,7 +601,7 @@ export async function deleteContribution(
 }
 
 export async function deleteContributionFormAction(id: string) {
-  await deleteContribution(id);
+  return deleteContribution(id);
 }
 
 export async function listContributionsForGoal(goalId: string) {

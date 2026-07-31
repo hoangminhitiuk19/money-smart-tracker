@@ -2,6 +2,7 @@ import { ContributionType, Prisma, TransactionType } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createContribution,
+  deleteContributionFormAction,
   updateContribution
 } from "@/lib/actions/goal-contributions";
 import { prisma } from "@/lib/prisma";
@@ -160,6 +161,21 @@ beforeEach(() => {
 });
 
 describe("updateContribution over-contribution guard", () => {
+  it("returns a safe delete failure through the bound form action", async () => {
+    vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
+      allowed: false,
+      unavailable: false,
+      limit: 60,
+      remaining: 0,
+      retryAfterSeconds: 60
+    });
+
+    await expect(deleteContributionFormAction("c1")).resolves.toEqual({
+      ok: false,
+      error: RATE_LIMIT_MESSAGE
+    });
+  });
+
   it("denies a rate-limited create before looking up contribution references", async () => {
     vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
       allowed: false,

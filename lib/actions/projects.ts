@@ -188,7 +188,7 @@ export async function deleteProject(id: string): Promise<ProjectActionResult> {
 }
 
 export async function deleteProjectFormAction(id: string) {
-  await deleteProject(id);
+  return deleteProject(id);
 }
 
 export async function listProjects() {

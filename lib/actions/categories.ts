@@ -209,7 +209,7 @@ export async function deleteCategory(
 }
 
 export async function deleteCategoryFormAction(id: string) {
-  await deleteCategory(id);
+  return deleteCategory(id);
 }
 
 export async function listCategories() {

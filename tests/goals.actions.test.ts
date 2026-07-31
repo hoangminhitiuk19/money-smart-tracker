@@ -1,6 +1,6 @@
 import { GoalStatus } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createGoal } from "@/lib/actions/goals";
+import { createGoal, deleteGoalFormAction } from "@/lib/actions/goals";
 import { prisma } from "@/lib/prisma";
 import {
   checkAuthenticatedMutation,
@@ -59,6 +59,21 @@ beforeEach(() => {
 });
 
 describe("goal mutation rate limiting", () => {
+  it("returns a safe delete failure through the bound form action", async () => {
+    vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
+      allowed: false,
+      unavailable: false,
+      limit: 60,
+      remaining: 0,
+      retryAfterSeconds: 60
+    });
+
+    await expect(deleteGoalFormAction("goal-1")).resolves.toEqual({
+      ok: false,
+      error: RATE_LIMIT_MESSAGE
+    });
+  });
+
   it("denies a rate-limited create before creating a saving goal", async () => {
     vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
       allowed: false,

@@ -1,6 +1,9 @@
 import { ProjectStatus } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createProject } from "@/lib/actions/projects";
+import {
+  createProject,
+  deleteProjectFormAction
+} from "@/lib/actions/projects";
 import { prisma } from "@/lib/prisma";
 import {
   checkAuthenticatedMutation,
@@ -78,6 +81,21 @@ beforeEach(() => {
 });
 
 describe("project mutation rate limiting", () => {
+  it("returns a safe delete failure through the bound form action", async () => {
+    vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
+      allowed: false,
+      unavailable: false,
+      limit: 60,
+      remaining: 0,
+      retryAfterSeconds: 60
+    });
+
+    await expect(deleteProjectFormAction("project-1")).resolves.toEqual({
+      ok: false,
+      error: RATE_LIMIT_MESSAGE
+    });
+  });
+
   it("denies a rate-limited create before creating a project", async () => {
     vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
       allowed: false,

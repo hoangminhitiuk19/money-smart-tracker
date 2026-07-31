@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createMoneySource,
   deleteMoneySource,
+  deleteMoneySourceFormAction,
   toggleMoneySourceActiveFormAction,
   updateMoneySource
 } from "@/lib/actions/money-sources";
@@ -253,6 +254,21 @@ beforeEach(() => {
 });
 
 describe("money source mutation boundaries", () => {
+  it("returns a safe delete failure through the bound form action", async () => {
+    vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
+      allowed: false,
+      unavailable: false,
+      limit: 60,
+      remaining: 0,
+      retryAfterSeconds: 60
+    });
+
+    await expect(deleteMoneySourceFormAction("ms-1")).resolves.toEqual({
+      ok: false,
+      error: RATE_LIMIT_MESSAGE
+    });
+  });
+
   it("denies a rate-limited create before creating a money source", async () => {
     vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
       allowed: false,

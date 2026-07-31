@@ -4,8 +4,13 @@ import { useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
+type DestructiveActionResult = {
+  error?: string;
+  ok: boolean;
+};
+
 type DestructiveActionButtonProps = {
-  action: () => Promise<void>;
+  action: () => Promise<void | DestructiveActionResult>;
   description: string;
   itemLabel: string;
   title: string;
@@ -19,6 +24,7 @@ export function DestructiveActionButton({
 }: DestructiveActionButtonProps) {
   const inFlight = useRef(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [isPending, setIsPending] = useState(false);
 
   async function handleConfirm() {
@@ -27,15 +33,35 @@ export function DestructiveActionButton({
     }
 
     inFlight.current = true;
+    setError(null);
     setIsPending(true);
 
     try {
-      await action();
+      const result = await action();
+      if (result && !result.ok) {
+        setError(result.error ?? "Unable to delete this item. Please try again.");
+        return;
+      }
       setConfirmOpen(false);
+    } catch {
+      setError("Unable to delete this item. Please try again.");
     } finally {
       inFlight.current = false;
       setIsPending(false);
     }
+  }
+
+  function handleCancel() {
+    if (isPending) {
+      return;
+    }
+    setError(null);
+    setConfirmOpen(false);
+  }
+
+  function handleOpen() {
+    setError(null);
+    setConfirmOpen(true);
   }
 
   return (
@@ -43,7 +69,7 @@ export function DestructiveActionButton({
       <Button
         aria-label={`Delete ${itemLabel}`}
         disabled={isPending}
-        onClick={() => setConfirmOpen(true)}
+        onClick={handleOpen}
         size="sm"
         variant="danger"
       >
@@ -53,8 +79,9 @@ export function DestructiveActionButton({
         <ConfirmDialog
           confirmAriaLabel={`Delete ${itemLabel} permanently`}
           description={description}
+          error={error}
           isPending={isPending}
-          onCancel={() => setConfirmOpen(false)}
+          onCancel={handleCancel}
           onConfirm={handleConfirm}
           pendingAriaLabel={`Deleting ${itemLabel}`}
           title={title}
