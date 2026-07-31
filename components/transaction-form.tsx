@@ -130,7 +130,8 @@ export function TransactionForm({
 }: TransactionFormProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
-  const [error, setError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [type, setType] = useState<TransactionType>(
     initialValues?.type ?? TransactionType.EXPENSE
   );
@@ -266,7 +267,7 @@ export function TransactionForm({
   }
 
   function handleSubmit(formData: FormData) {
-    setError(null);
+    setSaveError(null);
     const payload = buildPayload(formData);
 
     startTransition(async () => {
@@ -276,7 +277,7 @@ export function TransactionForm({
           : await createTransaction(payload);
 
       if (!result.ok) {
-        setError(result.error ?? "Unable to save transaction.");
+        setSaveError(result.error ?? "Unable to save transaction.");
         return;
       }
 
@@ -290,17 +291,36 @@ export function TransactionForm({
       return;
     }
 
+    setDeleteError(null);
     startTransition(async () => {
-      const result = await deleteTransaction(initialValues.id);
+      try {
+        const result = await deleteTransaction(initialValues.id);
 
-      if (!result.ok) {
-        setError(result.error ?? "Unable to delete transaction.");
-        return;
+        if (!result.ok) {
+          setDeleteError(result.error ?? "Unable to delete transaction.");
+          return;
+        }
+
+        setConfirmDeleteOpen(false);
+        router.push("/transactions");
+        router.refresh();
+      } catch {
+        setDeleteError("Unable to delete transaction. Please try again.");
       }
-
-      router.push("/transactions");
-      router.refresh();
     });
+  }
+
+  function handleDeleteCancel() {
+    if (isPending) {
+      return;
+    }
+    setDeleteError(null);
+    setConfirmDeleteOpen(false);
+  }
+
+  function handleDeleteOpen() {
+    setDeleteError(null);
+    setConfirmDeleteOpen(true);
   }
 
   return (
@@ -636,9 +656,9 @@ export function TransactionForm({
         </div>
       </Card>
 
-      {error ? (
+      {saveError ? (
         <p className="rounded-md border border-expense/20 bg-expense/10 px-3 py-2 text-sm text-expense">
-          {error}
+          {saveError}
         </p>
       ) : null}
 
@@ -652,7 +672,7 @@ export function TransactionForm({
           {isEdit ? (
             <Button
               disabled={isPending}
-              onClick={() => setConfirmDeleteOpen(true)}
+              onClick={handleDeleteOpen}
               type="button"
               variant="danger"
             >
@@ -667,8 +687,9 @@ export function TransactionForm({
       {confirmDeleteOpen ? (
         <ConfirmDialog
           description="This transaction will be permanently removed."
+          error={deleteError}
           isPending={isPending}
-          onCancel={() => setConfirmDeleteOpen(false)}
+          onCancel={handleDeleteCancel}
           onConfirm={handleDelete}
           title="Delete this transaction?"
         />

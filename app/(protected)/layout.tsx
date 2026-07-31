@@ -4,6 +4,7 @@ import { LogoutButton } from "@/components/logout-button";
 import { requireAuth } from "@/lib/auth";
 import {
   ActivityIcon,
+  CategoryIcon,
   CloseIcon,
   DashboardIcon,
   GoalIcon,
@@ -20,6 +21,7 @@ import {
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: DashboardIcon },
   { href: "/transactions", label: "Transactions", icon: TransactionsIcon },
+  { href: "/categories", label: "Categories", icon: CategoryIcon },
   { href: "/receipt-upload", label: "Receipt Upload", icon: UploadIcon },
   { href: "/goals", label: "Goals", icon: GoalIcon },
   { href: "/projects", label: "Projects", icon: ProjectIcon },
