@@ -18,6 +18,7 @@ import {
   formatUserMoney,
   type UserFormatSettings
 } from "@/lib/user-format";
+import { DestructiveActionButton } from "@/components/destructive-action-button";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -250,15 +251,12 @@ async function ProjectsPageContent() {
                           >
                             Save
                           </Button>
-                          <form action={deleteAction}>
-                            <Button
-                              size="sm"
-                              variant="danger"
-                              type="submit"
-                            >
-                              Delete
-                            </Button>
-                          </form>
+                          <DestructiveActionButton
+                            action={deleteAction}
+                            description="This project will be permanently removed."
+                            itemLabel={`${project.name} project`}
+                            title="Delete this project?"
+                          />
                         </div>
                       </td>
                     </tr>

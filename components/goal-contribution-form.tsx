@@ -146,7 +146,7 @@ export function GoalContributionForm({
             <Input className="mt-1" name="note" placeholder="Optional" />
           </label>
 
-          <label className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 md:col-span-2">
+          <label className="flex min-h-11 items-center rounded-md border border-slate-200 bg-slate-50 px-3 py-2 md:col-span-2 md:min-h-0">
             <span className="flex items-center gap-2 text-sm font-medium text-slate-800">
               <input name="isManualAdjustment" type="checkbox" />
               Manual adjustment

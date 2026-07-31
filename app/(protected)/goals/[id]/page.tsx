@@ -2,6 +2,7 @@ import { ContributionType } from "@prisma/client";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
+import { DestructiveActionButton } from "@/components/destructive-action-button";
 import { GoalContributionForm } from "@/components/goal-contribution-form";
 import {
   deleteContributionFormAction,
@@ -192,11 +193,12 @@ async function GoalDetailPageContent({
                         {contribution.note ?? ""}
                       </td>
                       <td className="px-4 py-3">
-                        <form action={deleteAction}>
-                          <Button size="sm" type="submit" variant="danger">
-                            Delete
-                          </Button>
-                        </form>
+                        <DestructiveActionButton
+                          action={deleteAction}
+                          description="This goal contribution record will be permanently removed."
+                          itemLabel={`${contribution.type.toLowerCase()} on ${contribution.contributionDate.toLocaleDateString("en-US")}`}
+                          title="Delete this contribution?"
+                        />
                       </td>
                     </tr>
                   );

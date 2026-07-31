@@ -6,6 +6,7 @@ import {
   listCategories,
   updateCategoryFormAction
 } from "@/lib/actions/categories";
+import { DestructiveActionButton } from "@/components/destructive-action-button";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -138,11 +139,11 @@ async function CategoriesPageContent() {
             <span className="text-sm font-medium text-slate-700">Icon</span>
             <Input className="mt-1" name="icon" placeholder="Optional" />
           </label>
-          <label className="flex items-center gap-2 md:col-span-2">
+          <label className="flex min-h-11 items-center gap-2 md:col-span-2 md:min-h-0">
             <input name="isDefault" type="checkbox" />
             <span className="text-sm font-medium text-slate-700">Default</span>
           </label>
-          <label className="flex items-center gap-2 md:col-span-4">
+          <label className="flex min-h-11 items-center gap-2 md:col-span-4 md:min-h-0">
             <input
               defaultChecked
               name="defaultCountTowardFeeWaiver"
@@ -283,15 +284,12 @@ async function CategoriesPageContent() {
                           >
                             Save
                           </Button>
-                          <form action={deleteAction}>
-                            <Button
-                              size="sm"
-                              variant="danger"
-                              type="submit"
-                            >
-                              Delete
-                            </Button>
-                          </form>
+                          <DestructiveActionButton
+                            action={deleteAction}
+                            description="This category will be permanently removed."
+                            itemLabel={`${category.name} category`}
+                            title="Delete this category?"
+                          />
                         </div>
                       </td>
                     </tr>

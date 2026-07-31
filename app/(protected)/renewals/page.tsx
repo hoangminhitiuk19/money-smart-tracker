@@ -271,7 +271,7 @@ function RenewalFormFields({
           placeholder="Optional"
         />
       </label>
-      <label className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 md:col-span-2 md:mt-6">
+      <label className="flex min-h-11 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 md:col-span-2 md:mt-6 md:min-h-0">
         <input
           name="countTowardFeeWaiverPresent"
           type="hidden"
@@ -286,7 +286,7 @@ function RenewalFormFields({
           Count toward fee waiver
         </span>
       </label>
-      <label className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 md:col-span-1 md:mt-6">
+      <label className="flex min-h-11 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 md:col-span-1 md:mt-6 md:min-h-0">
         <input
           defaultChecked={renewal?.autoCreateTransaction ?? false}
           name="autoCreateTransaction"
@@ -412,7 +412,7 @@ function RenewalRow({
       </div>
 
       <details className="mt-4 scroll-mt-6 rounded-md border border-slate-200 bg-slate-50 p-3" id={`edit-${renewal.id}`}>
-        <summary className="cursor-pointer text-sm font-semibold text-slate-700">
+        <summary className="flex min-h-11 cursor-pointer items-center text-sm font-semibold text-slate-700 md:min-h-0">
           Edit renewal
         </summary>
         <form action={updateAction} className="mt-3 space-y-3">
@@ -546,7 +546,7 @@ async function RenewalsPageContent({
           {renewalStatuses.map((status) => (
             <Link
               className={[
-                "min-h-9 rounded-md px-3 py-1.5 text-sm font-medium transition md:min-h-0",
+                "min-h-11 rounded-md px-3 py-1.5 text-sm font-medium transition md:min-h-0",
                 selectedStatus === status
                   ? "bg-white text-slate-950 shadow-sm"
                   : "text-slate-600 hover:text-slate-950"

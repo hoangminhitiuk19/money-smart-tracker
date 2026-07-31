@@ -83,6 +83,14 @@ and deferred development-only advisories. Vercel Preview, browser/manual QA,
 mobile QA, Preview security smoke tests, and Production deployment remain
 pending and were not run as part of the backend gate.
 
+Task 17 local UX safeguards prepare shared destructive-action confirmation,
+the remaining protected-page skeletons, and the 375px code preflight. See
+`docs/quality/phase-2-preview-acceptance.md` for the pending Preview and manual
+checklist. Fresh local Node.js 22 automation passes 450 unit/rendered tests,
+103 PostgreSQL integration tests, the production dependency audit, and the
+19-page production build. This is not evidence of a deployment or browser
+pass.
+
 ## Prisma
 
 Run migrations against your PostgreSQL database:

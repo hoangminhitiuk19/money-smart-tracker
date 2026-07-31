@@ -202,7 +202,7 @@ async function DashboardPageContent({
             ].map(([key, label]) => (
               <Link
                 className={[
-                  "min-h-9 rounded-md px-3 py-1.5 text-sm font-medium transition md:min-h-0",
+                  "min-h-11 rounded-md px-3 py-1.5 text-sm font-medium transition md:min-h-0",
                   period === key
                     ? "bg-white text-slate-950 shadow-sm"
                     : "text-slate-600 hover:text-slate-950"

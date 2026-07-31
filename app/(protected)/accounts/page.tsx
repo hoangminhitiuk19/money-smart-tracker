@@ -14,6 +14,7 @@ import {
   formatUserMoney,
   type UserFormatSettings
 } from "@/lib/user-format";
+import { DestructiveActionButton } from "@/components/destructive-action-button";
 import { MoneySourceForm } from "@/components/money-source-form";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -226,15 +227,12 @@ async function AccountsPageContent() {
                               {source.isActive ? "Deactivate" : "Activate"}
                             </Button>
                           </form>
-                          <form action={deleteAction}>
-                            <Button
-                              size="sm"
-                              variant="danger"
-                              type="submit"
-                            >
-                              Delete
-                            </Button>
-                          </form>
+                          <DestructiveActionButton
+                            action={deleteAction}
+                            description="This account or wallet will be permanently removed."
+                            itemLabel={`${source.name} account`}
+                            title="Delete this account?"
+                          />
                         </div>
                       </td>
                     </tr>

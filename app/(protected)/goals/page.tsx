@@ -18,6 +18,7 @@ import {
   formatUserMoney,
   type UserFormatSettings
 } from "@/lib/user-format";
+import { DestructiveActionButton } from "@/components/destructive-action-button";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -260,11 +261,12 @@ async function GoalsPageContent() {
                   >
                     Save
                   </Button>
-                  <form action={deleteAction}>
-                    <Button size="sm" type="submit" variant="danger">
-                      Delete
-                    </Button>
-                  </form>
+                  <DestructiveActionButton
+                    action={deleteAction}
+                    description="This goal and its contribution history will be permanently removed."
+                    itemLabel={`${goal.name} goal`}
+                    title="Delete this goal?"
+                  />
                 </div>
               </Card>
             );
