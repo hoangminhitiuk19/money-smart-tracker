@@ -68,6 +68,21 @@ After deployment, smoke test registration, login, logout, session persistence,
 access to a protected route after logout, a representative write and read, CSV
 export, a rate-limited CSV export returning 429, and the response headers.
 
+## Phase 2 backend release evidence
+
+The post-fix sequential Node.js 22 Task 16 gate at audited head
+`5a28eb7a33f71d9a23cc925e0a2f84ace2fa2aee` completed at
+`2026-07-31T01:40:27Z`. Schema validation, all four migrations, zero-warning
+lint, typecheck, 444 unit/rendered tests, 103 PostgreSQL integration tests, the
+production dependency audit with zero vulnerabilities, and the 19-page
+production build all passed. Independent whole-branch review returned
+`APPROVED_BACKEND_GATE`, so the Phase 2 backend release gate is closed.
+
+See `docs/quality/phase-2-backend-audit-report.md` for exact command evidence
+and deferred development-only advisories. Vercel Preview, browser/manual QA,
+mobile QA, Preview security smoke tests, and Production deployment remain
+pending and were not run as part of the backend gate.
+
 ## Prisma
 
 Run migrations against your PostgreSQL database:

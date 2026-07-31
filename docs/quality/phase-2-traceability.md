@@ -6,6 +6,17 @@ an exhaustive two-user action boundary, and a real two-user CSV route suite.
 Every row below now links to passing unit/rendered evidence or real PostgreSQL
 evidence. `—` means the other evidence level is not needed for that row.
 
+Task 16 reran the complete post-fix automated backend gate sequentially under
+Node.js 22 at audited head `5a28eb7a33f71d9a23cc925e0a2f84ace2fa2aee`.
+The gate completed at `2026-07-31T01:40:27Z`: 444/444 unit/rendered tests and
+103/103 PostgreSQL integration tests passed, all four migrations were current,
+the production dependency audit found zero vulnerabilities, and the 19-page
+production build passed. Independent whole-branch review returned
+`APPROVED_BACKEND_GATE`; the backend gate is closed with all 199/199 rows
+`Covered`. Vercel Preview, specification §29 browser/manual/mobile QA, Preview
+security smoke tests, and Production deployment remain pending and were not
+run. See `docs/quality/phase-2-backend-audit-report.md`.
+
 | Rule | Implementation | Unit evidence | DB evidence | Status | Disposition |
 | --- | --- | --- | --- | --- | --- |
 | §6.1 Directional model has `fromMoneySourceId` and `toMoneySourceId`, never a single ambiguous source ID | `prisma/schema.prisma`, `lib/actions/transactions.ts` | `tests/transactions.test.ts` exact type matrix | `tests/integration/transactions.integration.test.ts` persists all five directional shapes | Covered | Tasks 6/15 |
