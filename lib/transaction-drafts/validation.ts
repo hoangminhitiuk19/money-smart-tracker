@@ -349,22 +349,27 @@ export function computeDraftFingerprint(
 export function findDuplicateDraftPositions(
   drafts: readonly TransactionDraftInput[]
 ): Set<number> {
-  const seenByCapture = new Map<string, Set<string>>();
+  const captureKey = drafts[0]?.captureKey;
+  if (drafts.some((draft) => draft.captureKey !== captureKey)) {
+    throw new Error("Drafts must belong to one capture session.");
+  }
+
+  const seen = new Set<string>();
   const duplicatePositions = new Set<number>();
 
-  for (const draft of drafts) {
+  for (const draft of [...drafts].sort(
+    (left, right) => left.position - right.position
+  )) {
     const fingerprint = computeDraftFingerprint(draft);
     if (!fingerprint) {
       continue;
     }
 
-    const seen = seenByCapture.get(draft.captureKey) ?? new Set<string>();
     if (seen.has(fingerprint)) {
       duplicatePositions.add(draft.position);
     } else {
       seen.add(fingerprint);
     }
-    seenByCapture.set(draft.captureKey, seen);
   }
 
   return duplicatePositions;

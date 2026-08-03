@@ -478,21 +478,29 @@ describe("draft duplicate detection", () => {
     expect(computeDraftFingerprint(draft({ title: null }))).toBeNull();
   });
 
-  it("marks only repeated later positions within the same capture session", () => {
-    const first = draft({ position: 4 });
-    const repeated = draft({ position: 9 });
+  it("marks only later numeric positions when rows arrive out of order", () => {
+    const later = draft({ position: 9 });
+    const earlier = draft({ position: 4 });
     const otherDate = draft({
       position: 10,
       transactionDateText: "2026-08-04"
     });
+
+    expect(findDuplicateDraftPositions([later, earlier, otherDate])).toEqual(
+      new Set([9])
+    );
+  });
+
+  it("rejects rows from mixed capture sessions", () => {
     const otherCapture = draft({
       captureKey: "95cf7e69-b914-4b8e-b90a-59d7691cc32f",
-      position: 12
+      position: 1,
+      transactionDateText: "2026-08-04"
     });
 
-    expect(
-      findDuplicateDraftPositions([first, repeated, otherDate, otherCapture])
-    ).toEqual(new Set([9]));
+    expect(() =>
+      findDuplicateDraftPositions([draft({ position: 1 }), otherCapture])
+    ).toThrow(/capture session/i);
   });
 
   it("requires explicit confirmation before a repeated row becomes ready", () => {
