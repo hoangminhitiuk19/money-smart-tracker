@@ -1,7 +1,8 @@
-import { TransactionDraftOrigin, TransactionType } from "@prisma/client";
+import { Prisma, TransactionDraftOrigin, TransactionType } from "@prisma/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   dismissTransactionDrafts,
+  importTransactionDrafts,
   listTransactionDrafts,
   savePasteDrafts,
   saveQuickDraft,
@@ -173,6 +174,9 @@ const fakeDb = {
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     $transaction: vi.fn(async (operation: any) => operation(fakeDbState.current)),
+    transactionImportBatch: {
+      findUnique: vi.fn()
+    },
     transactionDraft: {
       findMany: vi.fn((...args: any[]) =>
         fakeDbState.current.transactionDraft.findMany(...args)
@@ -225,6 +229,7 @@ beforeEach(() => {
   activities = [];
   nextId = 1;
   fakeDbState.current = fakeDb;
+  vi.mocked(prisma.transactionImportBatch.findUnique).mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -479,5 +484,88 @@ describe("transaction draft owned reads and mutations", () => {
     ).resolves.toEqual({ ok: true, dismissedCount: 2 });
     expect(activities[0].metadata).toEqual({ count: 2, origin: "MIXED" });
     expect(Object.keys(activities[0].metadata)).toEqual(["count", "origin"]);
+  });
+});
+
+describe("transaction draft import input boundary", () => {
+  const draftId = "clz0000000000000000000000";
+  const anotherDraftId = "clz0000000000000000000001";
+  const idempotencyKey = "3f99c1db-3c04-4f1d-a430-cdcb31cdd744";
+
+  it("rejects duplicate and oversized selections before opening a transaction", async () => {
+    const duplicate = await importTransactionDrafts({
+      ids: [draftId, draftId],
+      idempotencyKey
+    });
+    const oversized = await importTransactionDrafts({
+      ids: Array.from(
+        { length: 201 },
+        (_, index) => `clz${index.toString(36).padStart(22, "0")}`
+      ),
+      idempotencyKey
+    });
+
+    expect(duplicate).toEqual({
+      ok: false,
+      error: "Select each draft once."
+    });
+    expect(oversized).toMatchObject({ ok: false });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("rate-limits imports before any write", async () => {
+    vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
+      allowed: false,
+      unavailable: false,
+      limit: 60,
+      remaining: 0,
+      retryAfterSeconds: 30
+    });
+
+    await expect(
+      importTransactionDrafts({ ids: [anotherDraftId], idempotencyKey })
+    ).resolves.toEqual({ ok: false, error: RATE_LIMIT_MESSAGE });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("recovers a P2002 race only for the completed identical selection", async () => {
+    const conflict = new Prisma.PrismaClientKnownRequestError(
+      "unique import batch",
+      { clientVersion: "6.19.0", code: "P2002" }
+    );
+    const completed = {
+      id: "batch-1",
+      userId: mockUser.id,
+      idempotencyKey,
+      origin: TransactionDraftOrigin.PASTE,
+      status: "IMPORTED",
+      draftIds: [draftId],
+      transactionIds: ["transaction-1"],
+      createdAt: new Date("2026-08-04T00:00:00.000Z"),
+      updatedAt: new Date("2026-08-04T00:00:00.000Z")
+    } as any;
+    vi.mocked(prisma.$transaction).mockRejectedValueOnce(conflict);
+    vi.mocked(prisma.transactionImportBatch.findUnique).mockResolvedValueOnce(
+      completed
+    );
+
+    await expect(
+      importTransactionDrafts({ ids: [draftId], idempotencyKey })
+    ).resolves.toEqual({
+      ok: true,
+      transactionIds: ["transaction-1"],
+      importedCount: 1
+    });
+
+    vi.mocked(prisma.$transaction).mockRejectedValueOnce(conflict);
+    vi.mocked(prisma.transactionImportBatch.findUnique).mockResolvedValueOnce(
+      completed
+    );
+    await expect(
+      importTransactionDrafts({ ids: [anotherDraftId], idempotencyKey })
+    ).resolves.toEqual({
+      ok: false,
+      error: "This save key was already used for another selection."
+    });
   });
 });

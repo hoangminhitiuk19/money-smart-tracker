@@ -4,10 +4,13 @@ import {
   Prisma,
   TransactionDraftOrigin,
   TransactionDraftStatus,
-  type TransactionDraft
+  type TransactionDraft,
+  type TransactionImportBatch
 } from "@prisma/client";
 import { z } from "zod";
+import { transactionBatchImportedMetadata } from "@/lib/activity";
 import { requireAuth } from "@/lib/auth";
+import { runSerializable } from "@/lib/db/serializable";
 import { prisma } from "@/lib/prisma";
 import {
   checkAuthenticatedMutation,
@@ -33,11 +36,14 @@ import {
 import {
   loadOwnedTransactionReferences,
   parseTransactionCreateInput,
+  persistPreparedTransactions,
+  prepareTransactionCreate,
   type TransactionCreateData
 } from "@/lib/transactions/create";
 
 const DRAFT_RETENTION_DAYS = 30;
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1_000;
+const IMPORT_TRANSACTION_TIMEOUT_MS = 60_000;
 const INVALID_DRAFT_ERROR = "Enter valid draft data.";
 const DRAFT_NOT_FOUND_ERROR = "Draft not found.";
 
@@ -77,12 +83,36 @@ const quickDraftSchema = transactionDraftInputSchema.superRefine(
 const captureKeySchema = z.string().uuid();
 const draftIdSchema = z.string().trim().min(1).max(191);
 const dismissIdsSchema = z.array(draftIdSchema).max(MAX_DRAFT_ROWS);
+const importDraftsSchema = z
+  .object({
+    ids: z
+      .array(z.string().cuid())
+      .min(1)
+      .max(MAX_DRAFT_ROWS)
+      .refine(
+        (ids) => new Set(ids).size === ids.length,
+        "Select each draft once."
+      ),
+    idempotencyKey: z.string().uuid()
+  })
+  .strict();
+const storedIdsSchema = z.array(z.string()).max(MAX_DRAFT_ROWS);
 
 export type DraftActionResult<
   T extends object = Record<string, never>
 > =
   | ({ ok: true } & T)
   | { ok: false; error: string; draftId?: string };
+
+export type ImportTransactionDraftsInput = {
+  ids: readonly string[];
+  idempotencyKey: string;
+};
+
+export type ImportTransactionDraftsResult = DraftActionResult<{
+  transactionIds: string[];
+  importedCount: number;
+}>;
 
 function rawRowsUtf8Size(rows: readonly TransactionDraftInput[]) {
   const serialized = JSON.stringify(rows.map(({ rawRow }) => rawRow));
@@ -207,6 +237,38 @@ function actionFailure(error = INVALID_DRAFT_ERROR): {
   draftId?: string;
 } {
   return { ok: false, error };
+}
+
+function readStoredIds(value: Prisma.JsonValue) {
+  return storedIdsSchema.parse(value);
+}
+
+function sameIdSet(left: readonly string[], right: readonly string[]) {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  const sortedLeft = [...left].sort();
+  const sortedRight = [...right].sort();
+  return sortedLeft.every((id, index) => id === sortedRight[index]);
+}
+
+function completedBatchResult(
+  batch: TransactionImportBatch
+): ImportTransactionDraftsResult {
+  const transactionIds = readStoredIds(batch.transactionIds);
+  return {
+    ok: true,
+    transactionIds,
+    importedCount: transactionIds.length
+  };
+}
+
+function isUniqueConflict(error: unknown) {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === "P2002"
+  );
 }
 
 export async function savePasteDrafts(input: {
@@ -491,5 +553,210 @@ export async function dismissTransactionDrafts(
     return { ok: true, dismissedCount };
   } catch {
     return actionFailure();
+  }
+}
+
+export async function importTransactionDrafts(
+  input: ImportTransactionDraftsInput
+): Promise<ImportTransactionDraftsResult> {
+  const user = await requireAuth();
+  if (!(await mutationAllowed(user.id))) {
+    return actionFailure(RATE_LIMIT_MESSAGE);
+  }
+
+  const parsedInput = importDraftsSchema.safeParse(input);
+  if (!parsedInput.success) {
+    return actionFailure(parsedInput.error.issues[0].message);
+  }
+  const { ids, idempotencyKey } = parsedInput.data;
+
+  try {
+    return await runSerializable(async (db) => {
+      const replay = await db.transactionImportBatch.findUnique({
+        where: {
+          userId_idempotencyKey: { userId: user.id, idempotencyKey }
+        }
+      });
+      if (replay) {
+        if (!sameIdSet(readStoredIds(replay.draftIds), ids)) {
+          return actionFailure(
+            "This save key was already used for another selection."
+          );
+        }
+        return replay.status === "IMPORTED"
+          ? completedBatchResult(replay)
+          : actionFailure("This selection is already being saved.");
+      }
+
+      const drafts = await db.transactionDraft.findMany({
+        where: {
+          id: { in: ids },
+          userId: user.id,
+          status: TransactionDraftStatus.READY
+        },
+        orderBy: [{ position: "asc" }, { id: "asc" }]
+      });
+      if (drafts.length !== ids.length) {
+        return actionFailure("Review every selected draft before saving.");
+      }
+
+      const origin = drafts[0].origin;
+      if (drafts.some((draft) => draft.origin !== origin)) {
+        return actionFailure("Save QUICK and PASTE drafts in separate batches.");
+      }
+
+      const parsedRows = drafts.map((draft) => ({
+        draft,
+        parsed: parseTransactionCreateInput(
+          draftToTransactionInput(transactionDraftRecordToInput(draft))
+        )
+      }));
+      const invalid = parsedRows.find(({ parsed }) => !parsed.ok);
+      if (invalid && !invalid.parsed.ok) {
+        return {
+          ok: false,
+          error: invalid.parsed.issues[0].message,
+          draftId: invalid.draft.id
+        };
+      }
+
+      const data = parsedRows.flatMap(({ parsed }) =>
+        parsed.ok ? [parsed.data] : []
+      );
+      const references = await loadOwnedTransactionReferences(db, user.id, data);
+      const preparedRows = data.map((row, index) => ({
+        draft: drafts[index],
+        prepared: prepareTransactionCreate(row, references)
+      }));
+      const rejected = preparedRows.find(({ prepared }) => !prepared.ok);
+      if (rejected && !rejected.prepared.ok) {
+        return {
+          ok: false,
+          error: rejected.prepared.issues[0].message,
+          draftId: rejected.draft.id
+        };
+      }
+      const prepared = preparedRows.map(({ prepared }) => {
+        if (!prepared.ok) {
+          throw new Error("Prepared draft invariant failed.");
+        }
+        return prepared.data;
+      });
+
+      const batch = await db.transactionImportBatch.create({
+        data: {
+          userId: user.id,
+          idempotencyKey,
+          origin,
+          draftIds: ids
+        }
+      });
+      const locked = await db.transactionDraft.updateMany({
+        where: {
+          id: { in: ids },
+          userId: user.id,
+          status: TransactionDraftStatus.READY
+        },
+        data: {
+          status: TransactionDraftStatus.IMPORTING,
+          importBatchId: batch.id
+        }
+      });
+      if (locked.count !== ids.length) {
+        throw new Error("Drafts changed while saving.");
+      }
+
+      const transactions = await persistPreparedTransactions(
+        db,
+        user.id,
+        prepared
+      );
+      const transactionIds = transactions.map(({ id }) => id);
+
+      for (let index = 0; index < drafts.length; index += 1) {
+        const draft = drafts[index];
+        const transaction = transactions[index];
+        if (!draft || !transaction) {
+          throw new Error("Persisted transaction invariant failed.");
+        }
+        await db.transactionDraft.update({
+          where: {
+            id: draft.id,
+            userId: user.id,
+            status: TransactionDraftStatus.IMPORTING,
+            importBatchId: batch.id
+          },
+          data: {
+            status: TransactionDraftStatus.IMPORTED,
+            importBatchId: batch.id,
+            importedTransactionId: transaction.id,
+            confidence: null,
+            type: null,
+            amountText: null,
+            currency: null,
+            title: null,
+            description: null,
+            transactionDateText: null,
+            categoryId: null,
+            qualityRating: null,
+            fromMoneySourceId: null,
+            toMoneySourceId: null,
+            adjustedMoneySourceId: null,
+            adjustmentDirection: null,
+            adjustmentTarget: null,
+            projectId: null,
+            relatedTransactionId: null,
+            countTowardFeeWaiver: null,
+            recurringPaymentId: null,
+            isInstallmentRelated: false,
+            duplicateFingerprint: null,
+            duplicateConfirmed: false,
+            validationIssues: [],
+            rawRow: Prisma.DbNull
+          }
+        });
+      }
+
+      await db.activityLog.create({
+        data: {
+          userId: user.id,
+          action: "TRANSACTION_BATCH_IMPORTED",
+          entityType: "TransactionImportBatch",
+          entityId: batch.id,
+          metadata: transactionBatchImportedMetadata(
+            origin,
+            transactionIds.length
+          )
+        }
+      });
+      const completed = await db.transactionImportBatch.update({
+        where: { id: batch.id, userId: user.id },
+        data: {
+          status: "IMPORTED",
+          transactionIds
+        }
+      });
+      return completedBatchResult(completed);
+    }, undefined, IMPORT_TRANSACTION_TIMEOUT_MS);
+  } catch (error) {
+    if (!isUniqueConflict(error)) {
+      throw error;
+    }
+
+    const replay = await prisma.transactionImportBatch.findUnique({
+      where: {
+        userId_idempotencyKey: { userId: user.id, idempotencyKey }
+      }
+    });
+    if (
+      !replay ||
+      replay.status !== "IMPORTED" ||
+      !sameIdSet(readStoredIds(replay.draftIds), ids)
+    ) {
+      return actionFailure(
+        "This save key was already used for another selection."
+      );
+    }
+    return completedBatchResult(replay);
   }
 }

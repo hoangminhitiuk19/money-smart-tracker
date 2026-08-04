@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   AdjustmentDirection,
   AdjustmentTarget,
@@ -482,6 +483,47 @@ export async function persistPreparedTransaction(
   });
 
   return transaction;
+}
+
+export async function persistPreparedTransactions(
+  db: Prisma.TransactionClient,
+  userId: string,
+  preparedRows: readonly PreparedTransactionCreate[]
+): Promise<Transaction[]> {
+  if (preparedRows.length === 0) {
+    return [];
+  }
+
+  const rows: Prisma.TransactionCreateManyInput[] = preparedRows.map(
+    (prepared) => ({
+      id: randomUUID(),
+      userId,
+      ...prepared.transaction
+    })
+  );
+  const created = await db.transaction.createManyAndReturn({ data: rows });
+  const createdById = new Map(
+    created.map((transaction) => [transaction.id, transaction])
+  );
+  const transactions = rows.map(({ id }) => {
+    const transaction = id ? createdById.get(id) : undefined;
+    if (!transaction) {
+      throw new Error("Bulk transaction persistence invariant failed.");
+    }
+    return transaction;
+  });
+
+  await db.activityLog.createMany({
+    data: transactions.map((transaction) => ({
+      userId,
+      action: "TRANSACTION_CREATED",
+      entityType: "Transaction",
+      entityId: transaction.id,
+      metadata: transactionCreatedMetadata(transaction)
+    }))
+  });
+
+  return transactions;
 }
 
 export async function createOwnedTransaction(

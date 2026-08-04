@@ -4,6 +4,7 @@ import {
   Prisma,
   type MoneySource,
   type Transaction,
+  type TransactionDraftOrigin,
   type TransactionType
 } from "@prisma/client";
 import { moneyText } from "@/lib/money";
@@ -146,6 +147,18 @@ export function transactionCreatedMetadata(
     fromSourceId: transaction.fromMoneySourceId,
     toSourceId: transaction.toMoneySourceId
   };
+}
+
+export type TransactionBatchImportedMetadata = {
+  origin: TransactionDraftOrigin;
+  count: number;
+};
+
+export function transactionBatchImportedMetadata(
+  origin: TransactionDraftOrigin,
+  count: number
+): TransactionBatchImportedMetadata {
+  return { origin, count };
 }
 
 const transactionActivityKeys = [
