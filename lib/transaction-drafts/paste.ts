@@ -145,9 +145,7 @@ function tableColumns(labels: readonly string[], rows: readonly string[][]) {
   }));
 }
 
-function paddedRows(rows: readonly string[][]) {
-  const columnCount = Math.max(...rows.map((row) => row.length));
-
+function paddedRows(rows: readonly string[][], columnCount: number) {
   if (!Number.isFinite(columnCount) || columnCount === 0) {
     throw new Error("Paste input must contain at least one column.");
   }
@@ -181,21 +179,30 @@ export function parsePastedTable(text: string): ParsedTable {
     throw new Error("Paste input must be CSV or TSV.");
   }
 
-  const parsedRows = paddedRows(result.data);
-  const candidateColumns = tableColumns(parsedRows[0], parsedRows.slice(1));
+  const firstRow = result.data[0];
+
+  if (!firstRow || firstRow.length === 0) {
+    throw new Error("Paste input must contain at least one column.");
+  }
+
+  const candidateColumns = tableColumns(firstRow, result.data.slice(1));
   const detectedHeaders = detectColumnMapping(candidateColumns);
   const hasHeader =
     Object.keys(detectedHeaders.mapping).length > 0 ||
     detectedHeaders.ambiguousFields.length > 0;
-  const rows = hasHeader ? parsedRows.slice(1) : parsedRows;
+  const dataRows = hasHeader ? result.data.slice(1) : result.data;
+  const columnCount = hasHeader
+    ? firstRow.length
+    : Math.max(...result.data.map((row) => row.length));
+  const rows = paddedRows(dataRows, columnCount);
 
   if (rows.length > MAX_DRAFT_ROWS) {
     throw new Error(`Paste input cannot contain more than ${MAX_DRAFT_ROWS} rows.`);
   }
 
   const labels = hasHeader
-    ? uniqueColumnLabels(parsedRows[0])
-    : Array.from({ length: parsedRows[0].length }, (_, index) => `Column ${index + 1}`);
+    ? firstRow.map((label, index) => label || `Column ${index + 1}`)
+    : Array.from({ length: columnCount }, (_, index) => `Column ${index + 1}`);
 
   return {
     columns: tableColumns(labels, rows),

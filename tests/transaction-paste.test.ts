@@ -75,6 +75,12 @@ describe("parsePastedTable", () => {
     });
   });
 
+  it("rejects a headered data row with an extra unquoted delimiter", () => {
+    expect(() =>
+      parsePastedTable("Date,Amount\n2026-08-03,45,unexpected")
+    ).toThrow();
+  });
+
   it("counts UTF-8 bytes and data rows rather than header rows", () => {
     const text = `Date\tTitle\n${Array.from(
       { length: 200 },
@@ -118,6 +124,15 @@ describe("detectColumnMapping", () => {
       ])
     ).toEqual({
       mapping: { title: 2 },
+      ambiguousFields: ["amountText"]
+    });
+  });
+
+  it("preserves duplicate-header ambiguity through parse and detection", () => {
+    const table = parsePastedTable("Date,Amount,Amount\n2026-08-03,45,45000");
+
+    expect(detectColumnMapping(table.columns)).toEqual({
+      mapping: { transactionDateText: 0 },
       ambiguousFields: ["amountText"]
     });
   });
