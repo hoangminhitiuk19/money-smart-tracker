@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import {
   AdjustmentDirection,
   AdjustmentTarget,
@@ -863,15 +864,22 @@ describe("transaction draft PostgreSQL import atomicity", () => {
     const ids = drafts.map(({ id }) => id);
     const idempotencyKey = randomUUID();
 
+    const importAndReplayStartedAt = performance.now();
     const first = await importTransactionDrafts({ ids, idempotencyKey });
     const replay = await importTransactionDrafts({
       ids: [...ids].reverse(),
       idempotencyKey
     });
+    const importAndReplayElapsedMs =
+      performance.now() - importAndReplayStartedAt;
 
     expect(first).toMatchObject({ ok: true, importedCount: 200 });
     if (!first.ok) throw new Error(first.error);
     expect(replay).toEqual(first);
+    expect(
+      importAndReplayElapsedMs,
+      `Expected the 200-row import and replay to finish in under 60,000 ms; took ${importAndReplayElapsedMs.toFixed(1)} ms.`
+    ).toBeLessThan(60_000);
     const batch = await prisma.transactionImportBatch.findUniqueOrThrow({
       where: {
         userId_idempotencyKey: {
