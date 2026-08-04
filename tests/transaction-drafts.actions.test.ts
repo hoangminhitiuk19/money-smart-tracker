@@ -68,6 +68,9 @@ function matchesWhere(draft: FakeDraft, where: Record<string, any>) {
   if (where.status?.in && !where.status.in.includes(draft.status)) {
     return false;
   }
+  if (where.origin !== undefined && draft.origin !== where.origin) {
+    return false;
+  }
   return true;
 }
 
@@ -279,6 +282,10 @@ describe("transaction draft save contracts", () => {
       fakeRecord(expenseDraft({ position: 0 }), { origin: TransactionDraftOrigin.QUICK }),
       fakeRecord(expenseDraft({ position: 1, title: "Dinner" })),
       fakeRecord(expenseDraft({ position: 2, title: "Coffee" })),
+      fakeRecord(expenseDraft({ position: 3, title: "Email capture" }), {
+        id: "email-draft",
+        origin: TransactionDraftOrigin.EMAIL
+      }),
       fakeRecord(expenseDraft({ captureKey: "f03a2c0d-d6d2-452e-842b-bce9bdb89cc7", position: 1 }))
     ];
 
@@ -289,9 +296,15 @@ describe("transaction draft save contracts", () => {
 
     expect(result).toMatchObject({
       ok: true,
-      drafts: [{ title: "Replacement", origin: "PASTE" }]
+      drafts: [
+        { title: "Replacement", origin: "PASTE" },
+        { id: "email-draft", origin: "EMAIL" }
+      ]
     });
-    expect(drafts.filter((draft) => draft.captureKey === captureKey)).toHaveLength(1);
+    expect(drafts.filter((draft) => draft.captureKey === captureKey)).toEqual([
+      expect.objectContaining({ title: "Replacement", origin: "PASTE" }),
+      expect.objectContaining({ id: "email-draft", origin: "EMAIL" })
+    ]);
     expect(drafts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ captureKey: "f03a2c0d-d6d2-452e-842b-bce9bdb89cc7" })
@@ -395,6 +408,31 @@ describe("transaction draft owned reads and mutations", () => {
       ok: true,
       draft: { amountText: "45.000", title: "Updated lunch", status: "READY" }
     });
+  });
+
+  it("rejects a bounded patch that pushes the owned capture above one million UTF-8 bytes", async () => {
+    drafts = [
+      fakeRecord(
+        expenseDraft({ position: 0, rawRow: { Note: "x".repeat(100) } }),
+        { id: "owned-draft" }
+      ),
+      ...Array.from({ length: 199 }, (_, index) =>
+        fakeRecord(
+          expenseDraft({
+            position: index + 1,
+            title: `Row ${index + 1}`,
+            rawRow: { Note: "x".repeat(4_975) }
+          })
+        )
+      )
+    ];
+
+    await expect(
+      updateTransactionDraft("owned-draft", {
+        rawRow: { Note: "x".repeat(10_000) }
+      })
+    ).resolves.toMatchObject({ ok: false });
+    expect(fakeDb.transactionDraft.update).not.toHaveBeenCalled();
   });
 
   it("dismisses only owned IDs, clears candidate data, and logs count plus origin", async () => {

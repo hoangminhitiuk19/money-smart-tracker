@@ -324,6 +324,43 @@ describe("draft conversion and assessment", () => {
     });
   });
 
+  it("preserves unresolved reference findings when unrelated core fields are incomplete", () => {
+    const result = assessDraft(
+      draft({
+        type: null,
+        amountText: null,
+        title: null,
+        transactionDateText: null,
+        categoryId: "unresolved:categoryId:3",
+        fromMoneySourceId: "unresolved:fromMoneySourceId:2",
+        projectId: "unresolved:projectId:4",
+        rawRow: {
+          Category: "Foreign category name",
+          Source: "Foreign source name",
+          Project: "Foreign project name"
+        }
+      }),
+      ownedReferences()
+    );
+
+    expect(result).toMatchObject({
+      status: "NEEDS_REVIEW",
+      input: null,
+      issues: expect.arrayContaining([
+        { field: "type", message: expect.any(String) },
+        { field: "amountText", message: expect.any(String) },
+        { field: "title", message: expect.any(String) },
+        { field: "transactionDateText", message: expect.any(String) },
+        { field: "categoryId", message: expect.any(String) },
+        { field: "fromMoneySourceId", message: expect.any(String) },
+        { field: "projectId", message: expect.any(String) }
+      ])
+    });
+    expect(JSON.stringify(result.issues)).not.toContain("Foreign category name");
+    expect(JSON.stringify(result.issues)).not.toContain("Foreign source name");
+    expect(JSON.stringify(result.issues)).not.toContain("Foreign project name");
+  });
+
   it("addresses invalid core values and quality restrictions to their fields", () => {
     const invalidAmount = assessDraft(
       draft({ amountText: "0" }),

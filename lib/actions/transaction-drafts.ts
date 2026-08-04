@@ -256,6 +256,7 @@ export async function savePasteDrafts(input: {
         where: {
           userId: user.id,
           captureKey: parsed.data.captureKey,
+          origin: TransactionDraftOrigin.PASTE,
           position: { gte: parsed.data.rows.length }
         }
       });
@@ -377,7 +378,19 @@ export async function updateTransactionDraft(
         ...transactionDraftRecordToInput(existing),
         ...parsedPatch.data
       });
-      if (!merged.success || !hasBoundedRawRows([merged.data])) {
+      if (!merged.success) {
+        return actionFailure();
+      }
+      const captureRecords = await db.transactionDraft.findMany({
+        where: { userId: user.id, captureKey: existing.captureKey },
+        orderBy: [{ position: "asc" }, { id: "asc" }]
+      });
+      const captureInputs = captureRecords.map((record) =>
+        record.id === existing.id
+          ? merged.data
+          : transactionDraftRecordToInput(record)
+      );
+      if (!hasBoundedRawRows(captureInputs)) {
         return actionFailure();
       }
 

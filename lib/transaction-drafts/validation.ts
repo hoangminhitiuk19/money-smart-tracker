@@ -120,6 +120,39 @@ function parseFailureIssues(draft: TransactionDraftInput): DraftFieldIssue[] {
   return issues;
 }
 
+const unresolvedReferenceFields = [
+  "categoryId",
+  "fromMoneySourceId",
+  "toMoneySourceId",
+  "adjustedMoneySourceId",
+  "projectId",
+  "relatedTransactionId",
+  "recurringPaymentId"
+] as const satisfies readonly DraftField[];
+
+function unresolvedReferenceIssues(
+  draft: TransactionDraftInput
+): DraftFieldIssue[] {
+  return unresolvedReferenceFields.flatMap((field) => {
+    const value = draft[field];
+    if (
+      typeof value !== "string" ||
+      !value.trim().startsWith(`unresolved:${field}:`)
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        field,
+        message: field.includes("MoneySource")
+          ? "Referenced money source not found."
+          : "Referenced record not found."
+      }
+    ];
+  });
+}
+
 function transactionFieldToDraftField(
   field: TransactionCreateIssue["field"]
 ): DraftField {
@@ -253,11 +286,15 @@ export function assessDraft(
 
   if (!parsed.ok) {
     const fieldIssues = parseFailureIssues(draft);
+    const referenceIssues = unresolvedReferenceIssues(draft);
     const issues = withDuplicateFinding(
       draft,
-      fieldIssues.length > 0
-        ? fieldIssues
-        : canonicalIssuesToDraftIssues(parsed.issues, draft),
+      [
+        ...(fieldIssues.length > 0
+          ? fieldIssues
+          : canonicalIssuesToDraftIssues(parsed.issues, draft)),
+        ...referenceIssues
+      ],
       context.possibleDuplicate
     );
     return { status: "NEEDS_REVIEW", issues, input: null };
