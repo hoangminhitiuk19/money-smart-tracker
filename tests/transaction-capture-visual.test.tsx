@@ -2,7 +2,9 @@
 
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { renderToStaticMarkup } from "react-dom/server";
+import { act } from "react";
+import { hydrateRoot, type Root } from "react-dom/client";
+import { renderToStaticMarkup, renderToString } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import type { TransactionDraftView } from "@/lib/transaction-drafts/types";
 import {
@@ -192,6 +194,42 @@ describe("transaction capture visual system", () => {
     await user.keyboard("{ArrowLeft}");
     expect(document.activeElement).toBe(pasteTab);
     expect(pasteTab.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("hydrates stable workspace relationships when React identifier prefixes differ", async () => {
+    const captureKey = "f7ea3ae4-8b56-49f5-a6e3-39c29fe8be36";
+    const props = { ...workspaceProps, initialCaptureKey: captureKey };
+    const container = document.createElement("div");
+    container.innerHTML = renderToString(<CaptureWorkspace {...props} />, {
+      identifierPrefix: "server-"
+    });
+    document.body.append(container);
+
+    const consoleErrors: unknown[][] = [];
+    const originalConsoleError = console.error;
+    let root: Root | null = null;
+    console.error = (...arguments_) => {
+      consoleErrors.push(arguments_);
+    };
+
+    try {
+      await act(async () => {
+        root = hydrateRoot(container, <CaptureWorkspace {...props} />, {
+          identifierPrefix: "client-"
+        });
+      });
+
+      expect(consoleErrors).toEqual([]);
+      expect(
+        container.querySelector('[role="tab"]')?.id
+      ).toBe(`capture-workspace-${captureKey}-quick-tab`);
+    } finally {
+      await act(async () => {
+        root?.unmount();
+      });
+      console.error = originalConsoleError;
+      container.remove();
+    }
   });
 
   it("provides responsive review regions and removes row-settling transitions for reduced motion", () => {

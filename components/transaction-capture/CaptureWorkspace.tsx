@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  useId,
   useRef,
   useState,
   type KeyboardEvent
@@ -38,6 +37,16 @@ type CaptureMode = "quick" | "paste";
 
 const captureModes = ["quick", "paste"] as const satisfies readonly CaptureMode[];
 
+function captureWorkspaceId(captureKey: string | null) {
+  const safeCaptureKey = captureKey
+    ?.trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return `capture-workspace-${safeCaptureKey || "new"}`;
+}
+
 const modeDetails: Record<
   CaptureMode,
   { label: string; title: string; description: string }
@@ -57,11 +66,12 @@ const modeDetails: Record<
 };
 
 export function CaptureWorkspace({
+  initialCaptureKey,
   initialDrafts,
   settings
 }: CaptureWorkspaceProps) {
   const [mode, setMode] = useState<CaptureMode>("quick");
-  const tabId = useId();
+  const tabId = captureWorkspaceId(initialCaptureKey);
   const tabRefs = useRef<Record<CaptureMode, HTMLButtonElement | null>>({
     quick: null,
     paste: null
