@@ -159,11 +159,14 @@ async function TransactionsPageContent({
       <PageHeader
         action={
           <div className="flex flex-wrap gap-2">
-            <Link href={exportHref(searchParams)}>
-              <Button variant="outline">Export CSV</Button>
+            <Link href="/transactions/capture">
+              <Button variant="primary">Capture transactions</Button>
             </Link>
             <Link href="/transactions/new">
-              <Button variant="primary">Add Transaction</Button>
+              <Button variant="outline">Single entry</Button>
+            </Link>
+            <Link href={exportHref(searchParams)}>
+              <Button variant="outline">Export CSV</Button>
             </Link>
           </div>
         }
@@ -198,14 +201,14 @@ async function TransactionsPageContent({
       {transactions.length === 0 ? (
         <EmptyState
           cta={
-            <Link href="/transactions/new">
-              <Button variant="primary">Add Transaction</Button>
+            <Link href="/transactions/capture">
+              <Button variant="primary">Capture transactions</Button>
             </Link>
           }
           subtitle="Track income, expenses, transfers, refunds, and adjustments in one place."
           title={
             <>
-              No transactions yet &mdash; Add your first one
+              No transactions yet &mdash; Capture your first one
             </>
           }
         />
