@@ -66,17 +66,19 @@ afterEach(cleanup);
 
 describe("transaction capture visual system", () => {
   it("keeps pasted-row provenance visible and expands it for assistive technology", () => {
-    const markup = renderToStaticMarkup(<OriginStamp origin="PASTE" />);
+    render(<OriginStamp origin="PASTE" />);
 
-    expect(markup).toContain(">PASTE<");
-    expect(markup).toContain("Pasted spreadsheet row");
+    expect(screen.getByText("PASTE").getAttribute("aria-hidden")).toBe("true");
+    expect(screen.getByText("Pasted spreadsheet row").className).toContain(
+      "sr-only"
+    );
   });
 
   it("keeps quick-entry provenance visible and expands it for assistive technology", () => {
-    const markup = renderToStaticMarkup(<OriginStamp origin="QUICK" />);
+    render(<OriginStamp origin="QUICK" />);
 
-    expect(markup).toContain(">QUICK<");
-    expect(markup).toContain("Quick entry row");
+    expect(screen.getByText("QUICK").getAttribute("aria-hidden")).toBe("true");
+    expect(screen.getByText("Quick entry").className).toContain("sr-only");
   });
 
   it("describes review status and issue count without relying on color", () => {
@@ -125,15 +127,71 @@ describe("transaction capture visual system", () => {
     const emailTab = screen.getByRole("tab", { name: "Email (planned)" });
 
     expect(quickTab.getAttribute("aria-selected")).toBe("true");
+    expect(quickTab.tabIndex).toBe(0);
+    expect(pasteTab.tabIndex).toBe(-1);
+    expect(emailTab.tabIndex).toBe(-1);
+    expect(emailTab.getAttribute("aria-selected")).toBe("false");
     expect((emailTab as HTMLButtonElement).disabled).toBe(true);
+
+    const quickPanelId = quickTab.getAttribute("aria-controls");
+    const quickPanel = quickPanelId
+      ? document.getElementById(quickPanelId)
+      : null;
+    expect(quickPanel?.getAttribute("aria-labelledby")).toBe(quickTab.id);
 
     await user.click(pasteTab);
 
     expect(pasteTab.getAttribute("aria-selected")).toBe("true");
+    expect(pasteTab.tabIndex).toBe(0);
     expect(quickTab.getAttribute("aria-selected")).toBe("false");
+    expect(quickTab.tabIndex).toBe(-1);
     expect(
       screen.getByRole("tabpanel", { name: "Paste rows" }).textContent
     ).toContain("Bring in spreadsheet rows");
+
+    const activePanelId = pasteTab.getAttribute("aria-controls");
+    const activePanel = activePanelId
+      ? document.getElementById(activePanelId)
+      : null;
+    expect(activePanel?.getAttribute("aria-labelledby")).toBe(pasteTab.id);
+
+    const emailPanelId = emailTab.getAttribute("aria-controls");
+    const emailPanel = emailPanelId
+      ? document.getElementById(emailPanelId)
+      : null;
+    expect(emailPanel?.hidden).toBe(true);
+    expect(emailPanel?.getAttribute("aria-labelledby")).toBe(emailTab.id);
+  });
+
+  it("moves focus and selection with arrow, Home, and End keys while skipping planned email", async () => {
+    const user = userEvent.setup();
+    render(<CaptureWorkspace {...workspaceProps} />);
+
+    const quickTab = screen.getByRole("tab", { name: "Quick add" });
+    const pasteTab = screen.getByRole("tab", { name: "Paste rows" });
+    const emailTab = screen.getByRole("tab", { name: "Email (planned)" });
+
+    quickTab.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(document.activeElement).toBe(pasteTab);
+    expect(pasteTab.getAttribute("aria-selected")).toBe("true");
+
+    await user.keyboard("{ArrowRight}");
+    expect(document.activeElement).toBe(quickTab);
+    expect(quickTab.getAttribute("aria-selected")).toBe("true");
+
+    await user.keyboard("{End}");
+    expect(document.activeElement).toBe(pasteTab);
+    expect(pasteTab.getAttribute("aria-selected")).toBe("true");
+
+    await user.keyboard("{Home}");
+    expect(document.activeElement).toBe(quickTab);
+    expect(quickTab.getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).not.toBe(emailTab);
+
+    await user.keyboard("{ArrowLeft}");
+    expect(document.activeElement).toBe(pasteTab);
+    expect(pasteTab.getAttribute("aria-selected")).toBe("true");
   });
 
   it("provides responsive review regions and removes row-settling transitions for reduced motion", () => {

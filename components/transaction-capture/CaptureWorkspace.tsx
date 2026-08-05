@@ -1,6 +1,11 @@
 "use client";
 
-import { useId, useState } from "react";
+import {
+  useId,
+  useRef,
+  useState,
+  type KeyboardEvent
+} from "react";
 import type { TransactionDraftView } from "@/lib/transaction-drafts/types";
 
 type CaptureOption = {
@@ -31,6 +36,8 @@ export type CaptureWorkspaceProps = {
 
 type CaptureMode = "quick" | "paste";
 
+const captureModes = ["quick", "paste"] as const satisfies readonly CaptureMode[];
+
 const modeDetails: Record<
   CaptureMode,
   { label: string; title: string; description: string }
@@ -55,8 +62,49 @@ export function CaptureWorkspace({
 }: CaptureWorkspaceProps) {
   const [mode, setMode] = useState<CaptureMode>("quick");
   const tabId = useId();
-  const activeMode = modeDetails[mode];
+  const tabRefs = useRef<Record<CaptureMode, HTMLButtonElement | null>>({
+    quick: null,
+    paste: null
+  });
   const hasDrafts = initialDrafts.length > 0;
+
+  function activateTab(nextMode: CaptureMode, moveFocus = false) {
+    setMode(nextMode);
+    if (moveFocus) {
+      tabRefs.current[nextMode]?.focus();
+    }
+  }
+
+  function handleTabKeyDown(
+    event: KeyboardEvent<HTMLButtonElement>,
+    currentMode: CaptureMode
+  ) {
+    const currentIndex = captureModes.indexOf(currentMode);
+    let nextMode: CaptureMode | null = null;
+
+    switch (event.key) {
+      case "ArrowRight":
+        nextMode = captureModes[(currentIndex + 1) % captureModes.length];
+        break;
+      case "ArrowLeft":
+        nextMode =
+          captureModes[
+            (currentIndex - 1 + captureModes.length) % captureModes.length
+          ];
+        break;
+      case "Home":
+        nextMode = captureModes[0];
+        break;
+      case "End":
+        nextMode = captureModes[captureModes.length - 1];
+        break;
+      default:
+        return;
+    }
+
+    event.preventDefault();
+    activateTab(nextMode, true);
+  }
 
   return (
     <section className="min-w-0 overflow-x-clip bg-capture-canvas font-capture-ui text-capture-ink">
@@ -87,23 +135,28 @@ export function CaptureWorkspace({
           className="mx-auto flex max-w-[90rem] gap-1 overflow-x-auto rounded-lg border border-slate-200 bg-white p-1"
           role="tablist"
         >
-          {(Object.keys(modeDetails) as CaptureMode[]).map((modeName) => {
+          {captureModes.map((modeName) => {
             const selected = modeName === mode;
             const details = modeDetails[modeName];
 
             return (
               <button
-                aria-controls={`${tabId}-panel`}
+                aria-controls={`${tabId}-${modeName}-panel`}
                 aria-selected={selected}
                 className={`min-h-11 shrink-0 rounded-md px-4 text-sm font-semibold ${
                   selected
                     ? "bg-capture-primary text-white"
                     : "text-slate-600 hover:bg-slate-100 hover:text-capture-ink"
                 }`}
-                id={`${tabId}-${modeName}`}
+                id={`${tabId}-${modeName}-tab`}
                 key={modeName}
-                onClick={() => setMode(modeName)}
+                onClick={() => activateTab(modeName)}
+                onKeyDown={(event) => handleTabKeyDown(event, modeName)}
+                ref={(element) => {
+                  tabRefs.current[modeName] = element;
+                }}
                 role="tab"
+                tabIndex={selected ? 0 : -1}
                 type="button"
               >
                 {details.label}
@@ -113,10 +166,14 @@ export function CaptureWorkspace({
 
           <button
             aria-label="Email (planned)"
+            aria-controls={`${tabId}-email-panel`}
             aria-disabled="true"
+            aria-selected="false"
             className="flex min-h-11 shrink-0 cursor-not-allowed items-center gap-2 rounded-md px-4 text-sm font-medium text-slate-400"
             disabled
+            id={`${tabId}-email-tab`}
             role="tab"
+            tabIndex={-1}
             type="button"
           >
             Email
@@ -128,19 +185,36 @@ export function CaptureWorkspace({
       </div>
 
       <div className="mx-auto max-w-[90rem] px-4 py-5 sm:px-6 lg:px-8">
+        {captureModes.map((modeName) => {
+          const details = modeDetails[modeName];
+
+          return (
+            <div
+              aria-labelledby={`${tabId}-${modeName}-tab`}
+              className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6"
+              hidden={mode !== modeName}
+              id={`${tabId}-${modeName}-panel`}
+              key={modeName}
+              role="tabpanel"
+              tabIndex={0}
+            >
+              <h2 className="font-capture-display text-lg font-semibold">
+                {details.title}
+              </h2>
+              <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600">
+                {details.description}
+              </p>
+            </div>
+          );
+        })}
         <div
-          aria-labelledby={`${tabId}-${mode}`}
-          className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6"
-          id={`${tabId}-panel`}
+          aria-labelledby={`${tabId}-email-tab`}
+          hidden
+          id={`${tabId}-email-panel`}
           role="tabpanel"
           tabIndex={0}
         >
-          <h2 className="font-capture-display text-lg font-semibold">
-            {activeMode.title}
-          </h2>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600">
-            {activeMode.description}
-          </p>
+          Email capture is planned.
         </div>
 
         <section aria-labelledby={`${tabId}-review-heading`} className="mt-5">
