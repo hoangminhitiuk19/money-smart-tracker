@@ -1,10 +1,22 @@
 "use client";
 
+import { TransactionType } from "@prisma/client";
 import {
   useRef,
   useState,
   type KeyboardEvent
 } from "react";
+import { ColumnMapper } from "@/components/transaction-capture/ColumnMapper";
+import { PasteInput } from "@/components/transaction-capture/PasteInput";
+import { savePasteDrafts } from "@/lib/actions/transaction-drafts";
+import {
+  detectColumnMapping,
+  mapParsedRows,
+  parsePastedTable,
+  type ColumnMapping,
+  type DraftMappableField,
+  type ParsedTable
+} from "@/lib/transaction-drafts/paste";
 import type { TransactionDraftView } from "@/lib/transaction-drafts/types";
 
 type CaptureOption = {
@@ -37,6 +49,13 @@ type CaptureMode = "quick" | "paste";
 
 const captureModes = ["quick", "paste"] as const satisfies readonly CaptureMode[];
 
+function localDateText(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function captureWorkspaceId(captureKey: string | null) {
   const safeCaptureKey = captureKey
     ?.trim()
@@ -68,15 +87,157 @@ const modeDetails: Record<
 export function CaptureWorkspace({
   initialCaptureKey,
   initialDrafts,
+  options,
   settings
 }: CaptureWorkspaceProps) {
-  const [mode, setMode] = useState<CaptureMode>("quick");
+  const hasInitialPasteDrafts = initialDrafts.some(
+    ({ origin }) => origin === "PASTE"
+  );
+  const [mode, setMode] = useState<CaptureMode>(
+    hasInitialPasteDrafts ? "paste" : "quick"
+  );
+  const [drafts, setDrafts] =
+    useState<readonly TransactionDraftView[]>(initialDrafts);
+  const [pasteText, setPasteText] = useState("");
+  const [pasteTable, setPasteTable] = useState<ParsedTable | null>(null);
+  const [mapping, setMapping] = useState<ColumnMapping>({});
+  const [ambiguousFields, setAmbiguousFields] =
+    useState<readonly DraftMappableField[]>([]);
+  const [defaultType, setDefaultType] = useState<TransactionType>(
+    TransactionType.EXPENSE
+  );
+  const [pasteError, setPasteError] = useState<string | null>(null);
+  const [savingPaste, setSavingPaste] = useState(false);
+  const captureKeyRef = useRef<string | null>(initialCaptureKey);
   const tabId = captureWorkspaceId(initialCaptureKey);
   const tabRefs = useRef<Record<CaptureMode, HTMLButtonElement | null>>({
     quick: null,
     paste: null
   });
-  const hasDrafts = initialDrafts.length > 0;
+  const hasDrafts = drafts.length > 0;
+  const persistedPasteCount = drafts.filter(
+    ({ origin }) => origin === "PASTE"
+  ).length;
+
+  function friendlyPasteError(error: unknown) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("cannot exceed 1000000 UTF-8 bytes")) {
+      return "Paste input cannot exceed 1,000,000 UTF-8 bytes. Remove some rows or split the batch.";
+    }
+    if (message.includes("cannot contain more than 200 rows")) {
+      return "Paste input cannot contain more than 200 rows. Remove a row or split the batch.";
+    }
+    if (message.includes("must be CSV or TSV")) {
+      return "Use comma-separated (CSV) or tab-separated (TSV) rows.";
+    }
+    if (message.includes("inconsistent rows")) {
+      return "Make every row use the same number of columns, then try again.";
+    }
+    if (message.includes("at least one column")) {
+      return "Paste at least one spreadsheet row.";
+    }
+    return "The rows could not be read. Check separators and unmatched quotes, then try again.";
+  }
+
+  function updatePasteText(value: string) {
+    setPasteText(value);
+    setPasteError(null);
+    if (value.trim() === "") {
+      setPasteTable(null);
+      setMapping({});
+      setAmbiguousFields([]);
+      return;
+    }
+
+    try {
+      const table = parsePastedTable(value);
+      if (table.rows.length === 0) {
+        setPasteTable(null);
+        setMapping({});
+        setAmbiguousFields([]);
+        setPasteError("Add at least one data row below the headings.");
+        return;
+      }
+      const detected = detectColumnMapping(table.columns);
+      setPasteTable(table);
+      setMapping(detected.mapping);
+      setAmbiguousFields(detected.ambiguousFields);
+    } catch (error) {
+      setPasteTable(null);
+      setMapping({});
+      setAmbiguousFields([]);
+      setPasteError(friendlyPasteError(error));
+    }
+  }
+
+  function changeMapping(
+    field: DraftMappableField,
+    columnIndex: number | undefined
+  ) {
+    setMapping((current) => {
+      const next = { ...current };
+      if (columnIndex !== undefined) {
+        for (const [mappedField, mappedIndex] of Object.entries(next)) {
+          if (mappedField !== field && mappedIndex === columnIndex) {
+            delete next[mappedField as DraftMappableField];
+          }
+        }
+        next[field] = columnIndex;
+      } else {
+        delete next[field];
+      }
+      return next;
+    });
+  }
+
+  function captureKey() {
+    captureKeyRef.current ??= crypto.randomUUID();
+    return captureKeyRef.current;
+  }
+
+  async function reviewPasteRows() {
+    if (
+      !pasteTable ||
+      ambiguousFields.some((field) => mapping[field] === undefined)
+    ) {
+      return;
+    }
+
+    const nextCaptureKey = captureKey();
+    const rows = mapParsedRows(pasteTable, mapping, {
+      captureKey: nextCaptureKey,
+      defaults: {
+        currency: settings.defaultCurrency,
+        transactionDateText: localDateText(new Date()),
+        type: defaultType
+      },
+      categories: options.categories,
+      moneySources: options.moneySources,
+      projects: options.projects
+    });
+
+    setSavingPaste(true);
+    setPasteError(null);
+    try {
+      const result = await savePasteDrafts({ captureKey: nextCaptureKey, rows });
+      if (!result.ok) {
+        setPasteError(result.error);
+        return;
+      }
+      setDrafts(result.drafts);
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `/transactions/capture?capture=${nextCaptureKey}`
+      );
+    } catch {
+      setPasteError(
+        "Drafts could not be saved. Check your connection and try again."
+      );
+    } finally {
+      setSavingPaste(false);
+    }
+  }
 
   function activateTab(nextMode: CaptureMode, moveFocus = false) {
     setMode(nextMode);
@@ -214,6 +375,40 @@ export function CaptureWorkspace({
               <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600">
                 {details.description}
               </p>
+              {modeName === "paste" ? (
+                <>
+                  {persistedPasteCount > 0 ? (
+                    <p className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-capture-confirmed" role="status">
+                      {persistedPasteCount} persisted {persistedPasteCount === 1 ? "row" : "rows"} ready for review
+                    </p>
+                  ) : null}
+                  <PasteInput
+                    byteCount={new TextEncoder().encode(pasteText).byteLength}
+                    error={pasteError}
+                    onInputError={setPasteError}
+                    onTextChange={updatePasteText}
+                    rowCount={pasteTable?.rows.length ?? null}
+                    value={pasteText}
+                  />
+                  {pasteTable ? (
+                    <>
+                      <p className="mt-4 font-capture-data text-xs font-semibold text-capture-confirmed" role="status">
+                        {pasteTable.rows.length} {pasteTable.rows.length === 1 ? "row" : "rows"} detected
+                      </p>
+                      <ColumnMapper
+                        ambiguousFields={ambiguousFields}
+                        defaultType={defaultType}
+                        mapping={mapping}
+                        onDefaultTypeChange={setDefaultType}
+                        onMappingChange={changeMapping}
+                        onReview={reviewPasteRows}
+                        saving={savingPaste}
+                        table={pasteTable}
+                      />
+                    </>
+                  ) : null}
+                </>
+              ) : null}
             </div>
           );
         })}
@@ -237,7 +432,7 @@ export function CaptureWorkspace({
             </h2>
             {hasDrafts ? (
               <p className="font-capture-data text-xs text-slate-500">
-                {initialDrafts.length} {initialDrafts.length === 1 ? "row" : "rows"}
+                {drafts.length} {drafts.length === 1 ? "row" : "rows"}
               </p>
             ) : null}
           </div>
