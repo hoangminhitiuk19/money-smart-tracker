@@ -17,7 +17,11 @@ import {
   type DraftMappableField,
   type ParsedTable
 } from "@/lib/transaction-drafts/paste";
-import type { TransactionDraftView } from "@/lib/transaction-drafts/types";
+import {
+  transactionDraftInputSchema,
+  type TransactionDraftInput,
+  type TransactionDraftView
+} from "@/lib/transaction-drafts/types";
 
 type CaptureOption = {
   id: string;
@@ -49,6 +53,25 @@ type CaptureMode = "quick" | "paste";
 
 const captureModes = ["quick", "paste"] as const satisfies readonly CaptureMode[];
 
+const draftFieldLabels: Partial<
+  Record<keyof TransactionDraftInput, string>
+> = {
+  type: "Type",
+  amountText: "Amount",
+  currency: "Currency",
+  title: "Title",
+  description: "Description",
+  transactionDateText: "Date",
+  categoryId: "Category",
+  qualityRating: "Quality rating",
+  fromMoneySourceId: "From account",
+  toMoneySourceId: "To account",
+  adjustmentDirection: "Adjustment direction",
+  adjustmentTarget: "Adjustment target",
+  projectId: "Project",
+  relatedTransactionId: "Related transaction"
+};
+
 function localDateText(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -64,6 +87,53 @@ function captureWorkspaceId(captureKey: string | null) {
     .replace(/^-+|-+$/g, "");
 
   return `capture-workspace-${safeCaptureKey || "new"}`;
+}
+
+function readableRawColumnLabel(value: string) {
+  const withoutControls = Array.from(value, (character) => {
+    const code = character.charCodeAt(0);
+    const hiddenFormat =
+      code === 0x061c ||
+      (code >= 0x200b && code <= 0x200f) ||
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2060 && code <= 0x206f) ||
+      code === 0xfeff;
+    return code < 32 || (code >= 127 && code <= 159) || hiddenFormat
+      ? " "
+      : character;
+  }).join("");
+  const collapsed = withoutControls.replace(/\s+/g, " ").trim() || "Unnamed";
+  return collapsed.length > 80 ? `${collapsed.slice(0, 79)}…` : collapsed;
+}
+
+function mappedDraftPreflightError(
+  rows: readonly TransactionDraftInput[]
+): string | null {
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex];
+    const result = transactionDraftInputSchema.safeParse(row);
+    if (result.success) continue;
+
+    const issue = result.error.issues[0];
+    const field = issue.path[0];
+    const rawColumn =
+      field === "rawRow" && typeof issue.path[1] === "string"
+        ? issue.path[1]
+        : null;
+    const label = rawColumn
+      ? `“${readableRawColumnLabel(rawColumn)}” source column`
+      : typeof field === "string"
+        ? (draftFieldLabels[field as keyof TransactionDraftInput] ?? "Mapped value")
+        : "Mapped value";
+
+    if (issue.code === "too_big" && typeof issue.maximum === "number") {
+      return `Row ${rowIndex + 1}: ${label} cannot exceed ${issue.maximum.toLocaleString("en-US")} characters. Shorten this value and try again.`;
+    }
+
+    return `Row ${rowIndex + 1}: ${label} is not valid. Correct this value and try again.`;
+  }
+
+  return null;
 }
 
 const modeDetails: Record<
@@ -215,6 +285,11 @@ export function CaptureWorkspace({
       moneySources: options.moneySources,
       projects: options.projects
     });
+    const preflightError = mappedDraftPreflightError(rows);
+    if (preflightError) {
+      setPasteError(preflightError);
+      return;
+    }
 
     setSavingPaste(true);
     setPasteError(null);

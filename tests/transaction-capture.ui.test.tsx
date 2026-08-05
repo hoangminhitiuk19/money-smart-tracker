@@ -145,22 +145,73 @@ describe("spreadsheet transaction capture", () => {
     expect(usedColumnOption.disabled).toBe(true);
   });
 
-  it("updates required mapping guidance for the selected default transaction type", async () => {
-    const user = userEvent.setup();
-    await openPaste(user);
-    await pasteRows(user, "Date,Title,Amount,From,To\n2026-08-03,Coffee,45000,Wallet,Card");
+  it.each([
+    [TransactionType.INCOME, ["Date", "Title", "Amount", "To account"], ["From account"]],
+    [TransactionType.EXPENSE, ["Date", "Title", "Amount", "From account"], ["To account"]],
+    [TransactionType.TRANSFER, ["Date", "Title", "Amount", "From account", "To account"], []],
+    [TransactionType.REFUND, ["Date", "Title", "Amount", "To account"], ["From account"]],
+    [TransactionType.ADJUSTMENT, ["Date", "Title", "Amount", "Adjustment direction"], ["From account", "To account"]]
+  ])(
+    "shows the complete %s mapping guidance",
+    async (type, requiredFields, optionalFields) => {
+      const user = userEvent.setup();
+      await openPaste(user);
+      await pasteRows(
+        user,
+        "Date,Title,Amount,From,To,Adjustment direction\n2026-08-03,Coffee,45000,Wallet,Card,Increase"
+      );
 
-    await user.selectOptions(
-      await screen.findByLabelText("Default transaction type"),
-      TransactionType.TRANSFER
+      await user.selectOptions(
+        await screen.findByLabelText("Default transaction type"),
+        type
+      );
+
+      for (const field of requiredFields) {
+        expect(
+          screen.getByLabelText(`${field} column`).closest("label")?.textContent
+        ).toContain("Required");
+      }
+      for (const field of optionalFields) {
+        expect(
+          screen.getByLabelText(`${field} column`).closest("label")?.textContent
+        ).not.toContain("Required");
+      }
+      if (type === TransactionType.ADJUSTMENT) {
+        expect(
+          screen.getByRole("button", { name: "Review rows" }).parentElement
+            ?.textContent
+        ).toContain("Choose the adjusted account during row review.");
+      }
+    }
+  );
+
+  it("bounds a user-controlled source heading in preflight errors", async () => {
+    const user = userEvent.setup();
+    const longHeading = `Dangerous\u202E reference ${"Dangerous reference ".repeat(20)}`.trim();
+    const input = `Date,Title,Amount,${longHeading}\n2026-08-03,Coffee,45000,${"R".repeat(10_001)}`;
+    await openPaste(user);
+    await pasteRows(user, input);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Review rows" })
     );
 
-    expect(screen.getByLabelText("From account column").closest("label")?.textContent).toContain("Required");
-    expect(screen.getByLabelText("To account column").closest("label")?.textContent).toContain("Required");
+    const error = (await screen.findByRole("alert")).textContent ?? "";
+    expect(error).toContain("Dangerous reference Dangerous reference");
+    expect(error).not.toContain("\u202E");
+    expect(error).toContain("…” source column cannot exceed 10,000 characters");
+    expect(error.length).toBeLessThan(220);
+    expect(mocks.savePasteDrafts).not.toHaveBeenCalled();
   });
 
   it("persists mapped text and replaces the URL only after the server succeeds", async () => {
     const user = userEvent.setup();
+    const existingHistoryState = { captureSentinel: "keep-existing-state" };
+    window.history.replaceState(
+      existingHistoryState,
+      "",
+      "/transactions/capture"
+    );
     await openPaste(user);
     const input = "Date,Title,Amount\n2026-08-03,Coffee,90071992547409.99";
 
@@ -183,7 +234,46 @@ describe("spreadsheet transaction capture", () => {
       ]
     });
     expect(window.location.search).toBe(`?capture=${captureKey}`);
+    expect(window.history.state).toEqual(existingHistoryState);
   });
+
+  it.each([
+    {
+      name: "title",
+      input: `Date,Title,Amount\n2026-08-03,${"T".repeat(201)},45000`,
+      error: "Row 1: Title cannot exceed 200 characters. Shorten this value and try again."
+    },
+    {
+      name: "amount",
+      input: `Date,Title,Amount\n2026-08-03,Coffee,${"9".repeat(65)}`,
+      error: "Row 1: Amount cannot exceed 64 characters. Shorten this value and try again."
+    },
+    {
+      name: "raw source value",
+      input: `Date,Title,Amount,Reference\n2026-08-03,Coffee,45000,${"R".repeat(10_001)}`,
+      error: 'Row 1: “Reference” source column cannot exceed 10,000 characters. Shorten this value and try again.'
+    }
+  ])(
+    "preflights an overlong $name before persistence",
+    async ({ input, error }) => {
+      const user = userEvent.setup();
+      await openPaste(user);
+      await pasteRows(user, input);
+
+      await user.click(
+        await screen.findByRole("button", { name: "Review rows" })
+      );
+
+      expect((await screen.findByRole("alert")).textContent).toBe(error);
+      expect(
+        (screen.getByLabelText(
+          "Paste spreadsheet rows"
+        ) as HTMLTextAreaElement).value
+      ).toBe(input);
+      expect(mocks.savePasteDrafts).not.toHaveBeenCalled();
+      expect(window.location.search).toBe("");
+    }
+  );
 
   it("defaults missing dates to the user's local calendar day", async () => {
     vi.useFakeTimers();
