@@ -24,7 +24,33 @@ const config: Config = {
         "quality-a": "#059669",
         "quality-b": "#2563eb",
         "quality-c": "#d97706",
-        "quality-d": "#e11d48"
+        "quality-d": "#e11d48",
+        "capture-canvas": "#F5F7FB",
+        "capture-ink": "#172033",
+        "capture-primary": "#4338CA",
+        "capture-ready": "#087F5B",
+        "capture-review": "#C97912",
+        "capture-error": "#C92A5B"
+      },
+      fontFamily: {
+        "capture-display": [
+          "var(--font-capture-display)",
+          "ui-sans-serif",
+          "system-ui",
+          "sans-serif"
+        ],
+        "capture-ui": [
+          "var(--font-capture-ui)",
+          "ui-sans-serif",
+          "system-ui",
+          "sans-serif"
+        ],
+        "capture-data": [
+          "var(--font-capture-data)",
+          "ui-monospace",
+          "SFMono-Regular",
+          "monospace"
+        ]
       }
     }
   },
