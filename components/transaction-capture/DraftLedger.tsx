@@ -38,6 +38,11 @@ export type FillableDraftField =
   | "categoryId"
   | "qualityRating";
 
+export type PasteableDraftField = Extract<
+  FillableDraftField,
+  "transactionDateText" | "title" | "amountText"
+>;
+
 type DraftLedgerProps = {
   drafts: readonly TransactionDraftView[];
   options: DraftCaptureOptions;
@@ -47,7 +52,7 @@ type DraftLedgerProps = {
   onSelectionChange: (ids: ReadonlySet<string>) => void;
   onCellPaste: (
     id: string,
-    field: FillableDraftField,
+    field: PasteableDraftField,
     clipboardText: string
   ) => void;
   onFocusIssue: (id: string, field: DraftField, surface: "desktop" | "mobile") => void;
@@ -214,7 +219,7 @@ export function DraftLedger({
   function pasteCell(
     event: ClipboardEvent<HTMLInputElement>,
     draftId: string,
-    field: FillableDraftField
+    field: PasteableDraftField
   ) {
     const text = event.clipboardData.getData("text");
     if (!text.includes("\n") && !text.includes("\r") && selectedIds.size <= 1) {

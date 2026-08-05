@@ -20,7 +20,8 @@ import {
 import {
   DraftFillToolbar,
   DraftLedger,
-  type FillableDraftField
+  type FillableDraftField,
+  type PasteableDraftField
 } from "@/components/transaction-capture/DraftLedger";
 import { PasteInput } from "@/components/transaction-capture/PasteInput";
 import {
@@ -99,6 +100,7 @@ const editableDraftFields = [
 ] as const satisfies readonly (keyof DraftPatch)[];
 
 type DraftVersionSnapshot = Map<keyof DraftPatch, number>;
+type DraftCollectionVersionSnapshot = Map<string, DraftVersionSnapshot>;
 
 type BulkPatchEntry = {
   id: string;
@@ -279,6 +281,8 @@ export function CaptureWorkspace({
     initialDefaultsRef.current.drafts
   );
   const fieldVersionsRef = useRef(new Map<string, number>());
+  const nextResponseSequenceRef = useRef(0);
+  const latestResponseSequenceRef = useRef(new Map<string, number>());
   const draftCollectionVersionRef = useRef(0);
   const bulkQueueRef = useRef<Promise<void>>(Promise.resolve());
   const bulkOperationCountRef = useRef(0);
@@ -307,6 +311,12 @@ export function CaptureWorkspace({
     );
   }
 
+  function snapshotAllVersions(): DraftCollectionVersionSnapshot {
+    return new Map(
+      draftsRef.current.map((draft) => [draft.id, snapshotVersions(draft.id)])
+    );
+  }
+
   function updateDraftState(
     updater: (
       current: readonly TransactionDraftView[]
@@ -331,28 +341,59 @@ export function CaptureWorkspace({
     );
   }
 
-  function mergeAuthoritativeDraft(
-    serverDraft: TransactionDraftView,
-    versionsAtRequest: DraftVersionSnapshot
+  function mergeAuthoritativeDrafts(
+    serverDrafts: readonly TransactionDraftView[],
+    versionsAtRequest: DraftCollectionVersionSnapshot,
+    responseSequence: number
   ) {
-    updateDraftState((current) =>
-      current.map((draft) => {
-        if (draft.id !== serverDraft.id) return draft;
+    const serverDraftById = new Map(
+      serverDrafts.map((draft) => [draft.id, draft])
+    );
+    const next = draftsRef.current.map((draft) => {
+      const serverDraft = serverDraftById.get(draft.id);
+      if (!serverDraft) return draft;
 
-        const merged: TransactionDraftView = {
-          ...serverDraft,
-          possibleDuplicate:
-            serverDraft.possibleDuplicate ||
-            serverDraft.duplicateConfirmed
-        };
+      const draftVersionsAtRequest = versionsAtRequest.get(serverDraft.id);
+      const fieldsAdvanced = editableDraftFields.some(
+        (field) =>
+          fieldVersion(serverDraft.id, field) >
+          (draftVersionsAtRequest?.get(field) ?? -1)
+      );
+      const latestResponseSequence =
+        latestResponseSequenceRef.current.get(serverDraft.id) ?? 0;
+      const metadataIsAuthoritative =
+        responseSequence >= latestResponseSequence && !fieldsAdvanced;
+      latestResponseSequenceRef.current.set(
+        serverDraft.id,
+        Math.max(latestResponseSequence, responseSequence)
+      );
+
+      const merged: TransactionDraftView = {
+        ...serverDraft,
+        status: metadataIsAuthoritative ? serverDraft.status : draft.status,
+        confidence: metadataIsAuthoritative
+          ? serverDraft.confidence
+          : draft.confidence,
+        issues: metadataIsAuthoritative ? serverDraft.issues : draft.issues,
+        possibleDuplicate: metadataIsAuthoritative
+          ? serverDraft.possibleDuplicate || serverDraft.duplicateConfirmed
+          : draft.possibleDuplicate
+      };
+      if (draftVersionsAtRequest) {
         for (const field of editableDraftFields) {
-          if (fieldVersion(serverDraft.id, field) > (versionsAtRequest.get(field) ?? 0)) {
+          if (
+            fieldVersion(serverDraft.id, field) >
+            (draftVersionsAtRequest.get(field) ?? 0)
+          ) {
             Object.assign(merged, { [field]: draft[field] });
           }
         }
-        return merged;
-      })
-    );
+      }
+      return merged;
+    });
+    draftsRef.current = next;
+    setDrafts(next);
+    return next;
   }
 
   function rowNumberFor(id: string) {
@@ -362,10 +403,11 @@ export function CaptureWorkspace({
 
   async function requestDraftPatch(
     id: string,
-    patch: DraftPatch,
-    versionsAtRequest: DraftVersionSnapshot
+    patch: DraftPatch
   ) {
     const collectionVersionAtRequest = draftCollectionVersionRef.current;
+    const versionsAtRequest = snapshotAllVersions();
+    const responseSequence = ++nextResponseSequenceRef.current;
     try {
       const result = await updateTransactionDraft(id, patch);
       if (collectionVersionAtRequest !== draftCollectionVersionRef.current) {
@@ -376,8 +418,19 @@ export function CaptureWorkspace({
         };
       }
       if (!result.ok) return { ok: false as const, error: result.error };
-      mergeAuthoritativeDraft(result.draft, versionsAtRequest);
-      return { ok: true as const, draft: result.draft };
+      const compatibleResult = result as typeof result & {
+        drafts?: readonly TransactionDraftView[];
+      };
+      const serverDrafts = compatibleResult.drafts ?? [result.draft];
+      const mergedDrafts = mergeAuthoritativeDrafts(
+        serverDrafts,
+        versionsAtRequest,
+        responseSequence
+      );
+      const mergedDraft =
+        mergedDrafts.find((draft) => draft.id === result.draft.id) ??
+        result.draft;
+      return { ok: true as const, draft: mergedDraft };
     } catch {
       return {
         ok: false as const,
@@ -389,8 +442,7 @@ export function CaptureWorkspace({
   async function patchDraft(id: string, patch: DraftPatch) {
     const current = draftsRef.current.find((draft) => draft.id === id);
     if (!current || !draftIsEditable(current)) return;
-    const versionsAtRequest = snapshotVersions(id);
-    const result = await requestDraftPatch(id, patch, versionsAtRequest);
+    const result = await requestDraftPatch(id, patch);
     const rowNumber = rowNumberFor(id);
     if (!rowNumber) return;
 
@@ -461,11 +513,7 @@ export function CaptureWorkspace({
       applyLocalPatch(entry.id, entry.patch);
       attempted += 1;
       const versionsAtRequest = snapshotVersions(entry.id);
-      const result = await requestDraftPatch(
-        entry.id,
-        entry.patch,
-        versionsAtRequest
-      );
+      const result = await requestDraftPatch(entry.id, entry.patch);
       if (result.ok) {
         saved += 1;
       } else if ("stale" in result && result.stale) {
@@ -565,10 +613,10 @@ export function CaptureWorkspace({
 
   function pasteCells(
     draftId: string,
-    field: FillableDraftField,
+    field: PasteableDraftField,
     clipboardText: string
   ) {
-    if (field === "source" || clipboardText.includes("\t")) {
+    if (clipboardText.includes("\t")) {
       setLedgerAnnouncement("Paste one editable column at a time.");
       return;
     }
@@ -746,6 +794,7 @@ export function CaptureWorkspace({
       }
       draftCollectionVersionRef.current += 1;
       fieldVersionsRef.current.clear();
+      latestResponseSequenceRef.current.clear();
       setSelectedIds(new Set());
       updateDraftState(() => result.drafts);
       window.history.replaceState(

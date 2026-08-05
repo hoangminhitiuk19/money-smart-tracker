@@ -11,7 +11,7 @@ import {
   type DraftCaptureOptions,
   type DraftPatch
 } from "@/components/transaction-capture/DraftInspector";
-import type { FillableDraftField } from "@/components/transaction-capture/DraftLedger";
+import type { PasteableDraftField } from "@/components/transaction-capture/DraftLedger";
 import { OriginStamp } from "@/components/transaction-capture/OriginStamp";
 import { StatusRail } from "@/components/transaction-capture/StatusRail";
 import { Input } from "@/components/ui/Input";
@@ -25,7 +25,7 @@ type DraftCardsProps = {
   onChange: (id: string, patch: DraftPatch) => void;
   onPatch: (id: string, patch: DraftPatch) => void;
   onSelectionChange: (ids: ReadonlySet<string>) => void;
-  onCellPaste: (id: string, field: FillableDraftField, text: string) => void;
+  onCellPaste: (id: string, field: PasteableDraftField, text: string) => void;
   onFocusIssue: (id: string, field: DraftField, surface: "desktop" | "mobile") => void;
 };
 
@@ -80,7 +80,7 @@ export function DraftCards({
   function pasteCell(
     event: ClipboardEvent<HTMLInputElement>,
     id: string,
-    field: FillableDraftField
+    field: PasteableDraftField
   ) {
     const text = event.clipboardData.getData("text");
     if (!text.includes("\n") && !text.includes("\r") && selectedIds.size <= 1) {

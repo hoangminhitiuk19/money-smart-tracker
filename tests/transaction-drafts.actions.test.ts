@@ -411,7 +411,53 @@ describe("transaction draft owned reads and mutations", () => {
     expect(oversized).toMatchObject({ ok: false });
     expect(updated).toMatchObject({
       ok: true,
-      draft: { amountText: "45.000", title: "Updated lunch", status: "READY" }
+      draft: { amountText: "45.000", title: "Updated lunch", status: "READY" },
+      drafts: [
+        { amountText: "45.000", title: "Updated lunch", status: "READY" }
+      ]
+    });
+  });
+
+  it("returns every reassessed draft when an edit creates and removes a duplicate pair", async () => {
+    drafts = [
+      fakeRecord(expenseDraft({ title: "Lunch" }), { id: "draft-1" }),
+      fakeRecord(expenseDraft({ position: 1, title: "Dinner" }), {
+        id: "draft-2"
+      })
+    ];
+
+    const intoDuplicate = await updateTransactionDraft("draft-1", {
+      title: "Dinner"
+    });
+    expect(intoDuplicate).toMatchObject({
+      ok: true,
+      draft: { id: "draft-1", status: "READY", possibleDuplicate: false },
+      drafts: [
+        { id: "draft-1", status: "READY", possibleDuplicate: false },
+        {
+          id: "draft-2",
+          status: "NEEDS_REVIEW",
+          possibleDuplicate: true,
+          issues: [
+            {
+              field: "form",
+              message: "Confirm this possible duplicate before importing."
+            }
+          ]
+        }
+      ]
+    });
+
+    const outOfDuplicate = await updateTransactionDraft("draft-1", {
+      title: "Lunch"
+    });
+    expect(outOfDuplicate).toMatchObject({
+      ok: true,
+      draft: { id: "draft-1", status: "READY", possibleDuplicate: false },
+      drafts: [
+        { id: "draft-1", status: "READY", possibleDuplicate: false },
+        { id: "draft-2", status: "READY", possibleDuplicate: false, issues: [] }
+      ]
     });
   });
 

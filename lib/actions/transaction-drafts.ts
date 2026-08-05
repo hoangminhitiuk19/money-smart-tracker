@@ -416,7 +416,12 @@ export async function listTransactionDrafts(
 export async function updateTransactionDraft(
   id: string,
   patch: unknown
-): Promise<DraftActionResult<{ draft: TransactionDraftView }>> {
+): Promise<
+  DraftActionResult<{
+    draft: TransactionDraftView;
+    drafts: TransactionDraftView[];
+  }>
+> {
   const user = await requireAuth();
   if (!(await mutationAllowed(user.id))) {
     return actionFailure(RATE_LIMIT_MESSAGE);
@@ -466,9 +471,12 @@ export async function updateTransactionDraft(
         existing.captureKey
       );
       const updated = records.find((record) => record.id === existing.id);
-      return updated
-        ? { ok: true as const, draft: transactionDraftRecordToView(updated) }
-        : actionFailure();
+      if (!updated) {
+        return actionFailure();
+      }
+      const drafts = records.map(transactionDraftRecordToView);
+      const draft = drafts.find((record) => record.id === updated.id);
+      return draft ? { ok: true as const, draft, drafts } : actionFailure();
     });
   } catch {
     return actionFailure();

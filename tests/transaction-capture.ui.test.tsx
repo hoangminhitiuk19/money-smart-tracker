@@ -995,6 +995,238 @@ describe("editable transaction draft ledger", () => {
     );
   });
 
+  it("merges sibling duplicate findings when an edit creates and removes a duplicate pair", async () => {
+    const user = userEvent.setup();
+    const first = persistedDraft({
+      id: "draft-1",
+      status: "READY",
+      title: "Coffee"
+    });
+    const second = persistedDraft({
+      id: "draft-2",
+      position: 1,
+      status: "READY",
+      title: "Tea"
+    });
+    mocks.updateTransactionDraft
+      .mockResolvedValueOnce({
+        ok: true,
+        draft: { ...first, title: "Tea" },
+        drafts: [
+          { ...first, title: "Tea" },
+          {
+            ...second,
+            status: "NEEDS_REVIEW",
+            possibleDuplicate: true,
+            issues: [
+              {
+                field: "form",
+                message: "Confirm this possible duplicate before importing."
+              }
+            ]
+          }
+        ]
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        draft: first,
+        drafts: [first, second]
+      });
+    renderDrafts([first, second]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    const title = within(ledger).getByRole("textbox", { name: "Row 1 title" });
+
+    fireEvent.change(title, { target: { value: "Tea" } });
+    fireEvent.blur(title);
+
+    await waitFor(() =>
+      expect(
+        within(ledger).getAllByRole("status")[1].getAttribute("aria-label")
+      ).toBe("Needs review, 1 issue")
+    );
+    await user.click(
+      within(ledger).getByRole("button", { name: "Edit details for row 2" })
+    );
+    expect(
+      within(ledger).getByRole("button", {
+        name: "Confirm this possible duplicate before importing."
+      })
+    ).not.toBeNull();
+    expect(within(ledger).getByText("Possible duplicate")).not.toBeNull();
+
+    const currentTitle = within(ledger).getByRole("textbox", {
+      name: "Row 1 title"
+    });
+    fireEvent.change(currentTitle, { target: { value: "Coffee" } });
+    fireEvent.blur(currentTitle);
+
+    await waitFor(() =>
+      expect(
+        within(ledger).getAllByRole("status")[1].getAttribute("aria-label")
+      ).toBe("Ready")
+    );
+    expect(within(ledger).queryByText("Possible duplicate")).toBeNull();
+    expect(
+      within(ledger).queryByRole("button", {
+        name: "Confirm this possible duplicate before importing."
+      })
+    ).toBeNull();
+  });
+
+  it("ignores older authoritative metadata after a newer response resolves first", async () => {
+    const user = userEvent.setup();
+    let releaseOlder: (() => void) | undefined;
+    const initial = persistedDraft({
+      status: "NEEDS_REVIEW",
+      confidence: 40,
+      issues: [{ field: "fromMoneySourceId", message: "Choose a source." }]
+    });
+    const newer = persistedDraft({
+      amountText: "50000",
+      title: "Newest title",
+      fromMoneySourceId: "wallet",
+      status: "READY",
+      confidence: 95,
+      issues: [],
+      possibleDuplicate: false
+    });
+    const older = persistedDraft({
+      amountText: "50000",
+      title: "Cà phê sáng",
+      status: "NEEDS_REVIEW",
+      confidence: 5,
+      issues: [
+        {
+          field: "form",
+          message: "Confirm this possible duplicate before importing."
+        }
+      ],
+      possibleDuplicate: true
+    });
+    mocks.updateTransactionDraft
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseOlder = () =>
+              resolve({ ok: true, draft: older, drafts: [older] });
+          })
+      )
+      .mockResolvedValueOnce({ ok: true, draft: newer, drafts: [newer] });
+    renderDrafts([initial]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    const amount = within(ledger).getByRole("textbox", { name: "Row 1 amount" });
+    const source = within(ledger).getByRole("combobox", { name: "Row 1 source" });
+
+    fireEvent.change(amount, { target: { value: "50000" } });
+    fireEvent.blur(amount);
+    await waitFor(() => expect(mocks.updateTransactionDraft).toHaveBeenCalledTimes(1));
+    await user.selectOptions(source, "wallet");
+    await waitFor(() =>
+      expect(within(ledger).getByRole("status", { name: "Ready" })).not.toBeNull()
+    );
+
+    await act(async () => releaseOlder?.());
+
+    await waitFor(() =>
+      expect(
+        (within(ledger).getByRole("combobox", {
+          name: "Row 1 source"
+        }) as HTMLSelectElement).value
+      ).toBe("wallet")
+    );
+    expect(within(ledger).getByRole("status", { name: "Ready" })).not.toBeNull();
+    await user.click(
+      within(ledger).getByRole("button", { name: "Edit details for row 1" })
+    );
+    expect(within(ledger).queryByText("Possible duplicate")).toBeNull();
+    expect(
+      within(ledger).queryByRole("button", {
+        name: "Confirm this possible duplicate before importing."
+      })
+    ).toBeNull();
+  });
+
+  it("preserves sibling metadata when that sibling fields advance after a request", async () => {
+    const user = userEvent.setup();
+    let releaseFirst: (() => void) | undefined;
+    let releaseSecond: (() => void) | undefined;
+    const first = persistedDraft({ id: "draft-1", status: "READY" });
+    const sibling = persistedDraft({
+      id: "draft-2",
+      position: 1,
+      title: "Tea",
+      status: "NEEDS_REVIEW",
+      confidence: 25,
+      possibleDuplicate: true,
+      issues: [
+        {
+          field: "form",
+          message: "Confirm this possible duplicate before importing."
+        }
+      ]
+    });
+    const staleSibling = {
+      ...sibling,
+      status: "READY" as const,
+      confidence: 90,
+      possibleDuplicate: false,
+      issues: []
+    };
+    mocks.updateTransactionDraft
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseFirst = () =>
+              resolve({
+                ok: true,
+                draft: { ...first, title: "Coffee edited" },
+                drafts: [{ ...first, title: "Coffee edited" }, staleSibling]
+              });
+          })
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseSecond = () =>
+              resolve({
+                ok: true,
+                draft: { ...sibling, title: "Tea edited" },
+                drafts: [first, { ...sibling, title: "Tea edited" }]
+              });
+          })
+      );
+    renderDrafts([first, sibling]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    const firstTitle = within(ledger).getByRole("textbox", { name: "Row 1 title" });
+    const siblingTitle = within(ledger).getByRole("textbox", { name: "Row 2 title" });
+
+    fireEvent.change(firstTitle, { target: { value: "Coffee edited" } });
+    fireEvent.blur(firstTitle);
+    fireEvent.change(siblingTitle, { target: { value: "Tea edited" } });
+    fireEvent.blur(siblingTitle);
+    await waitFor(() => expect(mocks.updateTransactionDraft).toHaveBeenCalledTimes(2));
+
+    await act(async () => releaseFirst?.());
+
+    await waitFor(() =>
+      expect((siblingTitle as HTMLInputElement).value).toBe("Tea edited")
+    );
+    expect(
+      within(ledger).getAllByRole("status")[1].getAttribute("aria-label")
+    ).toBe("Needs review, 1 issue");
+    await user.click(
+      within(ledger).getByRole("button", { name: "Edit details for row 2" })
+    );
+    expect(within(ledger).getByText("Possible duplicate")).not.toBeNull();
+    expect(
+      within(ledger).getByRole("button", {
+        name: "Confirm this possible duplicate before importing."
+      })
+    ).not.toBeNull();
+
+    await act(async () => releaseSecond?.());
+  });
+
   it("keeps fill-down available as a 44px pointer and keyboard control beside mobile cards", () => {
     renderDrafts([persistedDraft(), persistedDraft({ id: "draft-2", position: 1 })]);
 

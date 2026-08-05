@@ -355,9 +355,45 @@ describe("transaction draft PostgreSQL ownership", () => {
     expect(stored[0].duplicateFingerprint).toBe(stored[1].duplicateFingerprint);
     expect(stored[0].duplicateFingerprint).not.toContain("90071992547409.99");
 
-    await expect(
-      updateTransactionDraft(stored[1].id, { duplicateConfirmed: true })
-    ).resolves.toMatchObject({ ok: true, draft: { status: "READY" } });
+    const separated = await updateTransactionDraft(stored[0].id, {
+      title: "Audit lunch separated"
+    });
+    expect(separated).toMatchObject({
+      ok: true,
+      draft: { id: stored[0].id, status: "READY" },
+      drafts: [
+        { id: stored[0].id, status: "READY", possibleDuplicate: false },
+        { id: stored[1].id, status: "READY", possibleDuplicate: false }
+      ]
+    });
+
+    const reunited = await updateTransactionDraft(stored[0].id, {
+      title: "Audit lunch"
+    });
+    expect(reunited).toMatchObject({
+      ok: true,
+      draft: { id: stored[0].id, status: "READY" },
+      drafts: [
+        { id: stored[0].id, status: "READY", possibleDuplicate: false },
+        {
+          id: stored[1].id,
+          status: "NEEDS_REVIEW",
+          possibleDuplicate: true
+        }
+      ]
+    });
+
+    const confirmed = await updateTransactionDraft(stored[1].id, {
+      duplicateConfirmed: true
+    });
+    expect(confirmed).toMatchObject({
+      ok: true,
+      draft: { id: stored[1].id, status: "READY" },
+      drafts: [
+        { id: stored[0].id, status: "READY", possibleDuplicate: false },
+        { id: stored[1].id, status: "READY", possibleDuplicate: false }
+      ]
+    });
   }, 20_000);
 });
 
