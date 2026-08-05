@@ -1,14 +1,32 @@
 "use client";
 
-import { TransactionType } from "@prisma/client";
+import { MoneySourceType, TransactionType } from "@prisma/client";
 import {
+  useEffect,
   useRef,
   useState,
   type KeyboardEvent
 } from "react";
 import { ColumnMapper } from "@/components/transaction-capture/ColumnMapper";
+import { DraftCards } from "@/components/transaction-capture/DraftCards";
+import {
+  type DraftPatch,
+  draftIsEditable,
+  draftSourcePatch,
+  draftTypePatch,
+  draftFieldId,
+  type DraftSurface
+} from "@/components/transaction-capture/DraftInspector";
+import {
+  DraftFillToolbar,
+  DraftLedger,
+  type FillableDraftField
+} from "@/components/transaction-capture/DraftLedger";
 import { PasteInput } from "@/components/transaction-capture/PasteInput";
-import { savePasteDrafts } from "@/lib/actions/transaction-drafts";
+import {
+  savePasteDrafts,
+  updateTransactionDraft
+} from "@/lib/actions/transaction-drafts";
 import {
   detectColumnMapping,
   mapParsedRows,
@@ -19,6 +37,7 @@ import {
 } from "@/lib/transaction-drafts/paste";
 import {
   transactionDraftInputSchema,
+  type DraftField,
   type TransactionDraftInput,
   type TransactionDraftView
 } from "@/lib/transaction-drafts/types";
@@ -33,12 +52,16 @@ type CaptureExpenseOption = CaptureOption & {
   transactionDate: string;
 };
 
+type CaptureMoneySourceOption = CaptureOption & {
+  type: MoneySourceType;
+};
+
 export type CaptureWorkspaceProps = {
   initialCaptureKey: string | null;
   initialDrafts: readonly TransactionDraftView[];
   options: {
     categories: readonly CaptureOption[];
-    moneySources: readonly CaptureOption[];
+    moneySources: readonly CaptureMoneySourceOption[];
     projects: readonly CaptureOption[];
     expenses: readonly CaptureExpenseOption[];
   };
@@ -52,6 +75,37 @@ export type CaptureWorkspaceProps = {
 type CaptureMode = "quick" | "paste";
 
 const captureModes = ["quick", "paste"] as const satisfies readonly CaptureMode[];
+
+const editableDraftFields = [
+  "type",
+  "amountText",
+  "currency",
+  "title",
+  "description",
+  "transactionDateText",
+  "categoryId",
+  "qualityRating",
+  "fromMoneySourceId",
+  "toMoneySourceId",
+  "adjustedMoneySourceId",
+  "adjustmentDirection",
+  "adjustmentTarget",
+  "projectId",
+  "relatedTransactionId",
+  "countTowardFeeWaiver",
+  "recurringPaymentId",
+  "isInstallmentRelated",
+  "duplicateConfirmed"
+] as const satisfies readonly (keyof DraftPatch)[];
+
+type DraftVersionSnapshot = Map<keyof DraftPatch, number>;
+
+type BulkPatchEntry = {
+  id: string;
+  patch: DraftPatch;
+  versionsAtStart: DraftVersionSnapshot;
+  collectionVersionAtStart: number;
+};
 
 const draftFieldLabels: Partial<
   Record<keyof TransactionDraftInput, string>
@@ -154,6 +208,33 @@ const modeDetails: Record<
   }
 };
 
+function applyInitialDraftDefaults(
+  initialDrafts: readonly TransactionDraftView[],
+  defaultCurrency: string
+) {
+  const patches: { id: string; patch: DraftPatch }[] = [];
+  let previousType: TransactionDraftView["type"] = null;
+
+  for (const draft of initialDrafts) {
+    const patch: DraftPatch = {};
+    if (draftIsEditable(draft) && !draft.currency?.trim()) {
+      patch.currency = defaultCurrency;
+    }
+    if (draftIsEditable(draft) && !draft.type && previousType) {
+      patch.type = previousType;
+    }
+
+    if (Object.keys(patch).length > 0) {
+      patches.push({ id: draft.id, patch });
+    }
+    if (draftIsEditable(draft)) {
+      previousType = draft.type ?? previousType;
+    }
+  }
+
+  return { drafts: initialDrafts, patches };
+}
+
 export function CaptureWorkspace({
   initialCaptureKey,
   initialDrafts,
@@ -166,8 +247,16 @@ export function CaptureWorkspace({
   const [mode, setMode] = useState<CaptureMode>(
     hasInitialPasteDrafts ? "paste" : "quick"
   );
-  const [drafts, setDrafts] =
-    useState<readonly TransactionDraftView[]>(initialDrafts);
+  const initialDefaultsRef = useRef<ReturnType<
+    typeof applyInitialDraftDefaults
+  > | null>(null);
+  initialDefaultsRef.current ??= applyInitialDraftDefaults(
+    initialDrafts,
+    settings.defaultCurrency
+  );
+  const [drafts, setDrafts] = useState<readonly TransactionDraftView[]>(
+    initialDefaultsRef.current.drafts
+  );
   const [pasteText, setPasteText] = useState("");
   const [pasteTable, setPasteTable] = useState<ParsedTable | null>(null);
   const [mapping, setMapping] = useState<ColumnMapping>({});
@@ -178,7 +267,22 @@ export function CaptureWorkspace({
   );
   const [pasteError, setPasteError] = useState<string | null>(null);
   const [savingPaste, setSavingPaste] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(
+    new Set()
+  );
+  const [fillField, setFillField] =
+    useState<FillableDraftField>("categoryId");
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [ledgerAnnouncement, setLedgerAnnouncement] = useState("");
   const captureKeyRef = useRef<string | null>(initialCaptureKey);
+  const draftsRef = useRef<readonly TransactionDraftView[]>(
+    initialDefaultsRef.current.drafts
+  );
+  const fieldVersionsRef = useRef(new Map<string, number>());
+  const draftCollectionVersionRef = useRef(0);
+  const bulkQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const bulkOperationCountRef = useRef(0);
+  const attemptedInitialDefaultsRef = useRef(false);
   const tabId = captureWorkspaceId(initialCaptureKey);
   const tabRefs = useRef<Record<CaptureMode, HTMLButtonElement | null>>({
     quick: null,
@@ -188,6 +292,347 @@ export function CaptureWorkspace({
   const persistedPasteCount = drafts.filter(
     ({ origin }) => origin === "PASTE"
   ).length;
+
+  function fieldVersionKey(id: string, field: keyof DraftPatch) {
+    return `${id}:${field}`;
+  }
+
+  function fieldVersion(id: string, field: keyof DraftPatch) {
+    return fieldVersionsRef.current.get(fieldVersionKey(id, field)) ?? 0;
+  }
+
+  function snapshotVersions(id: string): DraftVersionSnapshot {
+    return new Map(
+      editableDraftFields.map((field) => [field, fieldVersion(id, field)])
+    );
+  }
+
+  function updateDraftState(
+    updater: (
+      current: readonly TransactionDraftView[]
+    ) => readonly TransactionDraftView[]
+  ) {
+    setDrafts((current) => {
+      const next = updater(current);
+      draftsRef.current = next;
+      return next;
+    });
+  }
+
+  function applyLocalPatch(id: string, patch: DraftPatch, touched = true) {
+    if (touched) {
+      for (const field of Object.keys(patch) as (keyof DraftPatch)[]) {
+        const key = fieldVersionKey(id, field);
+        fieldVersionsRef.current.set(key, (fieldVersionsRef.current.get(key) ?? 0) + 1);
+      }
+    }
+    updateDraftState((current) =>
+      current.map((draft) => (draft.id === id ? { ...draft, ...patch } : draft))
+    );
+  }
+
+  function mergeAuthoritativeDraft(
+    serverDraft: TransactionDraftView,
+    versionsAtRequest: DraftVersionSnapshot
+  ) {
+    updateDraftState((current) =>
+      current.map((draft) => {
+        if (draft.id !== serverDraft.id) return draft;
+
+        const merged: TransactionDraftView = {
+          ...serverDraft,
+          possibleDuplicate:
+            serverDraft.possibleDuplicate ||
+            serverDraft.duplicateConfirmed
+        };
+        for (const field of editableDraftFields) {
+          if (fieldVersion(serverDraft.id, field) > (versionsAtRequest.get(field) ?? 0)) {
+            Object.assign(merged, { [field]: draft[field] });
+          }
+        }
+        return merged;
+      })
+    );
+  }
+
+  function rowNumberFor(id: string) {
+    const index = draftsRef.current.findIndex((draft) => draft.id === id);
+    return index >= 0 ? index + 1 : null;
+  }
+
+  async function requestDraftPatch(
+    id: string,
+    patch: DraftPatch,
+    versionsAtRequest: DraftVersionSnapshot
+  ) {
+    const collectionVersionAtRequest = draftCollectionVersionRef.current;
+    try {
+      const result = await updateTransactionDraft(id, patch);
+      if (collectionVersionAtRequest !== draftCollectionVersionRef.current) {
+        return {
+          ok: false as const,
+          stale: true as const,
+          error: "Draft list changed."
+        };
+      }
+      if (!result.ok) return { ok: false as const, error: result.error };
+      mergeAuthoritativeDraft(result.draft, versionsAtRequest);
+      return { ok: true as const, draft: result.draft };
+    } catch {
+      return {
+        ok: false as const,
+        error: "Check your connection and try again."
+      };
+    }
+  }
+
+  async function patchDraft(id: string, patch: DraftPatch) {
+    const current = draftsRef.current.find((draft) => draft.id === id);
+    if (!current || !draftIsEditable(current)) return;
+    const versionsAtRequest = snapshotVersions(id);
+    const result = await requestDraftPatch(id, patch, versionsAtRequest);
+    const rowNumber = rowNumberFor(id);
+    if (!rowNumber) return;
+
+    if (!result.ok) {
+      if ("stale" in result && result.stale) return;
+      setLedgerAnnouncement(`Row ${rowNumber} was not saved: ${result.error}`);
+      return;
+    }
+    setLedgerAnnouncement(
+      result.draft.status === "READY"
+        ? `Row ${rowNumber} is ready.`
+        : `Row ${rowNumber} saved with ${result.draft.issues.length} ${result.draft.issues.length === 1 ? "finding" : "findings"}.`
+    );
+  }
+
+  function patchFieldsAreUntouched(entry: BulkPatchEntry) {
+    return entry.collectionVersionAtStart === draftCollectionVersionRef.current &&
+      (Object.keys(entry.patch) as (keyof DraftPatch)[]).every(
+      (field) =>
+        fieldVersion(entry.id, field) ===
+        (entry.versionsAtStart.get(field) ?? 0)
+    );
+  }
+
+  function queueBulkOperation(operation: () => Promise<void>) {
+    bulkOperationCountRef.current += 1;
+    setBulkBusy(true);
+    const scheduled = bulkQueueRef.current.then(operation, operation);
+    bulkQueueRef.current = scheduled.catch(() => undefined);
+    void scheduled
+      .finally(() => {
+        bulkOperationCountRef.current -= 1;
+        if (bulkOperationCountRef.current === 0) setBulkBusy(false);
+      })
+      .catch(() => undefined);
+  }
+
+  async function runBulkPatches(
+    entries: readonly BulkPatchEntry[],
+    messages: {
+      complete: (saved: number) => string;
+      partial: (saved: number, attempted: number, failed: number) => string;
+      skipped: (saved: number, skipped: number) => string;
+    }
+  ) {
+    let attempted = 0;
+    let saved = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    for (const entry of entries) {
+      if (!patchFieldsAreUntouched(entry)) {
+        skipped += 1;
+        continue;
+      }
+
+      const current = draftsRef.current.find((draft) => draft.id === entry.id);
+      if (!current) {
+        skipped += 1;
+        continue;
+      }
+      const previous = Object.fromEntries(
+        (Object.keys(entry.patch) as (keyof DraftPatch)[]).map((field) => [
+          field,
+          current[field]
+        ])
+      ) as DraftPatch;
+      applyLocalPatch(entry.id, entry.patch);
+      attempted += 1;
+      const versionsAtRequest = snapshotVersions(entry.id);
+      const result = await requestDraftPatch(
+        entry.id,
+        entry.patch,
+        versionsAtRequest
+      );
+      if (result.ok) {
+        saved += 1;
+      } else if ("stale" in result && result.stale) {
+        skipped += 1;
+      } else {
+        failed += 1;
+        const rollback = Object.fromEntries(
+          (Object.keys(entry.patch) as (keyof DraftPatch)[]).flatMap(
+            (field) =>
+              fieldVersion(entry.id, field) ===
+              (versionsAtRequest.get(field) ?? 0)
+                ? [[field, previous[field]]]
+                : []
+          )
+        ) as DraftPatch;
+        if (Object.keys(rollback).length > 0) {
+          applyLocalPatch(entry.id, rollback);
+        }
+      }
+    }
+
+    if (failed > 0) {
+      setLedgerAnnouncement(messages.partial(saved, attempted, failed));
+    } else if (skipped > 0) {
+      setLedgerAnnouncement(messages.skipped(saved, skipped));
+    } else {
+      setLedgerAnnouncement(messages.complete(saved));
+    }
+  }
+
+  function semanticSourceField(draft: TransactionDraftView) {
+    if (
+      draft.type === TransactionType.INCOME ||
+      draft.type === TransactionType.REFUND
+    ) {
+      return "toMoneySourceId" as const;
+    }
+    if (draft.type === TransactionType.ADJUSTMENT) {
+      return "adjustedMoneySourceId" as const;
+    }
+    return "fromMoneySourceId" as const;
+  }
+
+  function fillDown(field: FillableDraftField) {
+    const selected = draftsRef.current.filter(
+      (draft) => selectedIds.has(draft.id) && draftIsEditable(draft)
+    );
+    if (selected.length < 2) return;
+    const sourceDraft = selected[0];
+
+    let sourceField: keyof DraftPatch = field as keyof DraftPatch;
+    if (field === "source") {
+      sourceField = semanticSourceField(sourceDraft);
+      if (
+        selected.some(
+          (draft) => semanticSourceField(draft) !== sourceField
+        )
+      ) {
+        setLedgerAnnouncement(
+          "Source fill needs selected rows with the same transaction flow."
+        );
+        return;
+      }
+    }
+
+    const entries = selected.slice(1).map((draft): BulkPatchEntry => {
+      const patch =
+        field === "type" && sourceDraft.type
+          ? draftTypePatch(draft, sourceDraft.type)
+          : field === "source"
+            ? draftSourcePatch(
+                draft,
+                semanticSourceField(draft),
+                sourceDraft[semanticSourceField(sourceDraft)],
+                options.moneySources
+              )
+          : ({ [sourceField]: sourceDraft[sourceField] } as DraftPatch);
+      return {
+        id: draft.id,
+        patch,
+        versionsAtStart: snapshotVersions(draft.id),
+        collectionVersionAtStart: draftCollectionVersionRef.current
+      };
+    });
+
+    queueBulkOperation(() =>
+      runBulkPatches(entries, {
+        complete: (saved) =>
+          saved === 1 ? "Updated 1 row." : `Updated ${saved} rows.`,
+        partial: (saved, attempted, failed) =>
+          `Updated ${saved} of ${attempted} rows. ${failed} ${failed === 1 ? "row was" : "rows were"} not saved.`,
+        skipped: (saved, skipped) =>
+          `${saved === 1 ? "Updated 1 row" : `Updated ${saved} rows`}. Skipped ${skipped} ${skipped === 1 ? "row" : "rows"} changed during fill.`
+      })
+    );
+  }
+
+  function pasteCells(
+    draftId: string,
+    field: FillableDraftField,
+    clipboardText: string
+  ) {
+    if (field === "source" || clipboardText.includes("\t")) {
+      setLedgerAnnouncement("Paste one editable column at a time.");
+      return;
+    }
+    const values = clipboardText.replace(/\r\n?/g, "\n").split("\n");
+    if (values.at(-1) === "") values.pop();
+    const selected = draftsRef.current.filter(
+      (draft) => selectedIds.has(draft.id) && draftIsEditable(draft)
+    );
+    const targets = selected.length > 0
+      ? selected
+      : draftsRef.current.filter(
+          (draft) => draft.id === draftId && draftIsEditable(draft)
+        );
+    const entries = targets.slice(0, values.length).map((draft, index) => ({
+      id: draft.id,
+      patch: { [field]: values[index] || null } as DraftPatch,
+      versionsAtStart: snapshotVersions(draft.id),
+      collectionVersionAtStart: draftCollectionVersionRef.current
+    }));
+
+    queueBulkOperation(() =>
+      runBulkPatches(entries, {
+        complete: (saved) => `Updated ${saved} ${saved === 1 ? "row" : "rows"} from pasted cells.`,
+        partial: (saved, attempted, failed) =>
+          `Updated ${saved} of ${attempted} pasted rows. ${failed} ${failed === 1 ? "row was" : "rows were"} not saved.`,
+        skipped: (saved, skipped) =>
+          `Updated ${saved} pasted ${saved === 1 ? "row" : "rows"}. Skipped ${skipped} changed ${skipped === 1 ? "row" : "rows"}.`
+      })
+    );
+  }
+
+  function focusIssue(id: string, field: DraftField, surface: DraftSurface) {
+    const safeId = id.replace(/[^a-zA-Z0-9_-]/g, "-");
+    const target =
+      document.getElementById(draftFieldId(surface, id, field)) ??
+      document.getElementById(`${surface}-draft-${safeId}-inspector`);
+    target?.focus();
+  }
+
+  useEffect(() => {
+    if (attemptedInitialDefaultsRef.current) return;
+    attemptedInitialDefaultsRef.current = true;
+    const defaults = initialDefaultsRef.current?.patches ?? [];
+    if (defaults.length === 0) return;
+
+    const entries = defaults.map(({ id, patch }) => ({
+      id,
+      patch,
+      versionsAtStart: snapshotVersions(id),
+      collectionVersionAtStart: draftCollectionVersionRef.current
+    }));
+    queueBulkOperation(() =>
+      runBulkPatches(entries, {
+        complete: (saved) =>
+          `Applied ${saved} ${saved === 1 ? "row default" : "row defaults"}.`,
+        partial: (saved, attempted, failed) =>
+          `Applied ${saved} of ${attempted} row defaults. ${failed} ${failed === 1 ? "default was" : "defaults were"} not saved.`,
+        skipped: (saved, skipped) =>
+          `Applied ${saved} ${saved === 1 ? "row default" : "row defaults"}. Skipped ${skipped} changed ${skipped === 1 ? "row" : "rows"}.`
+      })
+    );
+    // The immutable initial default list is intentionally attempted once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function friendlyPasteError(error: unknown) {
     const message = error instanceof Error ? error.message : "";
@@ -299,7 +744,10 @@ export function CaptureWorkspace({
         setPasteError(result.error);
         return;
       }
-      setDrafts(result.drafts);
+      draftCollectionVersionRef.current += 1;
+      fieldVersionsRef.current.clear();
+      setSelectedIds(new Set());
+      updateDraftState(() => result.drafts);
       window.history.replaceState(
         window.history.state,
         "",
@@ -514,22 +962,42 @@ export function CaptureWorkspace({
 
           {hasDrafts ? (
             <>
-              <div
-                className="mt-3 hidden min-w-0 rounded-xl border border-slate-200 bg-white p-6 lg:block"
-                data-testid="capture-desktop-region"
-              >
-                <p className="text-sm text-slate-600 transition-[opacity,transform] duration-200 motion-reduce:transition-none">
-                  Draft rows are ready for the desktop ledger.
+              <DraftFillToolbar
+                busy={bulkBusy}
+                field={fillField}
+                onFieldChange={setFillField}
+                onFillDown={fillDown}
+                selectedCount={selectedIds.size}
+              />
+              {ledgerAnnouncement ? (
+                <p
+                  aria-live="polite"
+                  className="mt-3 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-capture-ink"
+                  role="status"
+                >
+                  {ledgerAnnouncement}
                 </p>
-              </div>
-              <div
-                className="mt-3 min-w-0 rounded-xl border border-slate-200 bg-white p-5 lg:hidden"
-                data-testid="capture-mobile-region"
-              >
-                <p className="text-sm text-slate-600 transition-[opacity,transform] duration-200 motion-reduce:transition-none">
-                  Draft rows are ready for mobile review cards.
-                </p>
-              </div>
+              ) : null}
+              <DraftLedger
+                drafts={drafts}
+                onCellPaste={pasteCells}
+                onChange={applyLocalPatch}
+                onFocusIssue={focusIssue}
+                onPatch={patchDraft}
+                onSelectionChange={setSelectedIds}
+                options={options}
+                selectedIds={selectedIds}
+              />
+              <DraftCards
+                drafts={drafts}
+                onCellPaste={pasteCells}
+                onChange={applyLocalPatch}
+                onFocusIssue={focusIssue}
+                onPatch={patchDraft}
+                onSelectionChange={setSelectedIds}
+                options={options}
+                selectedIds={selectedIds}
+              />
             </>
           ) : (
             <div className="mt-3 rounded-xl border border-dashed border-slate-300 bg-white px-5 py-10 text-center sm:py-14">

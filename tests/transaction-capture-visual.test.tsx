@@ -241,10 +241,10 @@ describe("transaction capture visual system", () => {
     );
 
     expect(markup).toMatch(
-      /class=\"[^\"]*hidden[^\"]*lg:block[^\"]*\" data-testid=\"capture-desktop-region\"/
+      /class=\"[^\"]*hidden[^\"]*lg:block[^\"]*\" data-testid=\"capture-desktop-ledger\"/
     );
     expect(markup).toMatch(
-      /class=\"[^\"]*lg:hidden[^\"]*\" data-testid=\"capture-mobile-region\"/
+      /class=\"[^\"]*lg:hidden[^\"]*\" data-testid=\"capture-mobile-cards\"/
     );
     expect(markup).toContain("motion-reduce:transition-none");
     expect(markup).toContain("transition-[opacity,transform]");

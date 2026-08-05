@@ -1,4 +1,4 @@
-import { TransactionType } from "@prisma/client";
+import { MoneySourceType, TransactionType } from "@prisma/client";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -85,7 +85,12 @@ beforeEach(() => {
     { id: "category-1", name: "Food", userId: "foreign-category-user" }
   ]);
   pageMocks.listMoneySources.mockResolvedValue([
-    { id: "source-1", name: "Wallet", userId: "foreign-source-user" }
+    {
+      id: "source-1",
+      name: "Credit card",
+      type: MoneySourceType.CREDIT_CARD,
+      userId: "foreign-source-user"
+    }
   ]);
   pageMocks.listProjects.mockResolvedValue([
     { id: "project-1", name: "Holiday", userId: "foreign-project-user" }
@@ -123,7 +128,13 @@ describe("transaction capture page", () => {
         initialDrafts: [],
         options: {
           categories: [{ id: "category-1", name: "Food" }],
-          moneySources: [{ id: "source-1", name: "Wallet" }],
+          moneySources: [
+            {
+              id: "source-1",
+              name: "Credit card",
+              type: MoneySourceType.CREDIT_CARD
+            }
+          ],
           projects: [{ id: "project-1", name: "Holiday" }],
           expenses: [
             {

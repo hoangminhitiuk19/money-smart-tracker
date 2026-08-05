@@ -1,8 +1,9 @@
-export type CaptureOrigin = "QUICK" | "PASTE";
+export type CaptureOrigin = "QUICK" | "PASTE" | "EMAIL";
 
 const originLabels: Record<CaptureOrigin, string> = {
   QUICK: "Quick entry",
-  PASTE: "Pasted spreadsheet row"
+  PASTE: "Pasted spreadsheet row",
+  EMAIL: "Forwarded email candidate"
 };
 
 type OriginStampProps = {

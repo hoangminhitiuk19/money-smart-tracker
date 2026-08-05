@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { TransactionType } from "@prisma/client";
+import {
+  AdjustmentDirection,
+  AdjustmentTarget,
+  MoneySourceType,
+  QualityRating,
+  TransactionType
+} from "@prisma/client";
 import {
   cleanup,
   fireEvent,
@@ -19,11 +25,13 @@ import {
 import type { TransactionDraftView } from "@/lib/transaction-drafts/types";
 
 const mocks = vi.hoisted(() => ({
-  savePasteDrafts: vi.fn()
+  savePasteDrafts: vi.fn(),
+  updateTransactionDraft: vi.fn()
 }));
 
 vi.mock("@/lib/actions/transaction-drafts", () => ({
-  savePasteDrafts: mocks.savePasteDrafts
+  savePasteDrafts: mocks.savePasteDrafts,
+  updateTransactionDraft: mocks.updateTransactionDraft
 }));
 
 const captureKey = "550e8400-e29b-41d4-a716-446655440000";
@@ -32,10 +40,24 @@ const props: CaptureWorkspaceProps = {
   initialCaptureKey: captureKey,
   initialDrafts: [],
   options: {
-    categories: [{ id: "food", name: "Ăn uống" }],
-    moneySources: [{ id: "wallet", name: "Ví tiền" }],
+    categories: [
+      { id: "food", name: "Ăn uống" },
+      { id: "salary", name: "Lương" }
+    ],
+    moneySources: [
+      { id: "wallet", name: "Ví tiền", type: MoneySourceType.CASH },
+      { id: "bank", name: "Tài khoản ngân hàng", type: MoneySourceType.BANK_ACCOUNT },
+      { id: "card", name: "Thẻ tín dụng", type: MoneySourceType.CREDIT_CARD }
+    ],
     projects: [{ id: "trip", name: "Du lịch" }],
-    expenses: []
+    expenses: [
+      {
+        id: "expense-1",
+        name: "Bữa trưa",
+        amount: "125000.50",
+        transactionDate: "2026-08-02"
+      }
+    ]
   },
   settings: {
     defaultCurrency: "VND",
@@ -98,6 +120,12 @@ beforeEach(() => {
     ok: true,
     drafts: [persistedDraft()]
   });
+  mocks.updateTransactionDraft.mockImplementation(
+    async (id: string, patch: Partial<TransactionDraftView>) => ({
+      ok: true,
+      draft: persistedDraft({ id, ...patch })
+    })
+  );
 });
 
 afterEach(cleanup);
@@ -228,6 +256,7 @@ describe("spreadsheet transaction capture", () => {
           origin: "PASTE",
           type: TransactionType.EXPENSE,
           amountText: "90071992547409.99",
+          currency: "VND",
           title: "Coffee",
           transactionDateText: "2026-08-03"
         })
@@ -433,5 +462,712 @@ describe("spreadsheet transaction capture", () => {
     expect(screen.getByRole("tab", { name: "Paste rows" }).getAttribute("aria-selected")).toBe("true");
     expect(screen.getByText("1 persisted row ready for review")).not.toBeNull();
     expect(mocks.savePasteDrafts).not.toHaveBeenCalled();
+  });
+});
+
+describe("editable transaction draft ledger", () => {
+  function renderDrafts(drafts: readonly TransactionDraftView[]) {
+    return render(<CaptureWorkspace {...props} initialDrafts={drafts} />);
+  }
+
+  it("renders a native desktop ledger and responsive mobile cards from the same drafts", () => {
+    renderDrafts([persistedDraft()]);
+
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    expect(ledger.classList.contains("hidden")).toBe(true);
+    expect(ledger.classList.contains("lg:block")).toBe(true);
+    expect(within(ledger).getByRole("table", { name: "Transaction drafts" })).not.toBeNull();
+    expect(ledger.querySelector("tbody tbody")).toBeNull();
+    expect((within(ledger).getByRole("textbox", { name: "Row 1 amount" }) as HTMLInputElement).value).toBe("45000");
+    expect(within(ledger).getByRole("status", { name: "Needs review" })).not.toBeNull();
+    expect(within(ledger).getByText("PASTE")).not.toBeNull();
+
+    const cards = screen.getByTestId("capture-mobile-cards");
+    expect(cards.classList.contains("lg:hidden")).toBe(true);
+    expect(within(cards).getByText("Cà phê sáng")).not.toBeNull();
+    expect(within(cards).getByRole("button", { name: "Edit row 1" }).classList.contains("min-h-11")).toBe(true);
+  });
+
+  it("renders the planned EMAIL origin as provenance without exposing email capture", () => {
+    renderDrafts([persistedDraft({ origin: "EMAIL" })]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    const stamp = within(ledger).getByText("EMAIL").parentElement;
+
+    expect(stamp?.textContent).toContain("Forwarded email candidate");
+    expect(screen.queryByRole("button", { name: /connect email/i })).toBeNull();
+  });
+
+  it("moves right from a text-cell boundary without trapping ordinary text or select editing", async () => {
+    const user = userEvent.setup();
+    renderDrafts([persistedDraft({ fromMoneySourceId: "wallet" })]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    const amount = within(ledger).getByRole("textbox", { name: "Row 1 amount" }) as HTMLInputElement;
+    const source = within(ledger).getByRole("combobox", { name: "Row 1 source" });
+
+    amount.focus();
+    amount.setSelectionRange(2, 2);
+    await user.keyboard("{ArrowRight}");
+    expect(document.activeElement).toBe(amount);
+
+    amount.setSelectionRange(1, 3);
+    await user.keyboard("{ArrowRight}");
+    expect(document.activeElement).toBe(amount);
+
+    amount.setSelectionRange(amount.value.length, amount.value.length);
+    await user.keyboard("{Shift>}{ArrowRight}{/Shift}");
+    expect(document.activeElement).toBe(amount);
+
+    amount.setSelectionRange(amount.value.length, amount.value.length);
+    await user.keyboard("{ArrowRight}");
+    expect(document.activeElement).toBe(source);
+
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(source);
+  });
+
+  it("retains fields that remain compatible during a type transition", async () => {
+    const user = userEvent.setup();
+    renderDrafts([
+      persistedDraft({
+        fromMoneySourceId: "wallet",
+        qualityRating: QualityRating.A,
+        countTowardFeeWaiver: true
+      })
+    ]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+
+    await user.selectOptions(
+      within(ledger).getByRole("combobox", { name: "Row 1 type" }),
+      TransactionType.TRANSFER
+    );
+
+    expect(mocks.updateTransactionDraft).toHaveBeenCalledWith(
+      "draft-1",
+      expect.objectContaining({
+        type: TransactionType.TRANSFER,
+        qualityRating: null,
+        countTowardFeeWaiver: false
+      })
+    );
+    expect(mocks.updateTransactionDraft.mock.calls[0][1]).not.toHaveProperty(
+      "fromMoneySourceId"
+    );
+  });
+
+  it("does not expose an invalid blank type choice after a type is set", () => {
+    renderDrafts([persistedDraft({ type: TransactionType.EXPENSE })]);
+    const type = within(screen.getByTestId("capture-desktop-ledger")).getByRole(
+      "combobox",
+      { name: "Row 1 type" }
+    );
+
+    expect(within(type).queryByRole("option", { name: "Choose type" })).toBeNull();
+  });
+
+  it("opens an accessible type-specific inspector and clears incompatible fields on type change", async () => {
+    const user = userEvent.setup();
+    renderDrafts([
+      persistedDraft({
+        fromMoneySourceId: "card",
+        qualityRating: QualityRating.B,
+        countTowardFeeWaiver: true
+      })
+    ]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+
+    await user.click(within(ledger).getByRole("button", { name: "Edit details for row 1" }));
+    const inspector = within(ledger).getByRole("region", { name: "Details for row 1" });
+    expect(within(inspector).getByRole("combobox", { name: "Row 1 project" })).not.toBeNull();
+    expect(within(inspector).getByRole("textbox", { name: "Row 1 description" })).not.toBeNull();
+    expect(within(inspector).getByRole("checkbox", { name: "Row 1 count toward fee waiver" })).not.toBeNull();
+
+    await user.selectOptions(
+      within(ledger).getByRole("combobox", { name: "Row 1 type" }),
+      TransactionType.ADJUSTMENT
+    );
+
+    expect(mocks.updateTransactionDraft).toHaveBeenCalledWith(
+      "draft-1",
+      expect.objectContaining({
+        type: TransactionType.ADJUSTMENT,
+        fromMoneySourceId: null,
+        toMoneySourceId: null,
+        qualityRating: null,
+        relatedTransactionId: null,
+        countTowardFeeWaiver: false
+      })
+    );
+    expect(
+      within(ledger).getByRole("combobox", { name: "Row 1 adjusted source" })
+    ).not.toBeNull();
+    expect(
+      within(ledger).getByRole("combobox", { name: "Row 1 adjustment direction" })
+    ).not.toBeNull();
+  });
+
+  it("offers fee-waiver tracking only for card expenses and clears it when the source stops applying", async () => {
+    const user = userEvent.setup();
+    renderDrafts([
+      persistedDraft({
+        fromMoneySourceId: "wallet",
+        countTowardFeeWaiver: false
+      })
+    ]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    await user.click(
+      within(ledger).getByRole("button", { name: "Edit details for row 1" })
+    );
+    const inspector = within(ledger).getByRole("region", {
+      name: "Details for row 1"
+    });
+    const source = within(ledger).getByRole("combobox", {
+      name: "Row 1 source"
+    });
+
+    expect(
+      within(inspector).queryByRole("checkbox", {
+        name: "Row 1 count toward fee waiver"
+      })
+    ).toBeNull();
+
+    await user.selectOptions(source, "card");
+    const feeWaiver = within(inspector).getByRole("checkbox", {
+      name: "Row 1 count toward fee waiver"
+    });
+    await user.click(feeWaiver);
+    expect(mocks.updateTransactionDraft).toHaveBeenCalledWith("draft-1", {
+      countTowardFeeWaiver: true
+    });
+
+    await user.selectOptions(source, "bank");
+    expect(
+      within(inspector).queryByRole("checkbox", {
+        name: "Row 1 count toward fee waiver"
+      })
+    ).toBeNull();
+    expect(mocks.updateTransactionDraft).toHaveBeenCalledWith("draft-1", {
+      fromMoneySourceId: "bank",
+      countTowardFeeWaiver: false
+    });
+  });
+
+  it("keeps a duplicate warning visible as acknowledged and patches only its acknowledgement", async () => {
+    const user = userEvent.setup();
+    const duplicate = persistedDraft({
+      possibleDuplicate: true,
+      issues: [
+        { field: "form", message: "Confirm this possible duplicate before importing." }
+      ]
+    });
+    mocks.updateTransactionDraft.mockResolvedValueOnce({
+      ok: true,
+      draft: {
+        ...duplicate,
+        duplicateConfirmed: true,
+        status: "READY",
+        issues: []
+      }
+    });
+    renderDrafts([duplicate]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+
+    await user.click(within(ledger).getByRole("button", { name: "Edit details for row 1" }));
+    await user.click(
+      within(ledger).getByRole("checkbox", { name: "Keep row 1 as a separate transaction" })
+    );
+
+    expect(mocks.updateTransactionDraft).toHaveBeenCalledWith("draft-1", {
+      duplicateConfirmed: true
+    });
+    expect(
+      await within(ledger).findByText("Possible duplicate · acknowledged")
+    ).not.toBeNull();
+  });
+
+  it("focuses the inspector fallback for form and non-rendered field findings", async () => {
+    const user = userEvent.setup();
+    renderDrafts([
+      persistedDraft({
+        type: TransactionType.INCOME,
+        toMoneySourceId: "wallet",
+        issues: [
+          { field: "form", message: "Review this row." },
+          {
+            field: "fromMoneySourceId",
+            message: "Income cannot have a from money source."
+          }
+        ]
+      })
+    ]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    await user.click(
+      within(ledger).getByRole("button", { name: "Edit details for row 1" })
+    );
+    const inspector = within(ledger).getByRole("region", {
+      name: "Details for row 1"
+    });
+
+    await user.click(within(inspector).getByRole("button", { name: "Review this row." }));
+    expect(document.activeElement).toBe(inspector);
+    await user.click(
+      within(inspector).getByRole("button", {
+        name: "Income cannot have a from money source."
+      })
+    );
+    expect(document.activeElement).toBe(inspector);
+  });
+
+  it("preserves exact money text, saves on blur, and replaces findings with the authoritative server draft", async () => {
+    const user = userEvent.setup();
+    mocks.updateTransactionDraft.mockResolvedValueOnce({
+      ok: true,
+      draft: persistedDraft({
+        amountText: "90071992547409.99",
+        fromMoneySourceId: "wallet",
+        status: "READY",
+        issues: []
+      })
+    });
+    renderDrafts([
+      persistedDraft({
+        issues: [{ field: "fromMoneySourceId", message: "Choose a source." }]
+      })
+    ]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    const amount = within(ledger).getByRole("textbox", { name: "Row 1 amount" });
+
+    await user.clear(amount);
+    await user.type(amount, "90071992547409.99");
+    await user.tab();
+
+    expect(mocks.updateTransactionDraft).toHaveBeenCalledWith("draft-1", {
+      amountText: "90071992547409.99"
+    });
+    expect(await screen.findByText("Row 1 is ready.")).not.toBeNull();
+    expect(within(ledger).getByRole("status", { name: "Ready" })).not.toBeNull();
+  });
+
+  it("keeps local input and announces a server patch failure", async () => {
+    const user = userEvent.setup();
+    mocks.updateTransactionDraft.mockResolvedValueOnce({
+      ok: false,
+      error: "Enter valid draft data."
+    });
+    renderDrafts([persistedDraft()]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    const title = within(ledger).getByRole("textbox", { name: "Row 1 title" });
+
+    await user.clear(title);
+    await user.type(title, "Cà phê với bạn");
+    await user.tab();
+
+    expect(await screen.findByText("Row 1 was not saved: Enter valid draft data.")).not.toBeNull();
+    expect((title as HTMLInputElement).value).toBe("Cà phê với bạn");
+  });
+
+  it("fills an explicitly selected field down selected rows sequentially and reports partial failures", async () => {
+    const user = userEvent.setup();
+    let activeCalls = 0;
+    let peakCalls = 0;
+    mocks.updateTransactionDraft.mockImplementation(async (id: string, patch: Partial<TransactionDraftView>) => {
+      activeCalls += 1;
+      peakCalls = Math.max(peakCalls, activeCalls);
+      await Promise.resolve();
+      activeCalls -= 1;
+      if (id === "draft-3") throw new Error("network unavailable");
+      return { ok: true, draft: persistedDraft({ id, ...patch }) };
+    });
+    renderDrafts([
+      persistedDraft({ id: "draft-1", position: 0, categoryId: "food" }),
+      persistedDraft({ id: "draft-2", position: 1, title: "Bánh mì", categoryId: null }),
+      persistedDraft({ id: "draft-3", position: 2, title: "Trà đá", categoryId: null })
+    ]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+
+    for (const row of [1, 2, 3]) {
+      await user.click(within(ledger).getByRole("checkbox", { name: `Select row ${row}` }));
+    }
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Field to fill down" }),
+      "categoryId"
+    );
+    await user.click(screen.getByRole("button", { name: "Fill selected rows" }));
+
+    await waitFor(() => expect(mocks.updateTransactionDraft).toHaveBeenCalledTimes(2));
+    expect(mocks.updateTransactionDraft.mock.calls).toEqual([
+      ["draft-2", { categoryId: "food" }],
+      ["draft-3", { categoryId: "food" }]
+    ]);
+    expect(peakCalls).toBe(1);
+    expect(await screen.findByText("Updated 1 of 2 rows. 1 row was not saved.")).not.toBeNull();
+  });
+
+  it("refuses an unsafe source fill across mixed transaction flows", async () => {
+    const user = userEvent.setup();
+    renderDrafts([
+      persistedDraft({
+        id: "draft-1",
+        type: TransactionType.EXPENSE,
+        fromMoneySourceId: "wallet"
+      }),
+      persistedDraft({
+        id: "draft-2",
+        position: 1,
+        type: TransactionType.INCOME,
+        toMoneySourceId: "bank"
+      })
+    ]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    await user.click(within(ledger).getByRole("checkbox", { name: "Select row 1" }));
+    await user.click(within(ledger).getByRole("checkbox", { name: "Select row 2" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Field to fill down" }),
+      "source"
+    );
+    await user.click(screen.getByRole("button", { name: "Fill selected rows" }));
+
+    expect(
+      await screen.findByText(
+        "Source fill needs selected rows with the same transaction flow."
+      )
+    ).not.toBeNull();
+    expect(mocks.updateTransactionDraft).not.toHaveBeenCalled();
+  });
+
+  it("clears fee-waiver tracking when source fill moves a card expense to a non-card source", async () => {
+    const user = userEvent.setup();
+    renderDrafts([
+      persistedDraft({
+        id: "draft-1",
+        fromMoneySourceId: "wallet",
+        countTowardFeeWaiver: false
+      }),
+      persistedDraft({
+        id: "draft-2",
+        position: 1,
+        fromMoneySourceId: "card",
+        countTowardFeeWaiver: true
+      })
+    ]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    await user.click(
+      within(ledger).getByRole("checkbox", { name: "Select row 1" })
+    );
+    await user.click(
+      within(ledger).getByRole("checkbox", { name: "Select row 2" })
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Field to fill down" }),
+      "source"
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Fill selected rows" })
+    );
+
+    await waitFor(() => expect(mocks.updateTransactionDraft).toHaveBeenCalledOnce());
+    expect(mocks.updateTransactionDraft).toHaveBeenCalledWith("draft-2", {
+      fromMoneySourceId: "wallet",
+      countTowardFeeWaiver: false
+    });
+  });
+
+  it("does not overwrite a field touched after fill-down begins", async () => {
+    const user = userEvent.setup();
+    let releaseFirst: (() => void) | undefined;
+    mocks.updateTransactionDraft
+      .mockImplementationOnce(
+        () => new Promise((resolve) => {
+          releaseFirst = () => resolve({
+            ok: true,
+            draft: persistedDraft({ id: "draft-2", position: 1, categoryId: "food" })
+          });
+        })
+      )
+      .mockResolvedValueOnce({
+        ok: true,
+        draft: persistedDraft({ id: "draft-3", position: 2, categoryId: "food" })
+      });
+    renderDrafts([
+      persistedDraft({ id: "draft-1", position: 0, categoryId: "food" }),
+      persistedDraft({ id: "draft-2", position: 1, title: "Bánh mì", categoryId: null }),
+      persistedDraft({ id: "draft-3", position: 2, title: "Trà đá", categoryId: null })
+    ]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    for (const row of [1, 2, 3]) {
+      await user.click(within(ledger).getByRole("checkbox", { name: `Select row ${row}` }));
+    }
+    await user.selectOptions(screen.getByRole("combobox", { name: "Field to fill down" }), "categoryId");
+    await user.click(screen.getByRole("button", { name: "Fill selected rows" }));
+    await waitFor(() => expect(mocks.updateTransactionDraft).toHaveBeenCalledTimes(1));
+
+    await user.selectOptions(
+      within(ledger).getByRole("combobox", { name: "Row 3 category" }),
+      "salary"
+    );
+    releaseFirst?.();
+
+    await waitFor(() => expect(screen.getByText("Updated 1 row. Skipped 1 row changed during fill.")).not.toBeNull());
+    expect(mocks.updateTransactionDraft).toHaveBeenCalledTimes(2);
+    expect(mocks.updateTransactionDraft).not.toHaveBeenCalledWith("draft-3", { categoryId: "food" });
+  });
+
+  it("rolls back unchanged fields after a multi-field fill failure while preserving a later type edit", async () => {
+    const user = userEvent.setup();
+    let rejectFill: (() => void) | undefined;
+    mocks.updateTransactionDraft.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        rejectFill = () => resolve({ ok: false, error: "Network unavailable." });
+      })
+    );
+    renderDrafts([
+      persistedDraft({
+        id: "draft-1",
+        type: TransactionType.EXPENSE,
+        fromMoneySourceId: "wallet"
+      }),
+      persistedDraft({
+        id: "draft-2",
+        position: 1,
+        type: TransactionType.TRANSFER,
+        fromMoneySourceId: "wallet",
+        toMoneySourceId: "bank"
+      })
+    ]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    await user.click(within(ledger).getByRole("checkbox", { name: "Select row 1" }));
+    await user.click(within(ledger).getByRole("checkbox", { name: "Select row 2" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Field to fill down" }),
+      "type"
+    );
+    await user.click(screen.getByRole("button", { name: "Fill selected rows" }));
+    await waitFor(() => expect(mocks.updateTransactionDraft).toHaveBeenCalledTimes(1));
+
+    await user.selectOptions(
+      within(ledger).getByRole("combobox", { name: "Row 2 type" }),
+      TransactionType.INCOME
+    );
+    rejectFill?.();
+
+    await waitFor(() =>
+      expect(
+        (within(ledger).getByRole("combobox", { name: "Row 2 type" }) as HTMLSelectElement).value
+      ).toBe(TransactionType.INCOME)
+    );
+    expect(
+      (within(ledger).getByRole("combobox", { name: "Row 2 source" }) as HTMLSelectElement).value
+    ).toBe("bank");
+  });
+
+  it("keeps a newer pasted cell value when an older ordinary save resolves last", async () => {
+    const user = userEvent.setup();
+    let releaseOlder: (() => void) | undefined;
+    mocks.updateTransactionDraft
+      .mockImplementationOnce(
+        () => new Promise((resolve) => {
+          releaseOlder = () => resolve({
+            ok: true,
+            draft: persistedDraft({ amountText: "50000" })
+          });
+        })
+      )
+      .mockResolvedValueOnce({
+        ok: true,
+        draft: persistedDraft({ amountText: "90071992547409.99", status: "READY" })
+      });
+    renderDrafts([persistedDraft()]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    const amount = within(ledger).getByRole("textbox", { name: "Row 1 amount" });
+    await user.clear(amount);
+    await user.type(amount, "50000");
+    await user.tab();
+    await waitFor(() => expect(mocks.updateTransactionDraft).toHaveBeenCalledTimes(1));
+    await user.click(within(ledger).getByRole("checkbox", { name: "Select row 1" }));
+
+    fireEvent.paste(amount, {
+      clipboardData: { getData: () => "90071992547409.99\n" }
+    });
+    await waitFor(() => expect(mocks.updateTransactionDraft).toHaveBeenCalledTimes(2));
+    releaseOlder?.();
+
+    await waitFor(() =>
+      expect((amount as HTMLInputElement).value).toBe("90071992547409.99")
+    );
+  });
+
+  it("keeps fill-down available as a 44px pointer and keyboard control beside mobile cards", () => {
+    renderDrafts([persistedDraft(), persistedDraft({ id: "draft-2", position: 1 })]);
+
+    const toolbar = screen.getByRole("group", { name: "Fill selected draft rows" });
+    expect(toolbar.classList.contains("hidden")).toBe(false);
+    expect(within(toolbar).getByRole("combobox", { name: "Field to fill down" }).classList.contains("min-h-11")).toBe(true);
+    expect(within(toolbar).getByRole("button", { name: "Fill selected rows" }).classList.contains("min-h-11")).toBe(true);
+  });
+
+  it("defaults only a blank type from the prior row and preserves a later explicit edit", async () => {
+    const user = userEvent.setup();
+    let releaseDefault: (() => void) | undefined;
+    mocks.updateTransactionDraft.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        releaseDefault = () => resolve({
+          ok: true,
+          draft: persistedDraft({
+            id: "draft-2",
+            position: 1,
+            type: TransactionType.INCOME,
+            toMoneySourceId: "wallet"
+          })
+        });
+      })
+    );
+    renderDrafts([
+      persistedDraft({ id: "draft-1", type: TransactionType.INCOME, toMoneySourceId: "wallet" }),
+      persistedDraft({ id: "draft-2", position: 1, type: null, fromMoneySourceId: null })
+    ]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    const secondType = within(ledger).getByRole("combobox", { name: "Row 2 type" });
+
+    await waitFor(() => expect((secondType as HTMLSelectElement).value).toBe(TransactionType.INCOME));
+    await waitFor(() => expect(mocks.updateTransactionDraft).toHaveBeenCalledWith("draft-2", {
+      type: TransactionType.INCOME
+    }));
+    await user.selectOptions(secondType, TransactionType.EXPENSE);
+    releaseDefault?.();
+
+    await waitFor(() => expect((secondType as HTMLSelectElement).value).toBe(TransactionType.EXPENSE));
+  });
+
+  it("rolls back a rejected prior-row default and does not retry it", async () => {
+    mocks.updateTransactionDraft.mockResolvedValueOnce({
+      ok: false,
+      error: "Enter valid draft data."
+    });
+    renderDrafts([
+      persistedDraft({ id: "draft-1", type: TransactionType.INCOME }),
+      persistedDraft({ id: "draft-2", position: 1, type: null })
+    ]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    const secondType = within(ledger).getByRole("combobox", { name: "Row 2 type" });
+
+    expect(
+      await screen.findByText(
+        "Applied 0 of 1 row defaults. 1 default was not saved."
+      )
+    ).not.toBeNull();
+    expect((secondType as HTMLSelectElement).value).toBe("");
+    expect(mocks.updateTransactionDraft).toHaveBeenCalledOnce();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mocks.updateTransactionDraft).toHaveBeenCalledOnce();
+  });
+
+  it.each(["IMPORTING", "IMPORTED", "DISMISSED"] as const)(
+    "does not default, select, or edit a %s draft",
+    async (status) => {
+    renderDrafts([
+      persistedDraft({ id: "draft-1", type: TransactionType.INCOME }),
+      persistedDraft({
+        id: "terminal",
+        position: 1,
+        status,
+        type: null,
+        currency: null,
+        title: null,
+        amountText: null,
+        importedTransactionId:
+          status === "IMPORTED" ? "transaction-1" : null
+      })
+    ]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+
+    expect(
+      (within(ledger).getByRole("checkbox", { name: "Select row 2" }) as HTMLInputElement).disabled
+    ).toBe(true);
+    expect(
+      (within(ledger).getByRole("combobox", { name: "Row 2 type" }) as HTMLSelectElement).disabled
+    ).toBe(true);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.updateTransactionDraft).not.toHaveBeenCalled();
+    }
+  );
+
+  it("pastes one exact-text column down selected amount cells through the sequential queue", async () => {
+    const user = userEvent.setup();
+    renderDrafts([
+      persistedDraft({ id: "draft-1", position: 0 }),
+      persistedDraft({ id: "draft-2", position: 1, title: "Bánh mì" })
+    ]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    await user.click(within(ledger).getByRole("checkbox", { name: "Select row 1" }));
+    await user.click(within(ledger).getByRole("checkbox", { name: "Select row 2" }));
+    const amount = within(ledger).getByRole("textbox", { name: "Row 1 amount" });
+
+    fireEvent.paste(amount, {
+      clipboardData: { getData: () => "90071992547409.99\n125000.50" }
+    });
+
+    await waitFor(() => expect(mocks.updateTransactionDraft).toHaveBeenCalledTimes(2));
+    expect(mocks.updateTransactionDraft.mock.calls).toEqual([
+      ["draft-1", { amountText: "90071992547409.99" }],
+      ["draft-2", { amountText: "125000.50" }]
+    ]);
+    expect(await screen.findByText("Updated 2 rows from pasted cells.")).not.toBeNull();
+  });
+
+  it("shows refund and adjustment inspector fields in the same logical order on mobile", async () => {
+    const user = userEvent.setup();
+    renderDrafts([
+      persistedDraft({
+        id: "refund",
+        type: TransactionType.REFUND,
+        toMoneySourceId: "wallet"
+      }),
+      persistedDraft({
+        id: "adjustment",
+        position: 1,
+        type: TransactionType.ADJUSTMENT,
+        adjustedMoneySourceId: "bank",
+        adjustmentDirection: AdjustmentDirection.DECREASE,
+        adjustmentTarget: AdjustmentTarget.CREDIT_CARD_DEBT
+      })
+    ]);
+    const cards = screen.getByTestId("capture-mobile-cards");
+    await user.click(within(cards).getByRole("button", { name: "Edit row 1" }));
+    const destination = within(cards).getByRole("combobox", {
+      name: "Row 1 destination"
+    });
+    expect(destination.classList.contains("min-h-11")).toBe(true);
+    expect(destination.classList.contains("md:min-h-11")).toBe(true);
+    expect(within(cards).getByRole("combobox", { name: "Row 1 related expense" })).not.toBeNull();
+
+    await user.click(within(cards).getByRole("button", { name: "Edit row 2" }));
+    expect(within(cards).getByRole("combobox", { name: "Row 2 adjusted source" })).not.toBeNull();
+    expect(within(cards).getByRole("combobox", { name: "Row 2 adjustment target" })).not.toBeNull();
+  });
+
+  it("clears selection when reviewed paste rows replace the capture result", async () => {
+    const user = userEvent.setup();
+    mocks.savePasteDrafts.mockResolvedValueOnce({
+      ok: true,
+      drafts: [persistedDraft({ id: "replacement", title: "Replacement" })]
+    });
+    renderDrafts([persistedDraft()]);
+    let ledger = screen.getByTestId("capture-desktop-ledger");
+    await user.click(within(ledger).getByRole("checkbox", { name: "Select row 1" }));
+    await pasteRows(user, "Date,Title,Amount\n2026-08-04,Replacement,60000");
+    await user.click(await screen.findByRole("button", { name: "Review rows" }));
+
+    expect((await screen.findAllByText("Replacement")).length).toBeGreaterThan(0);
+    ledger = screen.getByTestId("capture-desktop-ledger");
+    expect(
+      (within(ledger).getByRole("checkbox", { name: "Select row 1" }) as HTMLInputElement).checked
+    ).toBe(false);
+    expect(
+      (screen.getByRole("button", { name: "Fill selected rows" }) as HTMLButtonElement).disabled
+    ).toBe(true);
   });
 });
