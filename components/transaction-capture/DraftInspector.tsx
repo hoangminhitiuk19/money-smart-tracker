@@ -4,6 +4,7 @@ import {
   AdjustmentDirection,
   AdjustmentTarget,
   MoneySourceType,
+  QualityRating,
   TransactionType
 } from "@prisma/client";
 import { Input } from "@/components/ui/Input";
@@ -15,7 +16,15 @@ import type {
 } from "@/lib/transaction-drafts/types";
 
 export type DraftPatch = Partial<
-  Omit<TransactionDraftInput, "captureKey" | "position" | "origin" | "rawRow">
+  Omit<
+    TransactionDraftInput,
+    | "captureKey"
+    | "position"
+    | "origin"
+    | "rawRow"
+    | "duplicateAcknowledgementRequired"
+    | "invalidMappedFields"
+  >
 >;
 
 export type DraftCaptureOption = {
@@ -27,13 +36,17 @@ export type DraftMoneySourceOption = DraftCaptureOption & {
   type: MoneySourceType;
 };
 
+export type DraftCategoryOption = DraftCaptureOption & {
+  defaultQualityRating: QualityRating | null;
+};
+
 export type DraftExpenseOption = DraftCaptureOption & {
   amount: string;
   transactionDate: string;
 };
 
 export type DraftCaptureOptions = {
-  categories: readonly DraftCaptureOption[];
+  categories: readonly DraftCategoryOption[];
   moneySources: readonly DraftMoneySourceOption[];
   projects: readonly DraftCaptureOption[];
   expenses: readonly DraftExpenseOption[];
@@ -71,9 +84,14 @@ export function draftTypePatch(
   }
   if (type !== TransactionType.EXPENSE) {
     patch.qualityRating = null;
+    patch.qualityRatingTouched = false;
     patch.countTowardFeeWaiver = false;
+    patch.countTowardFeeWaiverTouched = false;
   } else if (draft.type !== TransactionType.EXPENSE) {
     patch.countTowardFeeWaiver = preserveExpenseFeeWaiverDefault ? null : false;
+    patch.countTowardFeeWaiverTouched = false;
+    patch.qualityRating = null;
+    patch.qualityRatingTouched = false;
   }
   if (type !== TransactionType.REFUND) {
     patch.relatedTransactionId = null;
@@ -83,26 +101,14 @@ export function draftTypePatch(
 }
 
 export function draftSourcePatch(
-  draft: Pick<TransactionDraftInput, "type">,
+  _draft: Pick<TransactionDraftInput, "type">,
   field:
     | "fromMoneySourceId"
     | "toMoneySourceId"
     | "adjustedMoneySourceId",
-  value: string | null,
-  moneySources: readonly DraftMoneySourceOption[]
+  value: string | null
 ): DraftPatch {
-  const patch = { [field]: value } as DraftPatch;
-  const sourceType = moneySources.find((source) => source.id === value)?.type;
-
-  if (
-    draft.type === TransactionType.EXPENSE &&
-    field === "fromMoneySourceId" &&
-    sourceType !== MoneySourceType.CREDIT_CARD
-  ) {
-    patch.countTowardFeeWaiver = false;
-  }
-
-  return patch;
+  return { [field]: value } as DraftPatch;
 }
 
 export function draftFieldId(
@@ -353,7 +359,10 @@ export function DraftInspector({
               disabled={!editable}
               id={draftFieldId(surface, draft.id, "countTowardFeeWaiver")}
               onChange={(event) => {
-                const patch = { countTowardFeeWaiver: event.target.checked };
+                const patch = {
+                  countTowardFeeWaiver: event.target.checked,
+                  countTowardFeeWaiverTouched: true
+                };
                 onChange(draft.id, patch);
                 onPatch(draft.id, patch);
               }}

@@ -35,6 +35,15 @@ export type DraftFieldIssue = {
   message: string;
 };
 
+export const invalidMappedDraftFields = [
+  "qualityRating",
+  "adjustmentDirection",
+  "adjustmentTarget"
+] as const;
+
+export type InvalidMappedDraftField =
+  (typeof invalidMappedDraftFields)[number];
+
 export type TransactionDraftInput = {
   captureKey: string;
   position: number;
@@ -55,9 +64,13 @@ export type TransactionDraftInput = {
   projectId: string | null;
   relatedTransactionId: string | null;
   countTowardFeeWaiver: boolean | null;
+  countTowardFeeWaiverTouched?: boolean;
+  qualityRatingTouched?: boolean;
   recurringPaymentId: string | null;
   isInstallmentRelated: boolean;
   duplicateConfirmed: boolean;
+  duplicateAcknowledgementRequired?: boolean;
+  invalidMappedFields?: InvalidMappedDraftField[];
   rawRow: Record<string, string> | null;
 };
 
@@ -86,16 +99,35 @@ export const transactionDraftInputSchema = z
     projectId: nullableId,
     relatedTransactionId: nullableId,
     countTowardFeeWaiver: z.boolean().nullable(),
+    countTowardFeeWaiverTouched: z.boolean().default(false),
+    qualityRatingTouched: z.boolean().default(false),
     recurringPaymentId: nullableId,
     isInstallmentRelated: z.boolean(),
     duplicateConfirmed: z.boolean(),
+    duplicateAcknowledgementRequired: z.boolean().default(false),
+    invalidMappedFields: z
+      .array(z.enum(invalidMappedDraftFields))
+      .max(invalidMappedDraftFields.length)
+      .default([]),
     rawRow: z.record(z.string(), z.string().max(10_000)).nullable()
   })
   .strict();
 
 export const transactionDraftPatchSchema = transactionDraftInputSchema
-  .omit({ captureKey: true, position: true, origin: true })
+  .omit({
+    captureKey: true,
+    position: true,
+    origin: true,
+    countTowardFeeWaiverTouched: true,
+    qualityRatingTouched: true,
+    duplicateAcknowledgementRequired: true,
+    invalidMappedFields: true
+  })
   .partial()
+  .extend({
+    countTowardFeeWaiverTouched: z.boolean().optional(),
+    qualityRatingTouched: z.boolean().optional()
+  })
   .strict();
 
 export type TransactionDraftView = TransactionDraftInput & {

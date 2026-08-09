@@ -27,6 +27,7 @@ import {
   type TransactionDraftView
 } from "@/lib/transaction-drafts/types";
 import {
+  applyDraftOwnedDefaults,
   assessDraft,
   computeDraftFingerprint,
   draftToTransactionInput,
@@ -135,6 +136,10 @@ function jsonValue(value: Record<string, string> | null) {
   return value === null ? Prisma.DbNull : value;
 }
 
+function jsonArray(value: readonly string[]) {
+  return [...value] as Prisma.InputJsonArray;
+}
+
 function storedDraftData(input: TransactionDraftInput) {
   return {
     type: input.type,
@@ -153,9 +158,15 @@ function storedDraftData(input: TransactionDraftInput) {
     projectId: input.projectId,
     relatedTransactionId: input.relatedTransactionId,
     countTowardFeeWaiver: input.countTowardFeeWaiver,
+    countTowardFeeWaiverTouched:
+      input.countTowardFeeWaiverTouched ?? false,
+    qualityRatingTouched: input.qualityRatingTouched ?? false,
     recurringPaymentId: input.recurringPaymentId,
     isInstallmentRelated: input.isInstallmentRelated,
     duplicateConfirmed: input.duplicateConfirmed,
+    duplicateAcknowledgementRequired:
+      input.duplicateAcknowledgementRequired ?? false,
+    invalidMappedFields: jsonArray(input.invalidMappedFields ?? []),
     rawRow: jsonValue(input.rawRow),
     status: TransactionDraftStatus.NEEDS_REVIEW,
     duplicateFingerprint: null,
@@ -170,7 +181,8 @@ function invalidStoredDraftIssue(): DraftFieldIssue[] {
 async function reassessCapture(
   db: Prisma.TransactionClient,
   userId: string,
-  captureKey: string
+  captureKey: string,
+  changedDraftId?: string
 ): Promise<TransactionDraft[]> {
   const records = await db.transactionDraft.findMany({
     where: {
@@ -205,19 +217,38 @@ async function reassessCapture(
   await Promise.all(
     records.map((record, index) => {
       const parsed = parsedInputs[index];
-      const assessment: DraftAssessment = parsed.success
-        ? assessDraft(parsed.data, references, {
-            possibleDuplicate: duplicatePositions.has(parsed.data.position)
+      const duplicateFingerprint = parsed.success
+        ? computeDraftFingerprint(parsed.data)
+        : null;
+      const fingerprintChanged =
+        record.duplicateFingerprint !== null &&
+        duplicateFingerprint !== record.duplicateFingerprint;
+      const duplicateAcknowledgementRequired = parsed.success
+        ? duplicatePositions.has(parsed.data.position) ||
+          (!fingerprintChanged &&
+            record.id === changedDraftId &&
+            record.duplicateAcknowledgementRequired)
+        : record.duplicateAcknowledgementRequired;
+      const inputForAssessment = parsed.success
+        ? {
+            ...parsed.data,
+            duplicateConfirmed: fingerprintChanged
+              ? false
+              : parsed.data.duplicateConfirmed
+          }
+        : null;
+      const defaulted = inputForAssessment
+        ? applyDraftOwnedDefaults(inputForAssessment, references)
+        : null;
+      const assessment: DraftAssessment = defaulted
+        ? assessDraft(defaulted, references, {
+            possibleDuplicate: duplicateAcknowledgementRequired
           })
         : {
             status: TransactionDraftStatus.NEEDS_REVIEW,
             issues: invalidStoredDraftIssue(),
             input: null
           };
-      const duplicateFingerprint = parsed.success
-        ? computeDraftFingerprint(parsed.data)
-        : null;
-
       return db.transactionDraft.updateMany({
         where: {
           id: record.id,
@@ -228,8 +259,10 @@ async function reassessCapture(
           status: assessment.status,
           validationIssues: assessment.issues,
           duplicateFingerprint,
-          countTowardFeeWaiver:
-            assessment.input?.countTowardFeeWaiver ?? record.countTowardFeeWaiver
+          duplicateConfirmed: defaulted?.duplicateConfirmed ?? false,
+          duplicateAcknowledgementRequired,
+          qualityRating: defaulted?.qualityRating ?? null,
+          countTowardFeeWaiver: defaulted?.countTowardFeeWaiver ?? null
         }
       });
     })
@@ -549,7 +582,13 @@ export async function updateTransactionDraft(
 
       const merged = transactionDraftInputSchema.safeParse({
         ...transactionDraftRecordToInput(existing),
-        ...parsedPatch.data
+        ...parsedPatch.data,
+        invalidMappedFields: (
+          transactionDraftRecordToInput(existing).invalidMappedFields ?? []
+        ).filter(
+          (field) =>
+            !Object.prototype.hasOwnProperty.call(parsedPatch.data, field)
+        )
       });
       if (!merged.success) {
         return actionFailure();
@@ -578,7 +617,12 @@ export async function updateTransactionDraft(
             ]
           }
         },
-        data: storedDraftData(merged.data)
+        data: {
+          ...storedDraftData(merged.data),
+          duplicateFingerprint: existing.duplicateFingerprint,
+          duplicateAcknowledgementRequired:
+            existing.duplicateAcknowledgementRequired
+        }
       });
       if (updatedCandidate.count !== 1) {
         return actionFailure(DRAFT_NOT_FOUND_ERROR);
@@ -586,7 +630,8 @@ export async function updateTransactionDraft(
       const records = await reassessCapture(
         db,
         user.id,
-        existing.captureKey
+        existing.captureKey,
+        existing.id
       );
       const updated = records.find((record) => record.id === existing.id);
       if (!updated) {
@@ -620,10 +665,14 @@ const dismissedCandidateData = {
   projectId: null,
   relatedTransactionId: null,
   countTowardFeeWaiver: null,
+  countTowardFeeWaiverTouched: false,
+  qualityRatingTouched: false,
   recurringPaymentId: null,
   isInstallmentRelated: false,
   duplicateFingerprint: null,
   duplicateConfirmed: false,
+  duplicateAcknowledgementRequired: false,
+  invalidMappedFields: [],
   validationIssues: [],
   rawRow: Prisma.DbNull
 } satisfies Prisma.TransactionDraftUncheckedUpdateManyInput;
@@ -635,7 +684,12 @@ function activityOrigin(records: readonly Pick<TransactionDraft, "origin">[]) {
 
 export async function dismissTransactionDrafts(
   ids: readonly string[]
-): Promise<DraftActionResult<{ dismissedCount: number }>> {
+): Promise<
+  DraftActionResult<{
+    dismissedCount: number;
+    dismissedIds: readonly string[];
+  }>
+> {
   const user = await requireAuth();
   if (!(await mutationAllowed(user.id))) {
     return actionFailure(RATE_LIMIT_MESSAGE);
@@ -646,11 +700,11 @@ export async function dismissTransactionDrafts(
   }
   const uniqueIds = Array.from(new Set(parsedIds.data));
   if (uniqueIds.length === 0) {
-    return { ok: true, dismissedCount: 0 };
+    return { ok: true, dismissedCount: 0, dismissedIds: [] };
   }
 
   try {
-    const dismissedCount = await prisma.$transaction(async (db) => {
+    const dismissal = await prisma.$transaction(async (db) => {
       const dismissed = await db.transactionDraft.updateManyAndReturn({
         where: {
           userId: user.id,
@@ -658,10 +712,10 @@ export async function dismissTransactionDrafts(
           status: { in: [...EDITABLE_DRAFT_STATUSES] }
         },
         data: dismissedCandidateData,
-        select: { origin: true }
+        select: { id: true, origin: true }
       });
       if (dismissed.length === 0) {
-        return 0;
+        return { dismissedCount: 0, dismissedIds: [] as string[] };
       }
       await db.activityLog.create({
         data: {
@@ -674,9 +728,13 @@ export async function dismissTransactionDrafts(
           }
         }
       });
-      return dismissed.length;
+      const dismissedIdSet = new Set(dismissed.map(({ id }) => id));
+      return {
+        dismissedCount: dismissed.length,
+        dismissedIds: uniqueIds.filter((id) => dismissedIdSet.has(id))
+      };
     });
-    return { ok: true, dismissedCount };
+    return { ok: true, ...dismissal };
   } catch {
     return actionFailure();
   }
@@ -833,10 +891,14 @@ export async function importTransactionDrafts(
             projectId: null,
             relatedTransactionId: null,
             countTowardFeeWaiver: null,
+            countTowardFeeWaiverTouched: false,
+            qualityRatingTouched: false,
             recurringPaymentId: null,
             isInstallmentRelated: false,
             duplicateFingerprint: null,
             duplicateConfirmed: false,
+            duplicateAcknowledgementRequired: false,
+            invalidMappedFields: [],
             validationIssues: [],
             rawRow: Prisma.DbNull
           }

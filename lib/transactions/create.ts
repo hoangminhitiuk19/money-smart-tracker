@@ -134,7 +134,13 @@ export type TransactionCreateIssue = {
 };
 
 export type OwnedTransactionReferences = {
-  categories: Map<string, { defaultCountTowardFeeWaiver: boolean }>;
+  categories: Map<
+    string,
+    {
+      defaultCountTowardFeeWaiver: boolean;
+      defaultQualityRating?: QualityRating | null;
+    }
+  >;
   expenses: Set<string>;
   moneySources: Map<string, { type: MoneySourceType }>;
   projects: Set<string>;
@@ -252,7 +258,11 @@ export async function loadOwnedTransactionReferences(
       categoryIds.length
         ? db.category.findMany({
             where: { id: { in: categoryIds }, userId },
-            select: { id: true, defaultCountTowardFeeWaiver: true }
+            select: {
+              id: true,
+              defaultCountTowardFeeWaiver: true,
+              defaultQualityRating: true
+            }
           })
         : [],
       moneySourceIds.length
@@ -291,7 +301,8 @@ export async function loadOwnedTransactionReferences(
         category.id,
         {
           defaultCountTowardFeeWaiver:
-            category.defaultCountTowardFeeWaiver
+            category.defaultCountTowardFeeWaiver,
+          defaultQualityRating: category.defaultQualityRating
         }
       ])
     ),
@@ -494,10 +505,12 @@ export async function persistPreparedTransactions(
     return [];
   }
 
+  const batchCreatedAt = new Date();
   const rows: Prisma.TransactionCreateManyInput[] = preparedRows.map(
-    (prepared) => ({
+    (prepared, index) => ({
       id: randomUUID(),
       userId,
+      createdAt: new Date(batchCreatedAt.getTime() + index),
       ...prepared.transaction
     })
   );

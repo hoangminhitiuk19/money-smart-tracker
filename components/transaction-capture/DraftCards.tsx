@@ -234,8 +234,7 @@ export function DraftCards({
                         const patch = draftSourcePatch(
                           draft,
                           source,
-                          event.target.value || null,
-                          options.moneySources
+                          event.target.value || null
                         );
                         onChange(draft.id, patch);
                         onPatch(draft.id, patch);
@@ -275,7 +274,10 @@ export function DraftCards({
                         disabled={!editable}
                         id={draftFieldId("mobile", draft.id, "qualityRating")}
                         onChange={(event) => {
-                          const patch = { qualityRating: (event.target.value || null) as QualityRating | null };
+                          const patch = {
+                            qualityRating: (event.target.value || null) as QualityRating | null,
+                            qualityRatingTouched: true
+                          };
                           onChange(draft.id, patch);
                           onPatch(draft.id, patch);
                         }}

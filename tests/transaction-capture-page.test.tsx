@@ -1,4 +1,8 @@
-import { MoneySourceType, TransactionType } from "@prisma/client";
+import {
+  MoneySourceType,
+  QualityRating,
+  TransactionType
+} from "@prisma/client";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -82,7 +86,12 @@ beforeEach(() => {
     user: { id: "foreign-settings-user" }
   });
   pageMocks.listCategories.mockResolvedValue([
-    { id: "category-1", name: "Food", userId: "foreign-category-user" }
+    {
+      id: "category-1",
+      name: "Food",
+      defaultQualityRating: QualityRating.A,
+      userId: "foreign-category-user"
+    }
   ]);
   pageMocks.listMoneySources.mockResolvedValue([
     {
@@ -127,7 +136,13 @@ describe("transaction capture page", () => {
         initialCaptureKey: "f7ea3ae4-8b56-49f5-a6e3-39c29fe8be36",
         initialDrafts: [],
         options: {
-          categories: [{ id: "category-1", name: "Food" }],
+          categories: [
+            {
+              id: "category-1",
+              name: "Food",
+              defaultQualityRating: QualityRating.A
+            }
+          ],
           moneySources: [
             {
               id: "source-1",

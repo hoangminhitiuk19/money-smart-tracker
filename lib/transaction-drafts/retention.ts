@@ -16,7 +16,7 @@ export async function cleanupExpiredTransactionDrafts(
         status: { in: ["NEEDS_REVIEW", "READY"] }
       },
       orderBy: [{ expiresAt: "asc" }, { id: "asc" }],
-      select: { id: true },
+      select: { id: true, userId: true },
       take: boundedMaximumRows
     });
 
@@ -25,7 +25,11 @@ export async function cleanupExpiredTransactionDrafts(
     }
 
     const deleted = await db.transactionDraft.deleteMany({
-      where: { id: { in: expired.map(({ id }) => id) } }
+      where: {
+        expiresAt: { lte: now },
+        status: { in: ["NEEDS_REVIEW", "READY"] },
+        OR: expired.map(({ id, userId }) => ({ id, userId }))
+      }
     });
 
     return deleted.count;

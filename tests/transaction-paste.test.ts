@@ -207,6 +207,25 @@ describe("mapParsedRows", () => {
     });
   });
 
+  it("preserves populated invalid enum cells as blocking field markers", () => {
+    const table = parsePastedTable(
+      "Title,Amount,Quality Rating,Adjustment Direction,Adjustment Target\nReconcile,45,Z,Sideways,Balance"
+    );
+    const { mapping } = detectColumnMapping(table.columns);
+
+    expect(mapParsedRows(table, mapping, mappingContext)[0]).toMatchObject({
+      qualityRating: null,
+      qualityRatingTouched: true,
+      adjustmentDirection: null,
+      adjustmentTarget: null,
+      invalidMappedFields: [
+        "qualityRating",
+        "adjustmentDirection",
+        "adjustmentTarget"
+      ]
+    });
+  });
+
   it("uses bounded unresolved IDs while retaining unmatched and ambiguous names only in rawRow", () => {
     const table = parsePastedTable(
       "Title,Amount,Source,Category,Project\nCoffee,45,Unknown,Food,Missing project"

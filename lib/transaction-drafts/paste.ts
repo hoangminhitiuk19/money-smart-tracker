@@ -1,6 +1,9 @@
 import * as Papa from "papaparse";
-import type { TransactionType } from "@prisma/client";
-import type { TransactionDraftInput } from "@/lib/transaction-drafts/types";
+import type { QualityRating, TransactionType } from "@prisma/client";
+import type {
+  InvalidMappedDraftField,
+  TransactionDraftInput
+} from "@/lib/transaction-drafts/types";
 
 export const MAX_PASTE_BYTES = 1_000_000;
 export const MAX_DRAFT_ROWS = 200;
@@ -48,7 +51,11 @@ export type PasteMappingContext = {
     transactionDateText: string;
     type: TransactionType;
   };
-  categories: readonly { id: string; name: string }[];
+  categories: readonly {
+    id: string;
+    name: string;
+    defaultQualityRating?: QualityRating | null;
+  }[];
   moneySources: readonly { id: string; name: string }[];
   projects: readonly { id: string; name: string }[];
 };
@@ -372,6 +379,35 @@ export function mapParsedRows(
     const mappedDate = nullableCell(row, mapping, "transactionDateText");
     const mappedType = nullableCell(row, mapping, "type");
     const mappedCurrency = nullableCell(row, mapping, "currency");
+    const mappedQuality = nullableCell(row, mapping, "qualityRating");
+    const mappedAdjustmentDirection = nullableCell(
+      row,
+      mapping,
+      "adjustmentDirection"
+    );
+    const mappedAdjustmentTarget = nullableCell(
+      row,
+      mapping,
+      "adjustmentTarget"
+    );
+    const parsedQuality = qualityRating(mappedQuality);
+    const parsedAdjustmentDirection = adjustmentDirection(
+      mappedAdjustmentDirection
+    );
+    const parsedAdjustmentTarget = adjustmentTarget(mappedAdjustmentTarget);
+    const invalidMappedFields: InvalidMappedDraftField[] = [];
+    if (mappedQuality !== null && parsedQuality === null) {
+      invalidMappedFields.push("qualityRating");
+    }
+    if (
+      mappedAdjustmentDirection !== null &&
+      parsedAdjustmentDirection === null
+    ) {
+      invalidMappedFields.push("adjustmentDirection");
+    }
+    if (mappedAdjustmentTarget !== null && parsedAdjustmentTarget === null) {
+      invalidMappedFields.push("adjustmentTarget");
+    }
 
     return {
       captureKey: context.captureKey,
@@ -389,7 +425,7 @@ export function mapParsedRows(
         "categoryId",
         mapping.categoryId
       ),
-      qualityRating: qualityRating(nullableCell(row, mapping, "qualityRating")),
+      qualityRating: parsedQuality,
       fromMoneySourceId: ownedNameOrUnresolved(
         nullableCell(row, mapping, "fromMoneySourceId"),
         context.moneySources,
@@ -403,12 +439,8 @@ export function mapParsedRows(
         mapping.toMoneySourceId
       ),
       adjustedMoneySourceId: null,
-      adjustmentDirection: adjustmentDirection(
-        nullableCell(row, mapping, "adjustmentDirection")
-      ),
-      adjustmentTarget: adjustmentTarget(
-        nullableCell(row, mapping, "adjustmentTarget")
-      ),
+      adjustmentDirection: parsedAdjustmentDirection,
+      adjustmentTarget: parsedAdjustmentTarget,
       projectId: ownedNameOrUnresolved(
         nullableCell(row, mapping, "projectId"),
         context.projects,
@@ -417,9 +449,13 @@ export function mapParsedRows(
       ),
       relatedTransactionId: nullableCell(row, mapping, "relatedTransactionId"),
       countTowardFeeWaiver: null,
+      countTowardFeeWaiverTouched: false,
+      qualityRatingTouched: mappedQuality !== null,
       recurringPaymentId: null,
       isInstallmentRelated: false,
       duplicateConfirmed: false,
+      duplicateAcknowledgementRequired: false,
+      invalidMappedFields,
       rawRow: rawRowFor(row, table.columns)
     };
   });

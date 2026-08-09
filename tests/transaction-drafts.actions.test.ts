@@ -658,7 +658,11 @@ describe("transaction draft owned reads and mutations", () => {
 
     const result = await dismissTransactionDrafts(["owned-draft", "foreign-draft"]);
 
-    expect(result).toEqual({ ok: true, dismissedCount: 1 });
+    expect(result).toEqual({
+      ok: true,
+      dismissedCount: 1,
+      dismissedIds: ["owned-draft"]
+    });
     expect(drafts[0]).toMatchObject({
       status: "DISMISSED",
       amountText: null,
@@ -691,7 +695,11 @@ describe("transaction draft owned reads and mutations", () => {
 
     await expect(
       dismissTransactionDrafts(["paste-draft", "quick-draft"])
-    ).resolves.toEqual({ ok: true, dismissedCount: 2 });
+    ).resolves.toEqual({
+      ok: true,
+      dismissedCount: 2,
+      dismissedIds: ["paste-draft", "quick-draft"]
+    });
     expect(activities[0].metadata).toEqual({ count: 2, origin: "MIXED" });
     expect(Object.keys(activities[0].metadata)).toEqual(["count", "origin"]);
   });
@@ -714,7 +722,8 @@ describe("transaction draft owned reads and mutations", () => {
 
     await expect(dismissTransactionDrafts(["racing-draft"])).resolves.toEqual({
       ok: true,
-      dismissedCount: 0
+      dismissedCount: 0,
+      dismissedIds: []
     });
     expect(drafts[0].status).toBe("IMPORTING");
     expect(activities).toEqual([]);
@@ -748,7 +757,11 @@ describe("transaction draft owned reads and mutations", () => {
 
     await expect(
       dismissTransactionDrafts(["paste-draft", "quick-draft"])
-    ).resolves.toEqual({ ok: true, dismissedCount: 1 });
+    ).resolves.toEqual({
+      ok: true,
+      dismissedCount: 1,
+      dismissedIds: ["paste-draft"]
+    });
     expect(activities).toHaveLength(1);
     expect(activities[0].metadata).toEqual({ count: 1, origin: "PASTE" });
   });

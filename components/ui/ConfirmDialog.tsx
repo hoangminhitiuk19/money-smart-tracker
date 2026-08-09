@@ -16,6 +16,7 @@ type ConfirmDialogProps = {
   onCancel: () => void;
   onConfirm: () => void;
   pendingAriaLabel?: string;
+  pendingLabel?: string;
   title: string;
 };
 
@@ -28,6 +29,7 @@ export function ConfirmDialog({
   onCancel,
   onConfirm,
   pendingAriaLabel,
+  pendingLabel = "Deleting...",
   title
 }: ConfirmDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -180,7 +182,7 @@ export function ConfirmDialog({
             onClick={onConfirm}
             type="button"
           >
-            {isPending ? "Deleting..." : confirmLabel}
+            {isPending ? pendingLabel : confirmLabel}
           </button>
         </div>
       </div>

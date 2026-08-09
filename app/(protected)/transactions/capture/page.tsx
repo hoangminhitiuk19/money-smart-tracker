@@ -51,7 +51,13 @@ export default async function TransactionCapturePage({
       initialCaptureKey={captureKey}
       initialDrafts={draftResult.ok ? draftResult.drafts : []}
       options={{
-        categories: categories.map(({ id, name }) => ({ id, name })),
+        categories: categories.map(
+          ({ id, name, defaultQualityRating }) => ({
+            id,
+            name,
+            defaultQualityRating
+          })
+        ),
         moneySources: moneySources.map(({ id, name, type }) => ({
           id,
           name,

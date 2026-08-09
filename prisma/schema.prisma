@@ -389,42 +389,46 @@ model ActivityLog {
 }
 
 model TransactionDraft {
-  id                    String                  @id @default(cuid())
-  userId                String
-  captureKey            String
-  position              Int
-  origin                TransactionDraftOrigin
-  status                TransactionDraftStatus  @default(NEEDS_REVIEW)
-  confidence            Int?
-  type                  TransactionType?
-  amountText            String?
-  currency              String?
-  title                 String?
-  description           String?
-  transactionDateText   String?
-  categoryId            String?
-  qualityRating         QualityRating?
-  fromMoneySourceId     String?
-  toMoneySourceId       String?
-  adjustedMoneySourceId String?
-  adjustmentDirection   AdjustmentDirection?
-  adjustmentTarget      AdjustmentTarget?
-  projectId             String?
-  relatedTransactionId  String?
-  countTowardFeeWaiver  Boolean?
-  recurringPaymentId    String?
-  isInstallmentRelated  Boolean                 @default(false)
-  duplicateFingerprint  String?
-  duplicateConfirmed    Boolean                 @default(false)
-  validationIssues      Json                    @default("[]")
-  rawRow                Json?
-  importBatchId         String?
-  importedTransactionId String?
-  expiresAt             DateTime
-  createdAt             DateTime                @default(now())
-  updatedAt             DateTime                @updatedAt
-  user                  User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  importBatch           TransactionImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  id                               String                  @id @default(cuid())
+  userId                           String
+  captureKey                       String
+  position                         Int
+  origin                           TransactionDraftOrigin
+  status                           TransactionDraftStatus  @default(NEEDS_REVIEW)
+  confidence                       Int?
+  type                             TransactionType?
+  amountText                       String?
+  currency                         String?
+  title                            String?
+  description                      String?
+  transactionDateText              String?
+  categoryId                       String?
+  qualityRating                    QualityRating?
+  fromMoneySourceId                String?
+  toMoneySourceId                  String?
+  adjustedMoneySourceId            String?
+  adjustmentDirection              AdjustmentDirection?
+  adjustmentTarget                 AdjustmentTarget?
+  projectId                        String?
+  relatedTransactionId             String?
+  countTowardFeeWaiver             Boolean?
+  countTowardFeeWaiverTouched      Boolean                 @default(false)
+  qualityRatingTouched             Boolean                 @default(false)
+  recurringPaymentId               String?
+  isInstallmentRelated             Boolean                 @default(false)
+  duplicateFingerprint             String?
+  duplicateConfirmed               Boolean                 @default(false)
+  duplicateAcknowledgementRequired Boolean                 @default(false)
+  invalidMappedFields              Json                    @default("[]")
+  validationIssues                 Json                    @default("[]")
+  rawRow                           Json?
+  importBatchId                    String?
+  importedTransactionId            String?
+  expiresAt                        DateTime
+  createdAt                        DateTime                @default(now())
+  updatedAt                        DateTime                @updatedAt
+  user                             User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  importBatch                      TransactionImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
 
   @@unique([userId, captureKey, position])
   @@index([userId, status])

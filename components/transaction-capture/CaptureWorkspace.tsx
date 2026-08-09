@@ -1,6 +1,11 @@
 "use client";
 
-import { MoneySourceType, TransactionDraftOrigin, TransactionType } from "@prisma/client";
+import {
+  MoneySourceType,
+  QualityRating,
+  TransactionDraftOrigin,
+  TransactionType
+} from "@prisma/client";
 import {
   useEffect,
   useRef,
@@ -8,6 +13,7 @@ import {
   type KeyboardEvent
 } from "react";
 import { useRouter } from "next/navigation";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { ImportBar } from "@/components/transaction-capture/ImportBar";
 import { ColumnMapper } from "@/components/transaction-capture/ColumnMapper";
 import { DraftCards } from "@/components/transaction-capture/DraftCards";
@@ -28,6 +34,7 @@ import {
 } from "@/components/transaction-capture/DraftLedger";
 import { PasteInput } from "@/components/transaction-capture/PasteInput";
 import {
+  dismissTransactionDrafts,
   importTransactionDrafts,
   savePasteDrafts,
   saveQuickDraft,
@@ -53,6 +60,10 @@ type CaptureOption = {
   name: string;
 };
 
+type CaptureCategoryOption = CaptureOption & {
+  defaultQualityRating: QualityRating | null;
+};
+
 type CaptureExpenseOption = CaptureOption & {
   amount: string;
   transactionDate: string;
@@ -66,7 +77,7 @@ export type CaptureWorkspaceProps = {
   initialCaptureKey: string | null;
   initialDrafts: readonly TransactionDraftView[];
   options: {
-    categories: readonly CaptureOption[];
+    categories: readonly CaptureCategoryOption[];
     moneySources: readonly CaptureMoneySourceOption[];
     projects: readonly CaptureOption[];
     expenses: readonly CaptureExpenseOption[];
@@ -99,6 +110,8 @@ const editableDraftFields = [
   "projectId",
   "relatedTransactionId",
   "countTowardFeeWaiver",
+  "countTowardFeeWaiverTouched",
+  "qualityRatingTouched",
   "recurringPaymentId",
   "isInstallmentRelated",
   "duplicateConfirmed"
@@ -153,7 +166,9 @@ function newQuickDraft(
     qualityRating: null, fromMoneySourceId: sourceId, toMoneySourceId: null,
     adjustedMoneySourceId: null, adjustmentDirection: null, adjustmentTarget: null,
     projectId: null, relatedTransactionId: null, countTowardFeeWaiver: null,
+    countTowardFeeWaiverTouched: false, qualityRatingTouched: false,
     recurringPaymentId: null, isInstallmentRelated: false, duplicateConfirmed: false,
+    duplicateAcknowledgementRequired: false, invalidMappedFields: [],
     rawRow: null
   };
 }
@@ -303,6 +318,7 @@ export function CaptureWorkspace({
   const [fillField, setFillField] =
     useState<FillableDraftField>("categoryId");
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [, setDraftSaveRevision] = useState(0);
   const [ledgerAnnouncement, setLedgerAnnouncement] = useState("");
   const [lastQuickSourceId, setLastQuickSourceId] = useState<string | null>(null);
   const [lastQuickCategoryId, setLastQuickCategoryId] = useState<string | null>(null);
@@ -317,6 +333,14 @@ export function CaptureWorkspace({
   const [quickNotice, setQuickNotice] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [dismissal, setDismissal] = useState<{
+    ids: readonly string[];
+  } | null>(null);
+  const [dismissing, setDismissing] = useState(false);
+  const [dismissalError, setDismissalError] = useState<string | null>(null);
+  const [dismissFocusTarget, setDismissFocusTarget] = useState<string | null>(
+    null
+  );
   const importAttemptRef = useRef<{ ids: readonly string[]; key: string } | null>(null);
   const captureKeyRef = useRef<string | null>(initialCaptureKey);
   const draftsRef = useRef<readonly TransactionDraftView[]>(
@@ -328,12 +352,16 @@ export function CaptureWorkspace({
   const draftCollectionVersionRef = useRef(0);
   const bulkQueueRef = useRef<Promise<void>>(Promise.resolve());
   const bulkOperationCountRef = useRef(0);
+  const dirtyFieldKeysRef = useRef(new Set<string>());
+  const pendingDraftCountsRef = useRef(new Map<string, number>());
+  const pendingPatchPromisesRef = useRef(new Set<Promise<unknown>>());
   const attemptedInitialDefaultsRef = useRef(false);
   const tabId = captureWorkspaceId(initialCaptureKey);
   const tabRefs = useRef<Record<CaptureMode, HTMLButtonElement | null>>({
     quick: null,
     paste: null
   });
+  const reviewHeadingRef = useRef<HTMLHeadingElement>(null);
   const hasDrafts = drafts.length > 0;
   const persistedPasteCount = drafts.filter(
     ({ origin }) => origin === "PASTE"
@@ -342,7 +370,25 @@ export function CaptureWorkspace({
   const needsReviewCount = drafts.filter((draft) => draft.status === "NEEDS_REVIEW").length;
   const duplicateCount = drafts.filter((draft) => draft.possibleDuplicate).length;
   const selectedDrafts = drafts.filter((draft) => selectedIds.has(draft.id));
-  const canImport = selectedDrafts.length > 0 && selectedDrafts.every((draft) => draft.status === "READY");
+  const selectedDirtyCount = selectedDrafts.filter((draft) =>
+    editableDraftFields.some((field) =>
+      dirtyFieldKeysRef.current.has(fieldVersionKey(draft.id, field))
+    )
+  ).length;
+  const selectedPendingCount = selectedDrafts.filter(
+    (draft) => (pendingDraftCountsRef.current.get(draft.id) ?? 0) > 0
+  ).length;
+  const importBlockedReason = bulkBusy
+    ? "Wait for selected bulk changes to finish saving."
+    : selectedPendingCount > 0
+      ? `Wait for ${selectedPendingCount} selected ${selectedPendingCount === 1 ? "row" : "rows"} to finish saving.`
+      : selectedDirtyCount > 0
+        ? `${selectedDirtyCount} selected ${selectedDirtyCount === 1 ? "row has" : "rows have"} unsaved changes.`
+        : null;
+  const canImport =
+    selectedDrafts.length > 0 &&
+    selectedDrafts.every((draft) => draft.status === "READY") &&
+    importBlockedReason === null;
 
   function fieldVersionKey(id: string, field: keyof DraftPatch) {
     return `${id}:${field}`;
@@ -381,8 +427,22 @@ export function CaptureWorkspace({
       for (const field of Object.keys(patch) as (keyof DraftPatch)[]) {
         const key = fieldVersionKey(id, field);
         fieldVersionsRef.current.set(key, (fieldVersionsRef.current.get(key) ?? 0) + 1);
+        dirtyFieldKeysRef.current.add(key);
       }
+      setDraftSaveRevision((current) => current + 1);
     }
+    updateDraftState((current) =>
+      current.map((draft) => (draft.id === id ? { ...draft, ...patch } : draft))
+    );
+  }
+
+  function restoreLocalPatch(id: string, patch: DraftPatch) {
+    for (const field of Object.keys(patch) as (keyof DraftPatch)[]) {
+      const key = fieldVersionKey(id, field);
+      fieldVersionsRef.current.set(key, (fieldVersionsRef.current.get(key) ?? 0) + 1);
+      dirtyFieldKeysRef.current.delete(key);
+    }
+    setDraftSaveRevision((current) => current + 1);
     updateDraftState((current) =>
       current.map((draft) => (draft.id === id ? { ...draft, ...patch } : draft))
     );
@@ -448,47 +508,77 @@ export function CaptureWorkspace({
     return index >= 0 ? index + 1 : null;
   }
 
-  async function requestDraftPatch(
+  function requestDraftPatch(
     id: string,
     patch: DraftPatch
   ) {
     const collectionVersionAtRequest = draftCollectionVersionRef.current;
     const versionsAtRequest = snapshotAllVersions();
     const responseSequence = ++nextResponseSequenceRef.current;
-    try {
-      const result = await updateTransactionDraft(id, patch);
-      if (collectionVersionAtRequest !== draftCollectionVersionRef.current) {
+    pendingDraftCountsRef.current.set(
+      id,
+      (pendingDraftCountsRef.current.get(id) ?? 0) + 1
+    );
+    setDraftSaveRevision((current) => current + 1);
+
+    const request = (async () => {
+      try {
+        const result = await updateTransactionDraft(id, patch);
+        if (collectionVersionAtRequest !== draftCollectionVersionRef.current) {
+          return {
+            ok: false as const,
+            stale: true as const,
+            error: "Draft list changed."
+          };
+        }
+        if (!result.ok) return { ok: false as const, error: result.error };
+        const compatibleResult = result as typeof result & {
+          drafts?: readonly TransactionDraftView[];
+        };
+        const serverDrafts = compatibleResult.drafts ?? [result.draft];
+        const mergedDrafts = mergeAuthoritativeDrafts(
+          serverDrafts,
+          versionsAtRequest,
+          responseSequence
+        );
+        const mergedDraft =
+          mergedDrafts.find((draft) => draft.id === result.draft.id) ??
+          result.draft;
+        const requestDraftVersions = versionsAtRequest.get(id);
+        for (const field of Object.keys(patch) as (keyof DraftPatch)[]) {
+          if (
+            fieldVersion(id, field) ===
+            (requestDraftVersions?.get(field) ?? 0)
+          ) {
+            dirtyFieldKeysRef.current.delete(fieldVersionKey(id, field));
+          }
+        }
+        return { ok: true as const, draft: mergedDraft };
+      } catch {
         return {
           ok: false as const,
-          stale: true as const,
-          error: "Draft list changed."
+          error: "Check your connection and try again."
         };
       }
-      if (!result.ok) return { ok: false as const, error: result.error };
-      const compatibleResult = result as typeof result & {
-        drafts?: readonly TransactionDraftView[];
-      };
-      const serverDrafts = compatibleResult.drafts ?? [result.draft];
-      const mergedDrafts = mergeAuthoritativeDrafts(
-        serverDrafts,
-        versionsAtRequest,
-        responseSequence
-      );
-      const mergedDraft =
-        mergedDrafts.find((draft) => draft.id === result.draft.id) ??
-        result.draft;
-      return { ok: true as const, draft: mergedDraft };
-    } catch {
-      return {
-        ok: false as const,
-        error: "Check your connection and try again."
-      };
-    }
+    })();
+    const tracked = request.finally(() => {
+      const remaining = (pendingDraftCountsRef.current.get(id) ?? 1) - 1;
+      if (remaining > 0) pendingDraftCountsRef.current.set(id, remaining);
+      else pendingDraftCountsRef.current.delete(id);
+      pendingPatchPromisesRef.current.delete(tracked);
+      setDraftSaveRevision((current) => current + 1);
+    });
+    pendingPatchPromisesRef.current.add(tracked);
+    return tracked;
   }
 
   async function patchDraft(id: string, patch: DraftPatch) {
     const current = draftsRef.current.find((draft) => draft.id === id);
     if (!current || !draftIsEditable(current)) return;
+    const includesDirtyField = (Object.keys(patch) as (keyof DraftPatch)[]).some(
+      (field) => dirtyFieldKeysRef.current.has(fieldVersionKey(id, field))
+    );
+    if (!includesDirtyField) return;
     const result = await requestDraftPatch(id, patch);
     const rowNumber = rowNumberFor(id);
     if (!rowNumber) return;
@@ -577,7 +667,11 @@ export function CaptureWorkspace({
           )
         ) as DraftPatch;
         if (Object.keys(rollback).length > 0) {
-          applyLocalPatch(entry.id, rollback);
+          applyLocalPatch(entry.id, rollback, false);
+          for (const field of Object.keys(rollback) as (keyof DraftPatch)[]) {
+            dirtyFieldKeysRef.current.delete(fieldVersionKey(entry.id, field));
+          }
+          setDraftSaveRevision((current) => current + 1);
         }
       }
     }
@@ -634,8 +728,7 @@ export function CaptureWorkspace({
             ? draftSourcePatch(
                 draft,
                 semanticSourceField(draft),
-                sourceDraft[semanticSourceField(sourceDraft)],
-                options.moneySources
+                sourceDraft[semanticSourceField(sourceDraft)]
               )
           : ({ [sourceField]: sourceDraft[sourceField] } as DraftPatch);
       return {
@@ -716,6 +809,93 @@ export function CaptureWorkspace({
     )?.focus();
   }
 
+  useEffect(() => {
+    if (!dismissFocusTarget) return;
+    if (dismissFocusTarget === "review-heading") {
+      reviewHeadingRef.current?.focus();
+    } else if (window.matchMedia?.("(max-width: 1023px)").matches) {
+      const safeId = dismissFocusTarget.replace(/[^a-zA-Z0-9_-]/g, "-");
+      document.getElementById(`mobile-draft-${safeId}`)?.focus();
+    } else {
+      const rowNumber =
+        draftsRef.current.findIndex(
+          (draft) => draft.id === dismissFocusTarget
+        ) + 1;
+      document.querySelector<HTMLInputElement>(
+        `[data-testid="capture-desktop-ledger"] input[aria-label="Select row ${rowNumber}"]`
+      )?.focus();
+    }
+    setDismissFocusTarget(null);
+  }, [dismissFocusTarget]);
+
+  function openDismissal() {
+    if (importBlockedReason || importing || dismissing) return;
+    const ids = draftsRef.current
+      .filter((draft) => selectedIds.has(draft.id) && draftIsEditable(draft))
+      .map(({ id }) => id);
+    if (ids.length === 0) return;
+    setDismissal({ ids });
+    setDismissalError(null);
+  }
+
+  async function confirmDismissal() {
+    if (!dismissal || dismissing) return;
+    setDismissing(true);
+    setDismissalError(null);
+    try {
+      const result = await dismissTransactionDrafts(dismissal.ids);
+      if (!result.ok) {
+        setDismissalError(result.error);
+        return;
+      }
+      const requestedIdSet = new Set(dismissal.ids);
+      const dismissedIds = result.dismissedIds.filter((id) =>
+        requestedIdSet.has(id)
+      );
+      const dismissedIdSet = new Set(dismissedIds);
+      const currentDrafts = draftsRef.current;
+      const firstRequestedIndex = currentDrafts.findIndex((draft) =>
+        requestedIdSet.has(draft.id)
+      );
+      const remainingDrafts = currentDrafts.filter(
+        (draft) => !dismissedIdSet.has(draft.id)
+      );
+      const nextDraft =
+        currentDrafts.find(
+          (draft, index) =>
+            index >= firstRequestedIndex && !dismissedIdSet.has(draft.id)
+        ) ?? remainingDrafts.at(-1);
+
+      for (const id of dismissedIds) {
+        for (const field of editableDraftFields) {
+          const key = fieldVersionKey(id, field);
+          fieldVersionsRef.current.delete(key);
+          dirtyFieldKeysRef.current.delete(key);
+        }
+        pendingDraftCountsRef.current.delete(id);
+      }
+      updateDraftState(() => remainingDrafts);
+      setSelectedIds((current) => {
+        const next = new Set(current);
+        for (const id of dismissedIds) next.delete(id);
+        return next;
+      });
+      const dismissedCount = dismissedIds.length;
+      const requestedCount = dismissal.ids.length;
+      setLedgerAnnouncement(
+        dismissedCount === requestedCount
+          ? `Dismissed ${dismissedCount} ${dismissedCount === 1 ? "draft" : "drafts"}.`
+          : `Dismissed ${dismissedCount} of ${requestedCount} drafts. ${requestedCount - dismissedCount} ${requestedCount - dismissedCount === 1 ? "draft" : "drafts"} could not be dismissed.`
+      );
+      setDismissal(null);
+      setDismissFocusTarget(nextDraft?.id ?? "review-heading");
+    } catch {
+      setDismissalError("Check your connection and try again.");
+    } finally {
+      setDismissing(false);
+    }
+  }
+
   function quickCanSave(draft: TransactionDraftInput) {
     if (!draft.type || !draft.amountText?.trim() || !draft.title?.trim()) return false;
     if (draft.type === TransactionType.INCOME || draft.type === TransactionType.REFUND) {
@@ -748,8 +928,7 @@ export function CaptureWorkspace({
         ? draftSourcePatch(
             current,
             sourceField,
-            patch[sourceField] ?? null,
-            options.moneySources
+            patch[sourceField] ?? null
           )
         : null;
       const next = { ...current, ...patch, ...typePatch, ...sourcePatch };
@@ -788,6 +967,8 @@ export function CaptureWorkspace({
       setQuickDraft(draftToSave);
       draftCollectionVersionRef.current += 1;
       fieldVersionsRef.current.clear();
+      dirtyFieldKeysRef.current.clear();
+      pendingDraftCountsRef.current.clear();
       latestResponseSequenceRef.current.clear();
       updateDraftState(() => [result.draft]);
       setSelectedIds(new Set());
@@ -807,8 +988,33 @@ export function CaptureWorkspace({
   }
 
   async function saveSelectedDrafts() {
-    if (!canImport || importing) return;
-    const ids = selectedDrafts.map((draft) => draft.id);
+    if (importing) return;
+    await bulkQueueRef.current;
+    while (pendingPatchPromisesRef.current.size > 0) {
+      await Promise.allSettled(Array.from(pendingPatchPromisesRef.current));
+    }
+    const currentSelectedDrafts = draftsRef.current.filter((draft) =>
+      selectedIds.has(draft.id)
+    );
+    const ids = currentSelectedDrafts.map((draft) => draft.id);
+    const hasDirtySelectedDraft = currentSelectedDrafts.some((draft) =>
+      editableDraftFields.some((field) =>
+        dirtyFieldKeysRef.current.has(fieldVersionKey(draft.id, field))
+      )
+    );
+    if (
+      ids.length === 0 ||
+      bulkOperationCountRef.current > 0 ||
+      hasDirtySelectedDraft ||
+      currentSelectedDrafts.some((draft) => draft.status !== "READY")
+    ) {
+      setImportError(
+        hasDirtySelectedDraft
+          ? "Save or undo the selected rows' unsaved changes before importing."
+          : "Resolve every selected row before importing."
+      );
+      return;
+    }
     const existing = importAttemptRef.current;
     const attempt = existing && existing.ids.length === ids.length && existing.ids.every((id, index) => id === ids[index])
       ? existing
@@ -987,6 +1193,8 @@ export function CaptureWorkspace({
       }
       draftCollectionVersionRef.current += 1;
       fieldVersionsRef.current.clear();
+      dirtyFieldKeysRef.current.clear();
+      pendingDraftCountsRef.current.clear();
       latestResponseSequenceRef.current.clear();
       setSelectedIds(new Set());
       updateDraftState(() => result.drafts);
@@ -1218,6 +1426,8 @@ export function CaptureWorkspace({
             <h2
               className="font-capture-display text-lg font-semibold"
               id={`${tabId}-review-heading`}
+              ref={reviewHeadingRef}
+              tabIndex={-1}
             >
               Review ledger
             </h2>
@@ -1232,7 +1442,14 @@ export function CaptureWorkspace({
             <>
               <DraftFillToolbar
                 busy={bulkBusy}
+                canDismiss={
+                  selectedDrafts.length > 0 &&
+                  importBlockedReason === null &&
+                  !importing &&
+                  !dismissing
+                }
                 field={fillField}
+                onDismiss={openDismissal}
                 onFieldChange={setFillField}
                 onFillDown={fillDown}
                 selectedCount={selectedIds.size}
@@ -1248,6 +1465,7 @@ export function CaptureWorkspace({
               ) : null}
               <DraftLedger
                 drafts={drafts}
+                onCancel={restoreLocalPatch}
                 onCellPaste={pasteCells}
                 onChange={applyLocalPatch}
                 onFocusIssue={focusIssue}
@@ -1295,6 +1513,7 @@ export function CaptureWorkspace({
             </div>
           )}
           <ImportBar
+            blockedReason={importBlockedReason}
             canSave={canImport}
             duplicateCount={duplicateCount}
             error={importError}
@@ -1307,6 +1526,22 @@ export function CaptureWorkspace({
           />
         </section>
       </div>
+      {dismissal ? (
+        <ConfirmDialog
+          confirmLabel="Dismiss drafts"
+          description="The selected draft candidate values will be deleted. This cannot be undone."
+          error={dismissalError}
+          isPending={dismissing}
+          onCancel={() => {
+            setDismissal(null);
+            setDismissalError(null);
+          }}
+          onConfirm={confirmDismissal}
+          pendingAriaLabel="Dismissing drafts"
+          pendingLabel="Dismissing drafts…"
+          title={`Dismiss ${dismissal.ids.length} ${dismissal.ids.length === 1 ? "draft" : "drafts"}?`}
+        />
+      ) : null}
     </section>
   );
 }

@@ -121,6 +121,13 @@ describe("canonical transaction creation", () => {
       )
     );
     expect(createManyAndReturn).toHaveBeenCalledTimes(1);
+    const persistedRows = createManyAndReturn.mock.calls[0]?.[0].data as Array<{
+      createdAt?: Date;
+    }>;
+    expect(
+      persistedRows[1].createdAt!.getTime() -
+        persistedRows[0].createdAt!.getTime()
+    ).toBe(1);
     expect(createActivities).toHaveBeenCalledWith({
       data: [
         {

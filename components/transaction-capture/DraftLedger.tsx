@@ -48,6 +48,7 @@ type DraftLedgerProps = {
   options: DraftCaptureOptions;
   selectedIds: ReadonlySet<string>;
   onChange: (id: string, patch: DraftPatch) => void;
+  onCancel: (id: string, patch: DraftPatch) => void;
   onPatch: (id: string, patch: DraftPatch) => void;
   onSelectionChange: (ids: ReadonlySet<string>) => void;
   onCellPaste: (
@@ -100,18 +101,22 @@ function sourceField(draft: TransactionDraftView) {
 
 type DraftFillToolbarProps = {
   busy: boolean;
+  canDismiss: boolean;
   field: FillableDraftField;
   selectedCount: number;
   onFieldChange: (field: FillableDraftField) => void;
   onFillDown: (field: FillableDraftField) => void;
+  onDismiss: () => void;
 };
 
 export function DraftFillToolbar({
   busy,
+  canDismiss,
   field,
   selectedCount,
   onFieldChange,
-  onFillDown
+  onFillDown,
+  onDismiss
 }: DraftFillToolbarProps) {
   return (
     <div
@@ -146,6 +151,14 @@ export function DraftFillToolbar({
       >
         Fill selected rows
       </button>
+      <button
+        className="min-h-11 rounded-md border border-red-300 bg-white px-4 text-sm font-semibold text-red-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-capture-primary disabled:cursor-not-allowed disabled:opacity-50"
+        disabled={!canDismiss}
+        onClick={onDismiss}
+        type="button"
+      >
+        Dismiss selected
+      </button>
       <p className="text-xs leading-5 text-slate-500 sm:max-w-xs">
         Select at least two rows. The first selected row supplies the value.
       </p>
@@ -158,6 +171,7 @@ export function DraftLedger({
   options,
   selectedIds,
   onChange,
+  onCancel,
   onPatch,
   onSelectionChange,
   onCellPaste,
@@ -167,6 +181,71 @@ export function DraftLedger({
     new Set()
   );
   const controls = useRef(new Map<string, HTMLElement>());
+  const textSnapshots = useRef(new Map<string, string | null>());
+  const activeTextCells = useRef(new Set<string>());
+  const cancelledTextCells = useRef(new Set<string>());
+
+  function textCellKey(id: string, field: PasteableDraftField) {
+    return `${id}:${field}`;
+  }
+
+  function beginTextSession(
+    id: string,
+    field: PasteableDraftField,
+    value: string | null,
+    active: boolean
+  ) {
+    const key = textCellKey(id, field);
+    if (!textSnapshots.current.has(key)) {
+      textSnapshots.current.set(key, value);
+    }
+    if (active) activeTextCells.current.add(key);
+  }
+
+  function changeTextCell(
+    id: string,
+    field: PasteableDraftField,
+    previousValue: string | null,
+    value: string
+  ) {
+    beginTextSession(id, field, previousValue, true);
+    onChange(id, { [field]: value || null } as DraftPatch);
+  }
+
+  function finishTextSession(
+    id: string,
+    field: PasteableDraftField,
+    value: string | null
+  ) {
+    const key = textCellKey(id, field);
+    textSnapshots.current.delete(key);
+    activeTextCells.current.delete(key);
+    if (cancelledTextCells.current.delete(key)) return;
+    onPatch(id, { [field]: value } as DraftPatch);
+  }
+
+  function handleTextCellKeyDown(
+    event: KeyboardEvent<HTMLInputElement>,
+    id: string,
+    field: PasteableDraftField,
+    value: string | null
+  ) {
+    const key = textCellKey(id, field);
+    if (event.key === "Enter") {
+      beginTextSession(id, field, value, true);
+      return;
+    }
+    if (event.key === "Escape" && activeTextCells.current.has(key)) {
+      event.preventDefault();
+      const snapshot = textSnapshots.current.get(key) ?? null;
+      activeTextCells.current.delete(key);
+      cancelledTextCells.current.add(key);
+      onCancel(id, { [field]: snapshot } as DraftPatch);
+      return;
+    }
+    if (activeTextCells.current.has(key)) return;
+    navigateTextCell(event, id, field);
+  }
 
   function setControl(id: string, field: FillableDraftField, node: HTMLElement | null) {
     const key = `${id}:${field}`;
@@ -314,10 +393,12 @@ export function DraftLedger({
                         className="min-h-11 font-capture-data md:min-h-11"
                         disabled={!editable}
                         id={draftFieldId("desktop", draft.id, "transactionDateText")}
-                        onBlur={() => onPatch(draft.id, { transactionDateText: draft.transactionDateText })}
-                        onChange={(event) => onChange(draft.id, { transactionDateText: event.target.value || null })}
-                        onKeyDown={(event) => navigateTextCell(event, draft.id, "transactionDateText")}
+                        onBlur={() => finishTextSession(draft.id, "transactionDateText", draft.transactionDateText)}
+                        onChange={(event) => changeTextCell(draft.id, "transactionDateText", draft.transactionDateText, event.target.value)}
+                        onFocus={() => beginTextSession(draft.id, "transactionDateText", draft.transactionDateText, false)}
+                        onKeyDown={(event) => handleTextCellKeyDown(event, draft.id, "transactionDateText", draft.transactionDateText)}
                         onPaste={(event) => pasteCell(event, draft.id, "transactionDateText")}
+                        onPointerDown={() => beginTextSession(draft.id, "transactionDateText", draft.transactionDateText, true)}
                         ref={(node) => setControl(draft.id, "transactionDateText", node)}
                         type="text"
                         value={draft.transactionDateText ?? ""}
@@ -355,10 +436,12 @@ export function DraftLedger({
                         className="min-h-11 md:min-h-11"
                         disabled={!editable}
                         id={draftFieldId("desktop", draft.id, "title")}
-                        onBlur={() => onPatch(draft.id, { title: draft.title })}
-                        onChange={(event) => onChange(draft.id, { title: event.target.value || null })}
-                        onKeyDown={(event) => navigateTextCell(event, draft.id, "title")}
+                        onBlur={() => finishTextSession(draft.id, "title", draft.title)}
+                        onChange={(event) => changeTextCell(draft.id, "title", draft.title, event.target.value)}
+                        onFocus={() => beginTextSession(draft.id, "title", draft.title, false)}
+                        onKeyDown={(event) => handleTextCellKeyDown(event, draft.id, "title", draft.title)}
                         onPaste={(event) => pasteCell(event, draft.id, "title")}
+                        onPointerDown={() => beginTextSession(draft.id, "title", draft.title, true)}
                         ref={(node) => setControl(draft.id, "title", node)}
                         value={draft.title ?? ""}
                       />
@@ -372,10 +455,12 @@ export function DraftLedger({
                           disabled={!editable}
                           id={draftFieldId("desktop", draft.id, "amountText")}
                           inputMode="decimal"
-                          onBlur={() => onPatch(draft.id, { amountText: draft.amountText })}
-                          onChange={(event) => onChange(draft.id, { amountText: event.target.value || null })}
-                          onKeyDown={(event) => navigateTextCell(event, draft.id, "amountText")}
+                          onBlur={() => finishTextSession(draft.id, "amountText", draft.amountText)}
+                          onChange={(event) => changeTextCell(draft.id, "amountText", draft.amountText, event.target.value)}
+                          onFocus={() => beginTextSession(draft.id, "amountText", draft.amountText, false)}
+                          onKeyDown={(event) => handleTextCellKeyDown(event, draft.id, "amountText", draft.amountText)}
                           onPaste={(event) => pasteCell(event, draft.id, "amountText")}
+                          onPointerDown={() => beginTextSession(draft.id, "amountText", draft.amountText, true)}
                           ref={(node) => setControl(draft.id, "amountText", node)}
                           value={draft.amountText ?? ""}
                         />
@@ -393,8 +478,7 @@ export function DraftLedger({
                           const patch = draftSourcePatch(
                             draft,
                             source,
-                            event.target.value || null,
-                            options.moneySources
+                            event.target.value || null
                           );
                           onChange(draft.id, patch);
                           onPatch(draft.id, patch);
@@ -434,7 +518,10 @@ export function DraftLedger({
                           disabled={!editable}
                           id={draftFieldId("desktop", draft.id, "qualityRating")}
                           onChange={(event) => {
-                            const patch = { qualityRating: (event.target.value || null) as QualityRating | null };
+                            const patch = {
+                              qualityRating: (event.target.value || null) as QualityRating | null,
+                              qualityRatingTouched: true
+                            };
                             onChange(draft.id, patch);
                             onPatch(draft.id, patch);
                           }}

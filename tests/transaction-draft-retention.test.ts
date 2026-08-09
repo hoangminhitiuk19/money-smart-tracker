@@ -14,7 +14,10 @@ vi.mock("@/lib/prisma", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
-  findMany.mockResolvedValue([{ id: "draft-oldest" }, { id: "draft-next" }]);
+  findMany.mockResolvedValue([
+    { id: "draft-oldest", userId: "user-1" },
+    { id: "draft-next", userId: "user-2" }
+  ]);
   deleteMany.mockResolvedValue({ count: 2 });
 });
 
@@ -29,11 +32,18 @@ describe("transaction draft retention", () => {
         status: { in: ["NEEDS_REVIEW", "READY"] }
       },
       orderBy: [{ expiresAt: "asc" }, { id: "asc" }],
-      select: { id: true },
+      select: { id: true, userId: true },
       take: 2
     });
     expect(deleteMany).toHaveBeenCalledWith({
-      where: { id: { in: ["draft-oldest", "draft-next"] } }
+      where: {
+        expiresAt: { lte: now },
+        status: { in: ["NEEDS_REVIEW", "READY"] },
+        OR: [
+          { id: "draft-oldest", userId: "user-1" },
+          { id: "draft-next", userId: "user-2" }
+        ]
+      }
     });
   });
 

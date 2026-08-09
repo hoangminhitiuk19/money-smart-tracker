@@ -1,6 +1,7 @@
 "use client";
 
 type ImportBarProps = {
+  blockedReason: string | null;
   duplicateCount: number;
   error: string | null;
   importing: boolean;
@@ -17,6 +18,7 @@ function transactionLabel(count: number) {
 }
 
 export function ImportBar({
+  blockedReason,
   canSave,
   duplicateCount,
   error,
@@ -47,6 +49,11 @@ export function ImportBar({
           <p className="font-capture-data text-sm font-semibold text-capture-ink">
             {selectedCount} selected · {readyCount} ready · {needsReviewCount} need attention · {duplicateCount} duplicate
           </p>
+          {blockedReason ? (
+            <p className="mt-1 text-sm text-amber-800" role="status">
+              {blockedReason}
+            </p>
+          ) : null}
           {error ? <p className="mt-1 text-sm text-capture-error" role="status">{error}</p> : null}
         </div>
         <div className="flex shrink-0 flex-wrap gap-2">

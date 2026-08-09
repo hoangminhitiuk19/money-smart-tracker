@@ -33,6 +33,7 @@ import {
   loadSpendingQualityBreakdown
 } from "@/lib/actions/reports";
 import { calculateAccountProjection } from "@/lib/calc/dashboard";
+import { calculateCreditCardState } from "@/lib/calc/credit-card";
 import { prisma } from "@/lib/prisma";
 import { cleanupExpiredTransactionDrafts } from "@/lib/transaction-drafts/retention";
 import type { TransactionDraftInput } from "@/lib/transaction-drafts/types";
@@ -384,7 +385,8 @@ describe("transaction draft PostgreSQL ownership", () => {
     ).resolves.toEqual({ ok: false, error: "Draft not found." });
     await expect(dismissTransactionDrafts([draftAId])).resolves.toEqual({
       ok: true,
-      dismissedCount: 0
+      dismissedCount: 0,
+      dismissedIds: []
     });
     await expect(
       savePasteDrafts({
@@ -475,7 +477,8 @@ describe("transaction draft PostgreSQL ownership", () => {
     ).resolves.toEqual({ ok: false, error: "Draft not found." });
     await expect(dismissTransactionDrafts([draftAId])).resolves.toEqual({
       ok: true,
-      dismissedCount: 0
+      dismissedCount: 0,
+      dismissedIds: []
     });
     await expect(
       importTransactionDrafts({ ids: [draftAId], idempotencyKey })
@@ -606,7 +609,8 @@ describe("transaction draft PostgreSQL ownership", () => {
     ).resolves.toEqual({ ok: false, error: "Draft not found." });
     await expect(dismissTransactionDrafts([draftId])).resolves.toEqual({
       ok: true,
-      dismissedCount: 0
+      dismissedCount: 0,
+      dismissedIds: []
     });
     await expect(
       prisma.transactionDraft.findUniqueOrThrow({
@@ -861,9 +865,360 @@ describe("transaction draft PostgreSQL ownership", () => {
       ]
     });
   }, 20_000);
+
+  it("keeps a later unconfirmed duplicate blocked after partially importing and redacting the earlier row", async () => {
+    const captureKey = randomUUID();
+    authState.userId = fixtures.context.userA.id;
+    const saved = await savePasteDrafts({
+      captureKey,
+      rows: [
+        expenseDraft(captureKey, fixtures.bankAId),
+        expenseDraft(captureKey, fixtures.bankAId, { position: 1 })
+      ]
+    });
+    expect(saved).toMatchObject({
+      ok: true,
+      drafts: [
+        { status: TransactionDraftStatus.READY },
+        {
+          status: TransactionDraftStatus.NEEDS_REVIEW,
+          possibleDuplicate: true,
+          duplicateConfirmed: false
+        }
+      ]
+    });
+    if (!saved.ok) throw new Error(saved.error);
+
+    await expect(
+      importTransactionDrafts({
+        ids: [saved.drafts[0].id],
+        idempotencyKey: randomUUID()
+      })
+    ).resolves.toMatchObject({ ok: true, importedCount: 1 });
+    await expect(
+      prisma.transactionDraft.findUniqueOrThrow({
+        where: { id: saved.drafts[0].id },
+        select: {
+          status: true,
+          amountText: true,
+          duplicateFingerprint: true,
+          duplicateAcknowledgementRequired: true,
+          invalidMappedFields: true
+        }
+      })
+    ).resolves.toEqual({
+      status: TransactionDraftStatus.IMPORTED,
+      amountText: null,
+      duplicateFingerprint: null,
+      duplicateAcknowledgementRequired: false,
+      invalidMappedFields: []
+    });
+
+    const reassessed = await updateTransactionDraft(saved.drafts[1].id, {
+      description: "Reviewed after importing the earlier row"
+    });
+    expect(reassessed).toMatchObject({
+      ok: true,
+      draft: {
+        id: saved.drafts[1].id,
+        status: TransactionDraftStatus.NEEDS_REVIEW,
+        possibleDuplicate: true,
+        duplicateConfirmed: false,
+        issues: expect.arrayContaining([
+          expect.objectContaining({ message: expect.stringMatching(/duplicate/i) })
+        ])
+      }
+    });
+  }, 20_000);
+
+  it("preserves untouched category and card defaults separately from explicit clears across reload and import", async () => {
+    const userId = fixtures.context.userA.id;
+    authState.userId = userId;
+    const suffix = randomUUID();
+    const [card, category] = await prisma.$transaction([
+      prisma.moneySource.create({
+        data: {
+          userId,
+          name: `Default provenance card ${suffix}`,
+          type: MoneySourceType.CREDIT_CARD,
+          creditLimit: "1000.00"
+        }
+      }),
+      prisma.category.create({
+        data: {
+          userId,
+          name: `Default provenance category ${suffix}`,
+          type: CategoryType.EXPENSE,
+          defaultQualityRating: QualityRating.A,
+          defaultCountTowardFeeWaiver: true
+        }
+      })
+    ]);
+    const captureKey = randomUUID();
+    const saved = await savePasteDrafts({
+      captureKey,
+      rows: [
+        expenseDraft(captureKey, fixtures.bankAId, {
+          categoryId: category.id,
+          qualityRating: null,
+          qualityRatingTouched: false,
+          countTowardFeeWaiver: false,
+          countTowardFeeWaiverTouched: false
+        })
+      ]
+    });
+    expect(saved).toMatchObject({
+      ok: true,
+      drafts: [
+        {
+          qualityRating: QualityRating.A,
+          qualityRatingTouched: false,
+          countTowardFeeWaiver: false,
+          countTowardFeeWaiverTouched: false
+        }
+      ]
+    });
+    if (!saved.ok) throw new Error(saved.error);
+    const draftId = saved.drafts[0].id;
+
+    await expect(
+      updateTransactionDraft(draftId, { fromMoneySourceId: card.id })
+    ).resolves.toMatchObject({
+      ok: true,
+      draft: { countTowardFeeWaiver: true }
+    });
+    await expect(
+      updateTransactionDraft(draftId, {
+        countTowardFeeWaiver: false,
+        countTowardFeeWaiverTouched: true,
+        qualityRating: null,
+        qualityRatingTouched: true
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      draft: {
+        countTowardFeeWaiver: false,
+        countTowardFeeWaiverTouched: true,
+        qualityRating: null,
+        qualityRatingTouched: true
+      }
+    });
+    await updateTransactionDraft(draftId, {
+      fromMoneySourceId: fixtures.bankAId
+    });
+    await updateTransactionDraft(draftId, { fromMoneySourceId: card.id });
+
+    await expect(listTransactionDrafts(captureKey)).resolves.toMatchObject({
+      ok: true,
+      drafts: [
+        {
+          countTowardFeeWaiver: false,
+          countTowardFeeWaiverTouched: true,
+          qualityRating: null,
+          qualityRatingTouched: true,
+          status: TransactionDraftStatus.READY
+        }
+      ]
+    });
+    const imported = await importTransactionDrafts({
+      ids: [draftId],
+      idempotencyKey: randomUUID()
+    });
+    expect(imported).toMatchObject({ ok: true, importedCount: 1 });
+    if (!imported.ok) throw new Error(imported.error);
+    await expect(
+      prisma.transaction.findUniqueOrThrow({
+        where: { id: imported.transactionIds[0] },
+        select: { countTowardFeeWaiver: true, qualityRating: true }
+      })
+    ).resolves.toEqual({
+      countTowardFeeWaiver: false,
+      qualityRating: null
+    });
+  }, 20_000);
+
+  it("keeps invalid pasted enum fields blocking until that field is explicitly corrected", async () => {
+    const captureKey = randomUUID();
+    authState.userId = fixtures.context.userA.id;
+    const saved = await savePasteDrafts({
+      captureKey,
+      rows: [
+        expenseDraft(captureKey, fixtures.bankAId, {
+          invalidMappedFields: ["qualityRating"],
+          qualityRating: null,
+          qualityRatingTouched: true
+        })
+      ]
+    });
+    expect(saved).toMatchObject({
+      ok: true,
+      drafts: [
+        {
+          status: TransactionDraftStatus.NEEDS_REVIEW,
+          issues: expect.arrayContaining([
+            expect.objectContaining({ field: "qualityRating" })
+          ])
+        }
+      ]
+    });
+    if (!saved.ok) throw new Error(saved.error);
+
+    await expect(
+      updateTransactionDraft(saved.drafts[0].id, {
+        qualityRating: QualityRating.B,
+        qualityRatingTouched: true
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      draft: {
+        qualityRating: QualityRating.B,
+        invalidMappedFields: [],
+        status: TransactionDraftStatus.READY,
+        issues: []
+      }
+    });
+  }, 20_000);
+
+  it("returns only the exact owned draft IDs dismissed and redacts their candidates", async () => {
+    authState.userId = fixtures.context.userA.id;
+    const drafts = await saveReadyExpenseDrafts(2);
+    const requestedIds = [drafts[1].id, drafts[0].id];
+    const activityCountBefore = await prisma.activityLog.count({
+      where: {
+        userId: fixtures.context.userA.id,
+        action: "TRANSACTION_DRAFTS_DISMISSED"
+      }
+    });
+
+    await expect(dismissTransactionDrafts(requestedIds)).resolves.toEqual({
+      ok: true,
+      dismissedCount: 2,
+      dismissedIds: requestedIds
+    });
+    const stored = await prisma.transactionDraft.findMany({
+      where: {
+        id: { in: requestedIds },
+        userId: fixtures.context.userA.id
+      },
+      orderBy: { position: "asc" },
+      select: {
+        id: true,
+        status: true,
+        title: true,
+        amountText: true,
+        rawRow: true,
+        duplicateAcknowledgementRequired: true,
+        invalidMappedFields: true
+      }
+    });
+    expect(stored).toEqual(
+      drafts.map(({ id }) => ({
+        id,
+        status: TransactionDraftStatus.DISMISSED,
+        title: null,
+        amountText: null,
+        rawRow: null,
+        duplicateAcknowledgementRequired: false,
+        invalidMappedFields: []
+      }))
+    );
+    await expect(
+      prisma.activityLog.count({
+        where: {
+          userId: fixtures.context.userA.id,
+          action: "TRANSACTION_DRAFTS_DISMISSED"
+        }
+      })
+    ).resolves.toBe(activityCountBefore + 1);
+    await expect(
+      prisma.activityLog.findFirstOrThrow({
+        where: {
+          userId: fixtures.context.userA.id,
+          action: "TRANSACTION_DRAFTS_DISMISSED"
+        },
+        orderBy: { createdAt: "desc" },
+        select: { metadata: true }
+      })
+    ).resolves.toEqual({ metadata: { count: 2, origin: "PASTE" } });
+  }, 20_000);
 });
 
 describe("transaction draft PostgreSQL import atomicity", () => {
+  it("persists same-date card rows in pasted order and replays that chronology idempotently", async () => {
+    const userId = fixtures.context.userA.id;
+    authState.userId = userId;
+    const card = await prisma.moneySource.create({
+      data: {
+        userId,
+        name: `Chronology card ${randomUUID()}`,
+        type: MoneySourceType.CREDIT_CARD,
+        creditLimit: "1000.00",
+        initialOutstandingDebt: "0.00",
+        initialCardCredit: "0.00"
+      }
+    });
+    const captureKey = randomUUID();
+    const saved = await savePasteDrafts({
+      captureKey,
+      rows: [
+        expenseDraft(captureKey, fixtures.bankAId, {
+          position: 0,
+          type: TransactionType.ADJUSTMENT,
+          amountText: "50.00",
+          title: "Increase tracked card debt first",
+          transactionDateText: "2026-08-09",
+          fromMoneySourceId: null,
+          adjustedMoneySourceId: card.id,
+          adjustmentDirection: AdjustmentDirection.INCREASE,
+          adjustmentTarget: AdjustmentTarget.CREDIT_CARD_DEBT
+        }),
+        expenseDraft(captureKey, fixtures.bankAId, {
+          position: 1,
+          type: TransactionType.REFUND,
+          amountText: "100.00",
+          title: "Apply refund second",
+          transactionDateText: "2026-08-09",
+          fromMoneySourceId: null,
+          toMoneySourceId: card.id
+        })
+      ]
+    });
+    expect(saved).toMatchObject({
+      ok: true,
+      drafts: [
+        { status: TransactionDraftStatus.READY },
+        { status: TransactionDraftStatus.READY }
+      ]
+    });
+    if (!saved.ok) throw new Error(saved.error);
+    const ids = saved.drafts.map(({ id }) => id);
+    const idempotencyKey = randomUUID();
+    const imported = await importTransactionDrafts({ ids, idempotencyKey });
+    expect(imported).toMatchObject({ ok: true, importedCount: 2 });
+    if (!imported.ok) throw new Error(imported.error);
+
+    const stored = await prisma.transaction.findMany({
+      where: { id: { in: imported.transactionIds }, userId },
+      orderBy: [{ transactionDate: "asc" }, { createdAt: "asc" }, { id: "asc" }]
+    });
+    expect(stored.map(({ id }) => id)).toEqual(imported.transactionIds);
+    expect(stored[1].createdAt.getTime() - stored[0].createdAt.getTime()).toBe(1);
+    const state = calculateCreditCardState(card, stored);
+    expect({
+      debt: state.outstandingDebt.toFixed(2),
+      credit: state.cardCredit.toFixed(2)
+    }).toEqual({ debt: "0.00", credit: "50.00" });
+
+    await expect(
+      importTransactionDrafts({ ids, idempotencyKey })
+    ).resolves.toEqual(imported);
+    await expect(
+      prisma.transaction.count({
+        where: { id: { in: imported.transactionIds }, userId }
+      })
+    ).resolves.toBe(2);
+  }, 20_000);
+
   it("does not reopen an imported sibling after reassessment snapshots it", async () => {
     authState.userId = fixtures.context.userA.id;
     const [editedDraft, importedSibling] = await saveReadyExpenseDrafts(2);
@@ -944,6 +1299,102 @@ describe("transaction draft PostgreSQL import atomicity", () => {
     } finally {
       releaseGate();
       await reassessmentPromise?.catch(() => undefined);
+      await heldGate.catch(() => undefined);
+      await uninstallGate();
+    }
+  }, 30_000);
+
+  it("imports the committed patch when a delayed draft update overlaps import", async () => {
+    authState.userId = fixtures.context.userA.id;
+    const [draft] = await saveReadyExpenseDrafts(1);
+    const editedTitle = `Committed before import ${randomUUID()}`;
+    const gateNamespace = 118_735;
+    const markerNamespace = 118_736;
+    const gateKey = Math.floor(Math.random() * 1_000_000_000) + 1;
+    const markerKey = Math.floor(Math.random() * 1_000_000_000) + 1;
+    const uninstallGate = await installReassessmentWriteGate(
+      draft.id,
+      editedTitle,
+      gateNamespace,
+      gateKey,
+      markerNamespace,
+      markerKey
+    );
+    let releaseGate: () => void = () => undefined;
+    let signalGateHeld: () => void = () => undefined;
+    const gateHeld = new Promise<void>((resolve) => {
+      signalGateHeld = resolve;
+    });
+    const gateReleased = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const heldGate = prisma.$transaction(
+      async (db) => {
+        await db.$executeRawUnsafe(
+          `SELECT pg_advisory_xact_lock(${gateNamespace}, ${gateKey})`
+        );
+        signalGateHeld();
+        await gateReleased;
+      },
+      { timeout: 20_000 }
+    );
+    let patchPromise: ReturnType<typeof updateTransactionDraft> | null = null;
+    let importPromise: ReturnType<typeof importTransactionDrafts> | null = null;
+
+    try {
+      await gateHeld;
+      const runningPatch = updateTransactionDraft(draft.id, {
+        title: editedTitle
+      });
+      patchPromise = runningPatch;
+      await waitForAdvisoryLock(markerNamespace, markerKey);
+
+      const runningImport = importTransactionDrafts({
+        ids: [draft.id],
+        idempotencyKey: randomUUID()
+      });
+      importPromise = runningImport;
+      let importSettled = false;
+      void importPromise.finally(() => {
+        importSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(importSettled).toBe(false);
+      releaseGate();
+
+      const [patched, imported] = await Promise.all([
+        runningPatch,
+        runningImport,
+        heldGate
+      ] as const);
+      expect(patched).toMatchObject({
+        ok: true,
+        draft: { id: draft.id, title: editedTitle }
+      });
+      expect(imported).toMatchObject({ ok: true, importedCount: 1 });
+      if (!imported.ok) throw new Error(imported.error);
+      await expect(
+        prisma.transaction.findUniqueOrThrow({
+          where: { id: imported.transactionIds[0] },
+          select: { title: true, userId: true }
+        })
+      ).resolves.toEqual({
+        title: editedTitle,
+        userId: fixtures.context.userA.id
+      });
+      await expect(
+        prisma.transactionDraft.findUniqueOrThrow({
+          where: { id: draft.id },
+          select: { status: true, title: true }
+        })
+      ).resolves.toEqual({
+        status: TransactionDraftStatus.IMPORTED,
+        title: null
+      });
+    } finally {
+      releaseGate();
+      await patchPromise?.catch(() => undefined);
+      await importPromise?.catch(() => undefined);
       await heldGate.catch(() => undefined);
       await uninstallGate();
     }
@@ -1963,6 +2414,94 @@ describe("transaction draft PostgreSQL import atomicity", () => {
 });
 
 describe("transaction draft PostgreSQL retention", () => {
+  it("does not delete a selected draft after its owner transitions it to imported", async () => {
+    const userId = fixtures.context.userA.id;
+    const draftId = `retention-race-${randomUUID()}`;
+    const now = new Date("2026-08-04T00:00:00.000Z");
+    await prisma.transactionDraft.create({
+      data: {
+        id: draftId,
+        userId,
+        captureKey: randomUUID(),
+        position: 0,
+        origin: TransactionDraftOrigin.PASTE,
+        status: TransactionDraftStatus.READY,
+        amountText: "25.00",
+        title: "Selected before import",
+        expiresAt: new Date("2026-08-03T00:00:00.000Z")
+      }
+    });
+
+    let releaseTransition: () => void = () => undefined;
+    const transitionReleased = new Promise<void>((resolve) => {
+      releaseTransition = resolve;
+    });
+    let reportLocked: () => void = () => undefined;
+    const rowLocked = new Promise<void>((resolve) => {
+      reportLocked = resolve;
+    });
+    const transition = prisma.$transaction(async (db) => {
+      await db.$queryRaw`
+        SELECT "id"
+        FROM "TransactionDraft"
+        WHERE "id" = ${draftId}
+        FOR UPDATE
+      `;
+      reportLocked();
+      await transitionReleased;
+      await db.transactionDraft.update({
+        where: { id: draftId, userId },
+        data: {
+          status: TransactionDraftStatus.IMPORTED,
+          amountText: null,
+          title: null,
+          duplicateFingerprint: null,
+          validationIssues: [],
+          rawRow: undefined
+        }
+      });
+    });
+    await rowLocked;
+
+    const cleanup = cleanupExpiredTransactionDrafts(now, 1);
+    const waitDeadline = Date.now() + 5_000;
+    let deleteIsWaiting = false;
+    while (!deleteIsWaiting && Date.now() < waitDeadline) {
+      const [activity] = await prisma.$queryRaw<
+        { waiting: boolean }[]
+      >`
+        SELECT EXISTS (
+          SELECT 1
+          FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND pid <> pg_backend_pid()
+            AND query LIKE '%DELETE FROM "public"."TransactionDraft"%'
+            AND wait_event_type = 'Lock'
+        ) AS waiting
+      `;
+      deleteIsWaiting = activity?.waiting ?? false;
+      if (!deleteIsWaiting) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    expect(deleteIsWaiting).toBe(true);
+
+    releaseTransition();
+    await transition;
+
+    await expect(cleanup).resolves.toBe(0);
+    await expect(
+      prisma.transactionDraft.findUnique({
+        where: { id: draftId },
+        select: { status: true, amountText: true, title: true }
+      })
+    ).resolves.toEqual({
+      status: TransactionDraftStatus.IMPORTED,
+      amountText: null,
+      title: null
+    });
+  }, 20_000);
+
   it("deletes 500 then one oldest expired unresolved row without touching future or imported drafts", async () => {
     const userId = fixtures.context.userA.id;
     const retentionPrefix = `retention-${randomUUID()}`;

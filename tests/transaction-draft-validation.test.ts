@@ -29,8 +29,20 @@ const captureKey = "550e8400-e29b-41d4-a716-446655440000";
 function ownedReferences(): OwnedTransactionReferences {
   return {
     categories: new Map([
-      ["food", { defaultCountTowardFeeWaiver: true }],
-      ["card-fee", { defaultCountTowardFeeWaiver: false }]
+      [
+        "food",
+        {
+          defaultCountTowardFeeWaiver: true,
+          defaultQualityRating: QualityRating.A
+        }
+      ],
+      [
+        "card-fee",
+        {
+          defaultCountTowardFeeWaiver: false,
+          defaultQualityRating: QualityRating.C
+        }
+      ]
     ]),
     expenses: new Set(["expense-a"]),
     moneySources: new Map([
@@ -66,9 +78,13 @@ function draft(
     projectId: null,
     relatedTransactionId: null,
     countTowardFeeWaiver: null,
+    countTowardFeeWaiverTouched: false,
+    qualityRatingTouched: false,
     recurringPaymentId: null,
     isInstallmentRelated: false,
     duplicateConfirmed: false,
+    duplicateAcknowledgementRequired: false,
+    invalidMappedFields: [],
     rawRow: null,
     ...overrides
   };
@@ -101,10 +117,14 @@ function record(
     projectId: null,
     relatedTransactionId: null,
     countTowardFeeWaiver: true,
+    countTowardFeeWaiverTouched: false,
+    qualityRatingTouched: false,
     recurringPaymentId: null,
     isInstallmentRelated: false,
     duplicateFingerprint: "a".repeat(64),
     duplicateConfirmed: false,
+    duplicateAcknowledgementRequired: true,
+    invalidMappedFields: [],
     validationIssues: [
       {
         field: "form",
@@ -167,6 +187,15 @@ describe("transaction draft schemas", () => {
     expect(
       transactionDraftPatchSchema.safeParse({ position: 4 }).success
     ).toBe(false);
+    expect(
+      transactionDraftPatchSchema.safeParse({
+        duplicateAcknowledgementRequired: false
+      }).success
+    ).toBe(false);
+    expect(
+      transactionDraftPatchSchema.safeParse({ invalidMappedFields: [] })
+        .success
+    ).toBe(false);
   });
 });
 
@@ -186,6 +215,86 @@ describe("draft conversion and assessment", () => {
     expect(result.status).toBe("READY");
     expect(result.input?.amount).toBe("90071992547409.99");
   });
+
+  it("applies an owned category quality default only while quality is untouched", () => {
+    expect(
+      assessDraft(
+        draft({ categoryId: "food", qualityRating: null }),
+        ownedReferences()
+      ).input?.qualityRating
+    ).toBe(QualityRating.A);
+    expect(
+      assessDraft(
+        draft({
+          categoryId: "food",
+          qualityRating: null,
+          qualityRatingTouched: true
+        }),
+        ownedReferences()
+      ).input?.qualityRating
+    ).toBeNull();
+    expect(
+      assessDraft(
+        draft({
+          categoryId: "food",
+          qualityRating: QualityRating.D,
+          qualityRatingTouched: true
+        }),
+        ownedReferences()
+      ).input?.qualityRating
+    ).toBe(QualityRating.D);
+  });
+
+  it("distinguishes an untouched fee-waiver default from a manual false", () => {
+    expect(
+      assessDraft(
+        draft({
+          fromMoneySourceId: "card-a",
+          countTowardFeeWaiver: false
+        }),
+        ownedReferences()
+      ).input?.countTowardFeeWaiver
+    ).toBe(true);
+    expect(
+      assessDraft(
+        draft({
+          fromMoneySourceId: "card-a",
+          countTowardFeeWaiver: false,
+          countTowardFeeWaiverTouched: true
+        }),
+        ownedReferences()
+      ).input?.countTowardFeeWaiver
+    ).toBe(false);
+  });
+
+  it.each([
+    ["qualityRating", "quality rating"],
+    ["adjustmentDirection", "adjustment direction"],
+    ["adjustmentTarget", "adjustment target"]
+  ] as const)(
+    "keeps an invalid mapped %s value as a blocking field finding",
+    (field, message) => {
+      const candidate =
+        field === "qualityRating"
+          ? draft({ invalidMappedFields: [field] })
+          : draft({
+              type: TransactionType.ADJUSTMENT,
+              fromMoneySourceId: null,
+              adjustedMoneySourceId: "card-a",
+              adjustmentDirection: AdjustmentDirection.INCREASE,
+              adjustmentTarget: AdjustmentTarget.CREDIT_CARD_DEBT,
+              invalidMappedFields: [field]
+            });
+
+      expect(assessDraft(candidate, ownedReferences())).toMatchObject({
+        status: "NEEDS_REVIEW",
+        input: null,
+        issues: expect.arrayContaining([
+          { field, message: expect.stringContaining(message) }
+        ])
+      });
+    }
+  );
 
   it.each([
     {
@@ -451,7 +560,8 @@ describe("draft conversion and assessment", () => {
       draft({
         fromMoneySourceId: "card-a",
         categoryId: "food",
-        countTowardFeeWaiver: false
+        countTowardFeeWaiver: false,
+        countTowardFeeWaiverTouched: true
       }),
       ownedReferences()
     );
@@ -569,6 +679,7 @@ describe("stored draft serialization", () => {
         categoryId: "food",
         qualityRating: QualityRating.A,
         countTowardFeeWaiver: true,
+        duplicateAcknowledgementRequired: true,
         rawRow: { Amount: "45.00" }
       })
     );
@@ -594,6 +705,7 @@ describe("stored draft serialization", () => {
     const malformed = transactionDraftRecordToView(
       record({
         validationIssues: { unsafe: true },
+        duplicateAcknowledgementRequired: false,
         rawRow: ["not", "a", "record"]
       })
     );

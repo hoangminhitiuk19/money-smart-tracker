@@ -11,6 +11,7 @@ import {
   type TransactionCreateData,
   type TransactionCreateIssue
 } from "@/lib/transactions/create";
+import { getCountTowardFeeWaiverDefault } from "@/lib/calc/transactions";
 import type {
   DraftAssessment,
   DraftField,
@@ -18,6 +19,7 @@ import type {
   TransactionDraftInput,
   TransactionDraftView
 } from "@/lib/transaction-drafts/types";
+import type { InvalidMappedDraftField } from "@/lib/transaction-drafts/types";
 
 const duplicateIssueMessage =
   "Confirm this possible duplicate before importing.";
@@ -263,6 +265,61 @@ function withDuplicateFinding(
   return issues;
 }
 
+const invalidMappedMessages: Record<InvalidMappedDraftField, string> = {
+  qualityRating: "Choose S, A, B, C, or D for the quality rating.",
+  adjustmentDirection:
+    "Choose Increase or Decrease for the adjustment direction.",
+  adjustmentTarget:
+    "Choose Credit card debt or Card credit for the adjustment target."
+};
+
+function invalidMappedIssues(
+  draft: TransactionDraftInput
+): DraftFieldIssue[] {
+  return (draft.invalidMappedFields ?? []).map((field) => ({
+    field,
+    message: invalidMappedMessages[field]
+  }));
+}
+
+export function applyDraftOwnedDefaults(
+  draft: TransactionDraftInput,
+  references: OwnedTransactionReferences
+): TransactionDraftInput {
+  if (draft.type !== TransactionType.EXPENSE) {
+    return {
+      ...draft,
+      countTowardFeeWaiver: false
+    };
+  }
+
+  const category = draft.categoryId
+    ? references.categories.get(draft.categoryId)
+    : undefined;
+  const qualityRating = draft.qualityRatingTouched
+    ? draft.qualityRating
+    : (category?.defaultQualityRating ?? null);
+  const countTowardFeeWaiver = draft.countTowardFeeWaiverTouched
+    ? draft.countTowardFeeWaiver
+    : getCountTowardFeeWaiverDefault(
+        {
+          type: draft.type,
+          fromMoneySourceId: draft.fromMoneySourceId
+        },
+        Array.from(references.moneySources, ([id, source]) => ({
+          id,
+          type: source.type
+        })),
+        category
+      );
+
+  return {
+    ...draft,
+    qualityRating,
+    countTowardFeeWaiver
+  };
+}
+
 function normalizedCreateData(
   parsed: TransactionCreateData,
   prepared: ReturnType<typeof prepareTransactionCreate> & { ok: true }
@@ -282,18 +339,23 @@ export function assessDraft(
   references: OwnedTransactionReferences,
   context: { possibleDuplicate: boolean } = { possibleDuplicate: false }
 ): DraftAssessment {
-  const parsed = parseTransactionCreateInput(draftToTransactionInput(draft));
+  const candidate = applyDraftOwnedDefaults(draft, references);
+  const mappedIssues = invalidMappedIssues(candidate);
+  const parsed = parseTransactionCreateInput(
+    draftToTransactionInput(candidate)
+  );
 
   if (!parsed.ok) {
-    const fieldIssues = parseFailureIssues(draft);
-    const referenceIssues = unresolvedReferenceIssues(draft);
+    const fieldIssues = parseFailureIssues(candidate);
+    const referenceIssues = unresolvedReferenceIssues(candidate);
     const issues = withDuplicateFinding(
-      draft,
+      candidate,
       [
         ...(fieldIssues.length > 0
           ? fieldIssues
-          : canonicalIssuesToDraftIssues(parsed.issues, draft)),
-        ...referenceIssues
+          : canonicalIssuesToDraftIssues(parsed.issues, candidate)),
+        ...referenceIssues,
+        ...mappedIssues
       ],
       context.possibleDuplicate
     );
@@ -305,8 +367,11 @@ export function assessDraft(
     return {
       status: "NEEDS_REVIEW",
       issues: withDuplicateFinding(
-        draft,
-        canonicalIssuesToDraftIssues(prepared.issues, draft),
+        candidate,
+        [
+          ...canonicalIssuesToDraftIssues(prepared.issues, candidate),
+          ...mappedIssues
+        ],
         context.possibleDuplicate
       ),
       input: null
@@ -314,8 +379,8 @@ export function assessDraft(
   }
 
   const issues = withDuplicateFinding(
-    draft,
-    [],
+    candidate,
+    mappedIssues,
     context.possibleDuplicate
   );
   if (issues.length > 0) {
@@ -449,6 +514,20 @@ function issuesFromJson(value: TransactionDraft["validationIssues"]) {
   });
 }
 
+function invalidMappedFieldsFromJson(
+  value: TransactionDraft["invalidMappedFields"]
+): InvalidMappedDraftField[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((candidate) =>
+    typeof candidate === "string" && candidate in invalidMappedMessages
+      ? [candidate as InvalidMappedDraftField]
+      : []
+  );
+}
+
 export function transactionDraftRecordToInput(
   draft: TransactionDraft
 ): TransactionDraftInput {
@@ -472,9 +551,16 @@ export function transactionDraftRecordToInput(
     projectId: draft.projectId,
     relatedTransactionId: draft.relatedTransactionId,
     countTowardFeeWaiver: draft.countTowardFeeWaiver,
+    countTowardFeeWaiverTouched: draft.countTowardFeeWaiverTouched,
+    qualityRatingTouched: draft.qualityRatingTouched,
     recurringPaymentId: draft.recurringPaymentId,
     isInstallmentRelated: draft.isInstallmentRelated,
     duplicateConfirmed: draft.duplicateConfirmed,
+    duplicateAcknowledgementRequired:
+      draft.duplicateAcknowledgementRequired,
+    invalidMappedFields: invalidMappedFieldsFromJson(
+      draft.invalidMappedFields
+    ),
     rawRow: rawRowFromJson(draft.rawRow)
   };
 }
@@ -493,9 +579,8 @@ export function transactionDraftRecordToView(
     importBatchId: draft.importBatchId,
     importedTransactionId: draft.importedTransactionId,
     expiresAt: draft.expiresAt.toISOString(),
-    possibleDuplicate: issues.some(
-      ({ field, message }) =>
-        field === "form" && message === duplicateIssueMessage
+    possibleDuplicate: Boolean(
+      draft.duplicateAcknowledgementRequired && !draft.duplicateConfirmed
     )
   };
 }
