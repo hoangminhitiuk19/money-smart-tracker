@@ -1160,6 +1160,72 @@ describe("editable transaction draft ledger", () => {
     ).toBe(false);
   });
 
+  it("restores a failed save's pre-session dirty state when a re-edit is cancelled", async () => {
+    const user = userEvent.setup();
+    mocks.updateTransactionDraft.mockResolvedValueOnce({
+      ok: false,
+      error: "Enter valid draft data."
+    });
+    renderDrafts([persistedDraft({ status: "READY" })]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    await user.click(
+      within(ledger).getByRole("checkbox", { name: "Select row 1" })
+    );
+    const title = within(ledger).getByRole("textbox", {
+      name: "Row 1 title"
+    }) as HTMLInputElement;
+
+    await user.clear(title);
+    await user.type(title, "Failed local title");
+    await user.tab();
+    expect(
+      await screen.findByText("Row 1 was not saved: Enter valid draft data.")
+    ).not.toBeNull();
+
+    title.focus();
+    await user.keyboard("{Enter}");
+    await user.type(title, " re-edit");
+    await user.keyboard("{Escape}");
+    expect(title.value).toBe("Failed local title");
+    await user.tab();
+
+    expect(mocks.updateTransactionDraft).toHaveBeenCalledOnce();
+    expect(
+      screen.getByText("1 selected row has unsaved changes.")
+    ).not.toBeNull();
+    expect(
+      (screen.getByRole("button", {
+        name: "Save selected transactions"
+      }) as HTMLButtonElement).disabled
+    ).toBe(true);
+    expect(mocks.importTransactionDrafts).not.toHaveBeenCalled();
+  });
+
+  it("starts a fresh save session when typing again before the cancelled blur", async () => {
+    const user = userEvent.setup();
+    renderDrafts([persistedDraft({ status: "READY" })]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    const title = within(ledger).getByRole("textbox", {
+      name: "Row 1 title"
+    }) as HTMLInputElement;
+
+    title.focus();
+    await user.keyboard("{Enter}");
+    await user.keyboard(" changed");
+    await user.keyboard("{Escape}");
+    expect(title.value).toBe("Cà phê sáng");
+
+    await user.keyboard(" fresh");
+    expect(title.value).toBe("Cà phê sáng fresh");
+    await user.tab();
+
+    await waitFor(() =>
+      expect(mocks.updateTransactionDraft).toHaveBeenCalledWith("draft-1", {
+        title: "Cà phê sáng fresh"
+      })
+    );
+  });
+
   it("keeps arrow keys inside an active Enter edit and saves on blur", async () => {
     const user = userEvent.setup();
     renderDrafts([persistedDraft()]);
@@ -1521,6 +1587,59 @@ describe("editable transaction draft ledger", () => {
     ]);
     expect(peakCalls).toBe(1);
     expect(await screen.findByText("Updated 1 of 2 rows. 1 row was not saved.")).not.toBeNull();
+  });
+
+  it("fills explicit quality with touched provenance and restores a category default after failure", async () => {
+    const user = userEvent.setup();
+    mocks.updateTransactionDraft.mockResolvedValueOnce({
+      ok: false,
+      error: "Network unavailable."
+    });
+    renderDrafts([
+      persistedDraft({
+        id: "draft-1",
+        position: 0,
+        categoryId: "salary",
+        qualityRating: QualityRating.C,
+        qualityRatingTouched: true
+      }),
+      persistedDraft({
+        id: "draft-2",
+        position: 1,
+        categoryId: "food",
+        qualityRating: QualityRating.A,
+        qualityRatingTouched: false
+      })
+    ]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    await user.click(
+      within(ledger).getByRole("checkbox", { name: "Select row 1" })
+    );
+    await user.click(
+      within(ledger).getByRole("checkbox", { name: "Select row 2" })
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Field to fill down" }),
+      "qualityRating"
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Fill selected rows" })
+    );
+
+    await waitFor(() =>
+      expect(mocks.updateTransactionDraft).toHaveBeenCalledWith("draft-2", {
+        qualityRating: QualityRating.C,
+        qualityRatingTouched: true
+      })
+    );
+    expect(
+      await screen.findByText("Updated 0 of 1 rows. 1 row was not saved.")
+    ).not.toBeNull();
+    expect(
+      (within(ledger).getByRole("combobox", {
+        name: "Row 2 quality"
+      }) as HTMLSelectElement).value
+    ).toBe(QualityRating.A);
   });
 
   it("blocks import while a selected fill-down operation is queued", async () => {

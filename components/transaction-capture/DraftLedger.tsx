@@ -47,8 +47,9 @@ type DraftLedgerProps = {
   drafts: readonly TransactionDraftView[];
   options: DraftCaptureOptions;
   selectedIds: ReadonlySet<string>;
+  isFieldDirty: (id: string, field: PasteableDraftField) => boolean;
   onChange: (id: string, patch: DraftPatch) => void;
-  onCancel: (id: string, patch: DraftPatch) => void;
+  onCancel: (id: string, patch: DraftPatch, restoreDirty: boolean) => void;
   onPatch: (id: string, patch: DraftPatch) => void;
   onSelectionChange: (ids: ReadonlySet<string>) => void;
   onCellPaste: (
@@ -170,6 +171,7 @@ export function DraftLedger({
   drafts,
   options,
   selectedIds,
+  isFieldDirty,
   onChange,
   onCancel,
   onPatch,
@@ -181,7 +183,9 @@ export function DraftLedger({
     new Set()
   );
   const controls = useRef(new Map<string, HTMLElement>());
-  const textSnapshots = useRef(new Map<string, string | null>());
+  const textSnapshots = useRef(
+    new Map<string, { value: string | null; dirty: boolean }>()
+  );
   const activeTextCells = useRef(new Set<string>());
   const cancelledTextCells = useRef(new Set<string>());
 
@@ -196,8 +200,15 @@ export function DraftLedger({
     active: boolean
   ) {
     const key = textCellKey(id, field);
+    if (cancelledTextCells.current.delete(key)) {
+      textSnapshots.current.delete(key);
+      activeTextCells.current.delete(key);
+    }
     if (!textSnapshots.current.has(key)) {
-      textSnapshots.current.set(key, value);
+      textSnapshots.current.set(key, {
+        value,
+        dirty: isFieldDirty(id, field)
+      });
     }
     if (active) activeTextCells.current.add(key);
   }
@@ -237,10 +248,14 @@ export function DraftLedger({
     }
     if (event.key === "Escape" && activeTextCells.current.has(key)) {
       event.preventDefault();
-      const snapshot = textSnapshots.current.get(key) ?? null;
+      const snapshot = textSnapshots.current.get(key) ?? {
+        value: null,
+        dirty: false
+      };
+      textSnapshots.current.delete(key);
       activeTextCells.current.delete(key);
       cancelledTextCells.current.add(key);
-      onCancel(id, { [field]: snapshot } as DraftPatch);
+      onCancel(id, { [field]: snapshot.value } as DraftPatch, snapshot.dirty);
       return;
     }
     if (activeTextCells.current.has(key)) return;

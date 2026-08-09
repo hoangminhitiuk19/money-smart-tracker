@@ -436,11 +436,16 @@ export function CaptureWorkspace({
     );
   }
 
-  function restoreLocalPatch(id: string, patch: DraftPatch) {
+  function restoreLocalPatch(
+    id: string,
+    patch: DraftPatch,
+    restoreDirty: boolean
+  ) {
     for (const field of Object.keys(patch) as (keyof DraftPatch)[]) {
       const key = fieldVersionKey(id, field);
       fieldVersionsRef.current.set(key, (fieldVersionsRef.current.get(key) ?? 0) + 1);
-      dirtyFieldKeysRef.current.delete(key);
+      if (restoreDirty) dirtyFieldKeysRef.current.add(key);
+      else dirtyFieldKeysRef.current.delete(key);
     }
     setDraftSaveRevision((current) => current + 1);
     updateDraftState((current) =>
@@ -730,6 +735,11 @@ export function CaptureWorkspace({
                 semanticSourceField(draft),
                 sourceDraft[semanticSourceField(sourceDraft)]
               )
+            : field === "qualityRating"
+              ? {
+                  qualityRating: sourceDraft.qualityRating,
+                  qualityRatingTouched: true
+                }
           : ({ [sourceField]: sourceDraft[sourceField] } as DraftPatch);
       return {
         id: draft.id,
@@ -1465,6 +1475,9 @@ export function CaptureWorkspace({
               ) : null}
               <DraftLedger
                 drafts={drafts}
+                isFieldDirty={(id, field) =>
+                  dirtyFieldKeysRef.current.has(fieldVersionKey(id, field))
+                }
                 onCancel={restoreLocalPatch}
                 onCellPaste={pasteCells}
                 onChange={applyLocalPatch}
