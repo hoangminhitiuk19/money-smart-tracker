@@ -230,6 +230,11 @@ beforeEach(() => {
   nextId = 1;
   fakeDbState.current = fakeDb;
   vi.mocked(prisma.transactionImportBatch.findUnique).mockResolvedValue(null);
+  fakeDb.moneySource.findMany.mockImplementation(async ({ where }: any) =>
+    where.id.in.includes("bank-a")
+      ? [{ id: "bank-a", type: "BANK_ACCOUNT" }]
+      : []
+  );
 });
 
 afterEach(() => {
@@ -325,6 +330,27 @@ describe("transaction draft save contracts", () => {
     expect(result).toMatchObject({
       ok: true,
       draft: { origin: "QUICK", status: "READY", amountText: "45.00" }
+    });
+  });
+
+  it("returns the canonical credit-card fee-waiver default for a quick expense", async () => {
+    fakeDb.moneySource.findMany.mockImplementation(async ({ where }: any) =>
+      where.id.in.includes("card-a")
+        ? [{ id: "card-a", type: "CREDIT_CARD" }]
+        : []
+    );
+
+    const result = await saveQuickDraft(
+      expenseDraft({
+        origin: TransactionDraftOrigin.QUICK,
+        fromMoneySourceId: "card-a",
+        countTowardFeeWaiver: null
+      })
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      draft: { status: "READY", countTowardFeeWaiver: true }
     });
   });
 

@@ -105,7 +105,9 @@ export function DraftCards({
           <article
             aria-label={`Transaction draft row ${rowNumber}`}
             className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white transition-[opacity,transform] duration-200 motion-reduce:transition-none"
+            id={`mobile-draft-${draft.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`}
             key={draft.id}
+            tabIndex={-1}
           >
             <div className="p-4">
               <div className="flex min-w-0 items-start justify-between gap-3">

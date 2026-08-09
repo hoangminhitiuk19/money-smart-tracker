@@ -152,18 +152,14 @@ function newQuickDraft(
     description: null, transactionDateText: localDateText(new Date()), categoryId,
     qualityRating: null, fromMoneySourceId: sourceId, toMoneySourceId: null,
     adjustedMoneySourceId: null, adjustmentDirection: null, adjustmentTarget: null,
-    projectId: null, relatedTransactionId: null, countTowardFeeWaiver: false,
+    projectId: null, relatedTransactionId: null, countTowardFeeWaiver: null,
     recurringPaymentId: null, isInstallmentRelated: false, duplicateConfirmed: false,
     rawRow: null
   };
 }
 
 function useCaptureRouter() {
-  try {
-    return useRouter();
-  } catch {
-    return null;
-  }
+  return useRouter();
 }
 
 function captureWorkspaceId(captureKey: string | null) {
@@ -310,6 +306,9 @@ export function CaptureWorkspace({
   const [ledgerAnnouncement, setLedgerAnnouncement] = useState("");
   const [lastQuickSourceId, setLastQuickSourceId] = useState<string | null>(null);
   const [lastQuickCategoryId, setLastQuickCategoryId] = useState<string | null>(null);
+  const [recoveryCaptureKey, setRecoveryCaptureKey] = useState<string | null>(
+    hasInitialPasteDrafts ? initialCaptureKey : null
+  );
   const [quickDraft, setQuickDraft] = useState<TransactionDraftInput>(() =>
     newQuickDraft("00000000-0000-4000-8000-000000000000", settings.defaultCurrency, null, null)
   );
@@ -705,6 +704,11 @@ export function CaptureWorkspace({
   }
 
   function focusDraft(id: string) {
+    if (window.matchMedia?.("(max-width: 1023px)").matches) {
+      const safeId = id.replace(/[^a-zA-Z0-9_-]/g, "-");
+      document.getElementById(`mobile-draft-${safeId}`)?.focus();
+      return;
+    }
     const rowNumber = rowNumberFor(id);
     if (!rowNumber) return;
     document.querySelector<HTMLInputElement>(
@@ -728,7 +732,27 @@ export function CaptureWorkspace({
 
   function patchQuickDraft(patch: DraftPatch) {
     setQuickDraft((current) => {
-      const next = { ...current, ...patch };
+      const typePatch = patch.type
+        ? draftTypePatch(current, patch.type, {
+            preserveExpenseFeeWaiverDefault: true
+          })
+        : null;
+      const sourceField = patch.fromMoneySourceId !== undefined
+        ? "fromMoneySourceId"
+        : patch.toMoneySourceId !== undefined
+          ? "toMoneySourceId"
+          : patch.adjustedMoneySourceId !== undefined
+            ? "adjustedMoneySourceId"
+            : null;
+      const sourcePatch = sourceField
+        ? draftSourcePatch(
+            current,
+            sourceField,
+            patch[sourceField] ?? null,
+            options.moneySources
+          )
+        : null;
+      const next = { ...current, ...patch, ...typePatch, ...sourcePatch };
       if (patch.fromMoneySourceId) setLastQuickSourceId(patch.fromMoneySourceId);
       if (patch.toMoneySourceId) setLastQuickSourceId(patch.toMoneySourceId);
       if (patch.adjustedMoneySourceId) setLastQuickSourceId(patch.adjustedMoneySourceId);
@@ -746,6 +770,11 @@ export function CaptureWorkspace({
     const draftToSave = needsFreshCapture
       ? { ...quickDraft, captureKey: crypto.randomUUID() }
       : quickDraft;
+    const pastedCaptureKey = draftsRef.current.some(
+      (draft) => draft.origin === "PASTE"
+    )
+      ? captureKeyRef.current
+      : null;
     setSavingQuick(true);
     setQuickNotice(null);
     try {
@@ -755,6 +784,7 @@ export function CaptureWorkspace({
         return;
       }
       captureKeyRef.current = draftToSave.captureKey;
+      if (pastedCaptureKey) setRecoveryCaptureKey(pastedCaptureKey);
       setQuickDraft(draftToSave);
       draftCollectionVersionRef.current += 1;
       fieldVersionsRef.current.clear();
@@ -762,7 +792,7 @@ export function CaptureWorkspace({
       updateDraftState(() => [result.draft]);
       setSelectedIds(new Set());
       setQuickSaved(true);
-      window.history.replaceState(window.history.state, "", `/transactions/capture?capture=${draftToSave.captureKey}`);
+      window.history.pushState(window.history.state, "", `/transactions/capture?capture=${draftToSave.captureKey}`);
     } catch {
       setQuickNotice("Draft could not be saved. Check your connection and try again.");
     } finally {
@@ -1116,11 +1146,11 @@ export function CaptureWorkspace({
               </p>
               {modeName === "quick" ? (
                 <>
-                  {quickNotice ? (
+                  {quickNotice || (quickSaved && recoveryCaptureKey) ? (
                     <p className="mt-4 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-capture-ink" role="status">
-                      {quickNotice}
-                      {initialCaptureKey && drafts.some((draft) => draft.origin === "PASTE") ? (
-                        <a className="ml-2 font-semibold text-capture-primary underline" href={`/transactions/capture?capture=${initialCaptureKey}`}>Return to pasted rows</a>
+                      {quickNotice ?? "Quick draft saved."}
+                      {recoveryCaptureKey ? (
+                        <a className="ml-2 font-semibold text-capture-primary underline" href={`/transactions/capture?capture=${recoveryCaptureKey}`}>Return to pasted rows</a>
                       ) : null}
                     </p>
                   ) : null}

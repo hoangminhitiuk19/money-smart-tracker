@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { act } from "react";
 import { hydrateRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup, renderToString } from "react-dom/server";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TransactionDraftView } from "@/lib/transaction-drafts/types";
 import {
   CaptureWorkspace,
@@ -13,6 +13,10 @@ import {
 } from "@/components/transaction-capture/CaptureWorkspace";
 import { OriginStamp } from "@/components/transaction-capture/OriginStamp";
 import { StatusRail } from "@/components/transaction-capture/StatusRail";
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn() })
+}));
 
 const workspaceProps: CaptureWorkspaceProps = {
   initialCaptureKey: null,

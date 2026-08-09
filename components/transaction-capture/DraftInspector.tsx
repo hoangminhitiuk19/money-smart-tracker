@@ -46,8 +46,11 @@ export function draftIsEditable(draft: TransactionDraftView) {
 }
 
 export function draftTypePatch(
-  draft: TransactionDraftView,
-  type: TransactionType
+  draft: Pick<TransactionDraftInput, "type">,
+  type: TransactionType,
+  { preserveExpenseFeeWaiverDefault = false }: {
+    preserveExpenseFeeWaiverDefault?: boolean;
+  } = {}
 ): DraftPatch {
   const patch: DraftPatch = { type };
 
@@ -70,7 +73,7 @@ export function draftTypePatch(
     patch.qualityRating = null;
     patch.countTowardFeeWaiver = false;
   } else if (draft.type !== TransactionType.EXPENSE) {
-    patch.countTowardFeeWaiver = false;
+    patch.countTowardFeeWaiver = preserveExpenseFeeWaiverDefault ? null : false;
   }
   if (type !== TransactionType.REFUND) {
     patch.relatedTransactionId = null;
@@ -80,7 +83,7 @@ export function draftTypePatch(
 }
 
 export function draftSourcePatch(
-  draft: TransactionDraftView,
+  draft: Pick<TransactionDraftInput, "type">,
   field:
     | "fromMoneySourceId"
     | "toMoneySourceId"

@@ -285,6 +285,107 @@ describe("spreadsheet transaction capture", () => {
     expect(screen.getByRole("link", { name: "Return to pasted rows" }).getAttribute("href")).toBe(`/transactions/capture?capture=${captureKey}`);
   });
 
+  it("keeps the pasted-capture return path after a quick draft replaces the active review", async () => {
+    const user = userEvent.setup();
+    render(<CaptureWorkspace {...props} initialDrafts={[persistedDraft({ origin: "PASTE" })]} />);
+    await user.click(screen.getByRole("tab", { name: "Quick add" }));
+    await user.type(screen.getByLabelText("Title"), "Quick lunch");
+    await user.type(screen.getByLabelText("Amount"), "45000");
+    await user.selectOptions(screen.getByLabelText("Source"), "wallet");
+    await user.click(screen.getByRole("button", { name: "Save quick draft" }));
+
+    const returnLink = await screen.findByRole("link", { name: "Return to pasted rows" });
+    expect(returnLink.getAttribute("href")).toBe(`/transactions/capture?capture=${captureKey}`);
+    expect(window.location.search).not.toBe(`?capture=${captureKey}`);
+  });
+
+  it("clears incompatible expense fields before a quick income draft is saved", async () => {
+    const user = userEvent.setup();
+    render(<CaptureWorkspace {...props} initialCaptureKey={null} />);
+    await user.click(screen.getByRole("tab", { name: "Quick add" }));
+    await user.type(screen.getByLabelText("Title"), "Salary");
+    await user.type(screen.getByLabelText("Amount"), "45000");
+    await user.selectOptions(screen.getByLabelText("Source"), "wallet");
+    await user.selectOptions(screen.getByLabelText("Type"), TransactionType.INCOME);
+    await user.selectOptions(screen.getByLabelText("Destination"), "bank");
+    await user.click(screen.getByRole("button", { name: "Save quick draft" }));
+
+    expect(mocks.saveQuickDraft).toHaveBeenCalledWith(expect.objectContaining({
+      type: TransactionType.INCOME,
+      fromMoneySourceId: null,
+      toMoneySourceId: "bank",
+      countTowardFeeWaiver: false
+    }));
+  });
+
+  it("clears transfer-only fields before a quick expense draft is saved", async () => {
+    const user = userEvent.setup();
+    render(<CaptureWorkspace {...props} initialCaptureKey={null} />);
+    await user.click(screen.getByRole("tab", { name: "Quick add" }));
+    await user.selectOptions(screen.getByLabelText("Type"), TransactionType.TRANSFER);
+    await user.selectOptions(screen.getByLabelText("Source"), "wallet");
+    await user.selectOptions(screen.getByLabelText("Destination"), "bank");
+    await user.selectOptions(screen.getByLabelText("Type"), TransactionType.EXPENSE);
+    await user.type(screen.getByLabelText("Title"), "Coffee");
+    await user.type(screen.getByLabelText("Amount"), "45000");
+    await user.selectOptions(screen.getByLabelText("Source"), "card");
+    await user.click(screen.getByRole("button", { name: "Save quick draft" }));
+
+    expect(mocks.saveQuickDraft).toHaveBeenCalledWith(expect.objectContaining({
+      type: TransactionType.EXPENSE,
+      fromMoneySourceId: "card",
+      toMoneySourceId: null
+    }));
+  });
+
+  it.each([
+    TransactionType.INCOME,
+    TransactionType.EXPENSE,
+    TransactionType.TRANSFER,
+    TransactionType.REFUND,
+    TransactionType.ADJUSTMENT
+  ])("makes a %s quick type start without fields incompatible with that type", async (type) => {
+    const user = userEvent.setup();
+    render(<CaptureWorkspace {...props} initialCaptureKey={null} />);
+    await user.click(screen.getByRole("tab", { name: "Quick add" }));
+    await user.selectOptions(screen.getByLabelText("Type"), type);
+
+    if (type === TransactionType.INCOME || type === TransactionType.REFUND) {
+      expect(screen.getByLabelText("Destination")).not.toBeNull();
+    } else if (type === TransactionType.ADJUSTMENT) {
+      expect(screen.getByLabelText("Adjusted source")).not.toBeNull();
+      expect(screen.getByLabelText("Direction")).not.toBeNull();
+    } else {
+      expect(screen.getByLabelText("Source")).not.toBeNull();
+    }
+  });
+
+  it("focuses the mobile draft card at an 800px viewport when a domain import failure occurs", async () => {
+    const user = userEvent.setup();
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({
+        matches: query === "(max-width: 1023px)",
+        media: query
+      })
+    });
+    try {
+      const first = persistedDraft({ id: "first", status: "READY" });
+      const affected = persistedDraft({ id: "affected", position: 1, status: "READY" });
+      mocks.importTransactionDrafts.mockResolvedValueOnce({ ok: false, error: "Review row 2.", draftId: "affected" });
+      render(<CaptureWorkspace {...props} initialDrafts={[first, affected]} />);
+      const cards = screen.getByTestId("capture-mobile-cards");
+      await user.click(within(cards).getByRole("checkbox", { name: "Select row 1" }));
+      await user.click(screen.getByRole("button", { name: "Save 1 transaction" }));
+
+      await screen.findByText("Review row 2.");
+      expect(document.activeElement).toBe(document.getElementById("mobile-draft-affected"));
+    } finally {
+      Object.defineProperty(window, "matchMedia", { configurable: true, value: originalMatchMedia });
+    }
+  });
+
   it("keeps the same idempotency key and selection after a network failure", async () => {
     const user = userEvent.setup();
     mocks.importTransactionDrafts

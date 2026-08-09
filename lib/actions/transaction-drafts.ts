@@ -22,6 +22,7 @@ import {
   transactionDraftInputSchema,
   transactionDraftPatchSchema,
   type DraftFieldIssue,
+  type DraftAssessment,
   type TransactionDraftInput,
   type TransactionDraftView
 } from "@/lib/transaction-drafts/types";
@@ -197,13 +198,14 @@ async function reassessCapture(
   await Promise.all(
     records.map((record, index) => {
       const parsed = parsedInputs[index];
-      const assessment = parsed.success
+      const assessment: DraftAssessment = parsed.success
         ? assessDraft(parsed.data, references, {
             possibleDuplicate: duplicatePositions.has(parsed.data.position)
           })
         : {
             status: TransactionDraftStatus.NEEDS_REVIEW,
-            issues: invalidStoredDraftIssue()
+            issues: invalidStoredDraftIssue(),
+            input: null
           };
       const duplicateFingerprint = parsed.success
         ? computeDraftFingerprint(parsed.data)
@@ -214,7 +216,9 @@ async function reassessCapture(
         data: {
           status: assessment.status,
           validationIssues: assessment.issues,
-          duplicateFingerprint
+          duplicateFingerprint,
+          countTowardFeeWaiver:
+            assessment.input?.countTowardFeeWaiver ?? record.countTowardFeeWaiver
         }
       });
     })
