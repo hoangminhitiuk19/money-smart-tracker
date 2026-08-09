@@ -1,7 +1,6 @@
 "use server";
 
 import {
-  AdjustmentDirection,
   AdjustmentTarget,
   MoneySourceType,
   Prisma,
@@ -12,7 +11,6 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireAuth } from "@/lib/auth";
 import {
-  transactionCreatedMetadata,
   transactionDeletedMetadata,
   transactionUpdatedMetadata
 } from "@/lib/activity";
@@ -30,125 +28,20 @@ import {
   sanitizeTransactionRead,
   transactionReadInclude
 } from "@/lib/transaction-read";
+import {
+  createOwnedTransaction,
+  transactionCreateSchema,
+  type TransactionCreateData,
+  type TransactionCreateInput
+} from "@/lib/transactions/create";
 
-const nullableTextSchema = z
-  .union([z.string(), z.null()])
-  .optional()
-  .transform((value) => {
-    if (typeof value !== "string") {
-      return value;
-    }
+const transactionUpdateSchema = transactionCreateSchema.partial();
 
-    const trimmed = value.trim();
-    return trimmed ? trimmed : null;
-  });
-
-const nullableIdSchema = z
-  .union([z.string(), z.null()])
-  .optional()
-  .transform((value) => {
-    if (typeof value !== "string") {
-      return value;
-    }
-
-    const trimmed = value.trim();
-    return trimmed ? trimmed : null;
-  });
-
-const maxDecimal18WithScale2 = new Prisma.Decimal("9999999999999999.99");
-const positiveDecimalSchema = z
-  .union([z.string(), z.instanceof(Prisma.Decimal)])
-  .transform((value, context) => {
-    const text = typeof value === "string" ? value.trim() : value.toString();
-    let amount: Prisma.Decimal;
-
-    try {
-      amount = new Prisma.Decimal(text);
-    } catch {
-      context.addIssue({
-        code: "custom",
-        message: "Enter a valid decimal amount."
-      });
-      return z.NEVER;
-    }
-
-    if (
-      !text ||
-      !amount.isFinite() ||
-      !amount.greaterThan(0) ||
-      amount.decimalPlaces() > 2 ||
-      amount.greaterThan(maxDecimal18WithScale2)
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "Amount must be a positive Decimal(18,2) value."
-      });
-      return z.NEVER;
-    }
-
-    return text;
-  });
-
-const nullableQualityRatingSchema = z
-  .union([z.nativeEnum(QualityRating), z.literal(""), z.null()])
-  .optional()
-  .transform((value) => (value === "" ? null : value));
-
-const nullableAdjustmentDirectionSchema = z
-  .union([z.nativeEnum(AdjustmentDirection), z.literal(""), z.null()])
-  .optional()
-  .transform((value) => (value === "" ? null : value));
-
-const nullableAdjustmentTargetSchema = z
-  .union([z.nativeEnum(AdjustmentTarget), z.literal(""), z.null()])
-  .optional()
-  .transform((value) => (value === "" ? null : value));
-
-const optionalBooleanSchema = z.preprocess((value) => {
-  if (value === undefined || value === null || value === "") {
-    return undefined;
-  }
-
-  if (value === "on" || value === "true" || value === true) {
-    return true;
-  }
-
-  if (value === "false" || value === false) {
-    return false;
-  }
-
-  return value;
-}, z.boolean().optional());
-
-const transactionSchema = z.object({
-  type: z.nativeEnum(TransactionType),
-  amount: positiveDecimalSchema,
-  currency: z.string().trim().min(1).default("VND"),
-  title: z.string().trim().min(1),
-  description: nullableTextSchema,
-  transactionDate: z.coerce.date(),
-  categoryId: nullableIdSchema,
-  qualityRating: nullableQualityRatingSchema,
-  fromMoneySourceId: nullableIdSchema,
-  toMoneySourceId: nullableIdSchema,
-  adjustedMoneySourceId: nullableIdSchema,
-  adjustmentDirection: nullableAdjustmentDirectionSchema,
-  adjustmentTarget: nullableAdjustmentTargetSchema,
-  projectId: nullableIdSchema,
-  relatedTransactionId: nullableIdSchema,
-  countTowardFeeWaiver: optionalBooleanSchema,
-  recurringPaymentId: nullableIdSchema,
-  isInstallmentRelated: z.coerce.boolean().default(false)
-});
-
-const transactionUpdateSchema = transactionSchema.partial();
-
-type TransactionInput = z.input<typeof transactionSchema>;
 type TransactionUpdateInput = z.input<typeof transactionUpdateSchema>;
-type TransactionData = z.infer<typeof transactionSchema>;
 type TransactionUpdateData = z.infer<typeof transactionUpdateSchema>;
+type TransactionData = TransactionCreateData;
 
-export type TransactionFormInput = TransactionInput;
+export type { TransactionCreateInput as TransactionFormInput } from "@/lib/transactions/create";
 
 export type TransactionActionResult = {
   ok: boolean;
@@ -180,36 +73,6 @@ function nullableFormValue(formData: FormData, key: string) {
 
   const value = formData.get(key);
   return typeof value === "string" && value.trim() === "" ? null : value;
-}
-
-function parseTransactionInput(data: TransactionInput | FormData) {
-  if (data instanceof FormData) {
-    return transactionSchema.safeParse({
-      type: formValue(data, "type"),
-      amount: formValue(data, "amount"),
-      currency: formValue(data, "currency") || "VND",
-      title: formValue(data, "title"),
-      description: nullableFormValue(data, "description"),
-      transactionDate: formValue(data, "transactionDate"),
-      categoryId: nullableFormValue(data, "categoryId"),
-      qualityRating: nullableFormValue(data, "qualityRating"),
-      fromMoneySourceId: nullableFormValue(data, "fromMoneySourceId"),
-      toMoneySourceId: nullableFormValue(data, "toMoneySourceId"),
-      adjustedMoneySourceId: nullableFormValue(
-        data,
-        "adjustedMoneySourceId"
-      ),
-      adjustmentDirection: nullableFormValue(data, "adjustmentDirection"),
-      adjustmentTarget: nullableFormValue(data, "adjustmentTarget"),
-      projectId: nullableFormValue(data, "projectId"),
-      relatedTransactionId: nullableFormValue(data, "relatedTransactionId"),
-      countTowardFeeWaiver: formValue(data, "countTowardFeeWaiver"),
-      recurringPaymentId: nullableFormValue(data, "recurringPaymentId"),
-      isInstallmentRelated: data.get("isInstallmentRelated") === "on"
-    });
-  }
-
-  return transactionSchema.safeParse(data);
 }
 
 function parseTransactionUpdateInput(data: TransactionUpdateInput | FormData) {
@@ -549,72 +412,18 @@ function normalizeAdjustmentTarget(
 }
 
 export async function createTransaction(
-  data: TransactionInput | FormData
+  input: TransactionCreateInput | FormData
 ): Promise<TransactionActionResult> {
   const user = await requireAuth();
   const rateLimit = await checkAuthenticatedMutation(user.id);
   if (!rateLimit.allowed) {
     return { ok: false, error: RATE_LIMIT_MESSAGE };
   }
-  const parsed = parseTransactionInput(data);
-
-  if (!parsed.success) {
-    return { ok: false, error: "Enter a valid transaction." };
-  }
-
-  const initialValidation = validateCompleteTransaction(parsed.data);
-
-  if (!initialValidation.ok) {
-    return { ok: false, error: initialValidation.errors.join(" ") };
-  }
-
-  const result = await prisma.$transaction(async (db) => {
-    const { category, moneySources } = await verifyReferences(
-      db,
-      parsed.data,
-      user.id
-    );
-    const validation = validateCompleteTransaction(parsed.data, moneySources);
-
-    if (!validation.ok) {
-      return { ok: false as const, error: validation.errors.join(" ") };
-    }
-
-    const normalizedData = normalizeAdjustmentTarget(
-      parsed.data,
-      moneySources,
-      parsed.data.adjustmentTarget !== undefined
-    );
-    const countTowardFeeWaiver =
-      normalizedData.type === TransactionType.EXPENSE
-        ? (parsed.data.countTowardFeeWaiver ??
-          getCountTowardFeeWaiverDefault(
-            normalizedData,
-            moneySources,
-            category
-          ))
-        : false;
-
-    const transaction = await db.transaction.create({
-      data: {
-        ...cleanNullableRelations(normalizedData),
-        countTowardFeeWaiver,
-        userId: user.id
-      }
-    });
-
-    await logActivity(
-      db,
-      user.id,
-      "TRANSACTION_CREATED",
-      transaction.id,
-      transactionCreatedMetadata(transaction)
-    );
-    return { ok: true as const };
-  });
-
+  const result = await prisma.$transaction((db) =>
+    createOwnedTransaction(db, user.id, input)
+  );
   if (!result.ok) {
-    return result;
+    return { ok: false, error: result.issues.map(({ message }) => message).join(" ") };
   }
   revalidatePath("/transactions");
   return { ok: true };

@@ -73,6 +73,33 @@ After deployment, smoke test registration, login, logout, session persistence,
 access to a protected route after logout, a representative write and read, CSV
 export, a rate-limited CSV export returning 429, and the response headers.
 
+## Capturing transactions
+
+The Transactions page offers two complementary entry paths:
+
+- **Capture transactions** (`/transactions/capture`) stages repeated entries as
+  reviewable drafts. Quick add is suited to one fast entry; Paste rows accepts
+  comma-separated CSV and tab-separated spreadsheet text copied from Excel or
+  Google Sheets. Files and pasted input are limited to 200 rows and 1 MB.
+- **Add transaction** (`/transactions/new`) remains available for the existing
+  single-entry form and its full set of fields.
+
+For pasted data, include headers when possible. The mapper detects common
+columns for date, type, title, amount, accounts, category, quality, project,
+description, adjustment data, and related transactions. Ambiguous columns must
+be mapped explicitly, and malformed CSV/TSV remains in the input so it can be
+corrected and reviewed again.
+
+Captured rows are drafts: review every finding, correct type-specific fields,
+select the rows to keep, and use fill-down for repeated values. Desktop ledger
+cells support Tab and arrow-key navigation; narrow screens use editable cards.
+Saving is atomic for the selected set, and retrying a failed request reuses its
+idempotency key so the same batch is not created twice. Unselected drafts remain
+available for later review.
+
+Email ingestion is planned but is not part of the transaction-capture
+foundation. It requires no additional environment variables in this phase.
+
 ## Phase 2 release evidence
 
 The current Node.js 22 release baseline includes:

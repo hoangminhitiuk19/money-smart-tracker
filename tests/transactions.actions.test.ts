@@ -60,8 +60,16 @@ function matchesTransactionWhere(transaction: FakeTransaction, where: any) {
     return false;
   }
 
+  if (where.id?.in && !where.id.in.includes(transaction.id)) {
+    return false;
+  }
+
   for (const field of ["id", "type", "relatedTransactionId"] as const) {
-    if (where[field] !== undefined && transaction[field] !== where[field]) {
+    if (
+      where[field] !== undefined &&
+      typeof where[field] !== "object" &&
+      transaction[field] !== where[field]
+    ) {
       return false;
     }
   }
@@ -88,6 +96,12 @@ vi.mock("@/lib/prisma", () => ({
           (category) =>
             category.id === where.id && category.userId === where.userId
         ) ?? null
+      ),
+      findMany: vi.fn(async ({ where }: any) =>
+        categories.filter(
+          (category) =>
+            where.id.in.includes(category.id) && category.userId === where.userId
+        )
       )
     },
     financialProject: {
@@ -95,6 +109,12 @@ vi.mock("@/lib/prisma", () => ({
         projects.find(
           (project) => project.id === where.id && project.userId === where.userId
         ) ?? null
+      ),
+      findMany: vi.fn(async ({ where }: any) =>
+        projects.filter(
+          (project) =>
+            where.id.in.includes(project.id) && project.userId === where.userId
+        )
       )
     },
     transaction: {
@@ -142,6 +162,12 @@ vi.mock("@/lib/prisma", () => ({
         recurringPayments.find(
           (payment) => payment.id === where.id && payment.userId === where.userId
         ) ?? null
+      ),
+      findMany: vi.fn(async ({ where }: any) =>
+        recurringPayments.filter(
+          (payment) =>
+            where.id.in.includes(payment.id) && payment.userId === where.userId
+        )
       )
     },
     activityLog: {
@@ -411,16 +437,19 @@ describe("createTransaction refund relation rules", () => {
   it.each(["income-own", "expense-foreign"])(
     "rejects invalid REFUND relation %s without writes",
     async (relatedTransactionId) => {
-      await expect(
-        createTransaction({
+      const result = await createTransaction({
           type: TransactionType.REFUND,
           amount: "25.00",
           title: "Invalid refund",
           transactionDate: new Date("2026-01-02"),
           toMoneySourceId: "ms-a",
           relatedTransactionId
-        })
-      ).rejects.toThrow();
+        });
+
+      expect(result).toEqual({
+        ok: false,
+        error: "Referenced record not found."
+      });
 
       expect(prisma.transaction.create).not.toHaveBeenCalled();
       expect(prisma.activityLog.create).not.toHaveBeenCalled();
@@ -557,7 +586,13 @@ describe("createTransaction owned references and waiver defaults", () => {
         [field]: value
       });
 
-      await expect(resultPromise).rejects.toThrow();
+      await expect(resultPromise).resolves.toEqual({
+        ok: false,
+        error:
+          field === "fromMoneySourceId"
+            ? "Referenced money source not found."
+            : "Referenced record not found."
+      });
       expect(prisma.transaction.create).not.toHaveBeenCalled();
       expect(prisma.activityLog.create).not.toHaveBeenCalled();
     }
@@ -575,9 +610,9 @@ describe("createTransaction recurringPaymentId ownership", () => {
         fromMoneySourceId: "ms-a",
         recurringPaymentId: "rp-foreign"
       })
-    ).rejects.toThrow("Referenced record not found.");
+    ).resolves.toEqual({ ok: false, error: "Referenced record not found." });
 
-    expect(prisma.recurringPayment.findFirst).toHaveBeenCalled();
+    expect(prisma.recurringPayment.findMany).toHaveBeenCalled();
     expect(prisma.transaction.create).not.toHaveBeenCalled();
   });
 
@@ -592,7 +627,7 @@ describe("createTransaction recurringPaymentId ownership", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(prisma.recurringPayment.findFirst).toHaveBeenCalled();
+    expect(prisma.recurringPayment.findMany).toHaveBeenCalled();
     expect(prisma.transaction.create).toHaveBeenCalled();
   });
 });

@@ -41,6 +41,30 @@ describe("runSerializable", () => {
     });
   });
 
+  it("forwards an explicit transaction timeout", async () => {
+    transactionMock.mockImplementationOnce(async (operation, options) => {
+      expect(options).toEqual({
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        timeout: 60_000
+      });
+      return operation({ marker: "transaction-client" });
+    });
+
+    await expect(
+      runSerializable(async () => "committed", 3, 60_000)
+    ).resolves.toBe("committed");
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid transaction timeout %s before opening a transaction",
+    async (timeoutMs) => {
+      await expect(
+        runSerializable(async () => "unused", 3, timeoutMs)
+      ).rejects.toThrow("timeoutMs must be a positive integer.");
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    }
+  );
+
   it("uses three attempts by default and rethrows the final P2034", async () => {
     transactionMock
       .mockRejectedValueOnce(conflict())
