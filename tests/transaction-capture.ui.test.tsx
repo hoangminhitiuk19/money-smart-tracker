@@ -25,13 +25,23 @@ import {
 import type { TransactionDraftView } from "@/lib/transaction-drafts/types";
 
 const mocks = vi.hoisted(() => ({
+  importTransactionDrafts: vi.fn(),
   savePasteDrafts: vi.fn(),
+  saveQuickDraft: vi.fn(),
   updateTransactionDraft: vi.fn()
 }));
 
 vi.mock("@/lib/actions/transaction-drafts", () => ({
+  importTransactionDrafts: mocks.importTransactionDrafts,
   savePasteDrafts: mocks.savePasteDrafts,
+  saveQuickDraft: mocks.saveQuickDraft,
   updateTransactionDraft: mocks.updateTransactionDraft
+}));
+
+const navigation = vi.hoisted(() => ({ push: vi.fn() }));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => navigation
 }));
 
 const captureKey = "550e8400-e29b-41d4-a716-446655440000";
@@ -120,6 +130,15 @@ beforeEach(() => {
     ok: true,
     drafts: [persistedDraft()]
   });
+  mocks.saveQuickDraft.mockImplementation(async (input: Partial<TransactionDraftView>) => ({
+    ok: true,
+    draft: persistedDraft({ id: "quick-draft", ...input, origin: "QUICK", status: "READY" })
+  }));
+  mocks.importTransactionDrafts.mockResolvedValue({
+    ok: true,
+    importedCount: 1,
+    transactionIds: ["transaction-1"]
+  });
   mocks.updateTransactionDraft.mockImplementation(
     async (id: string, patch: Partial<TransactionDraftView>) => ({
       ok: true,
@@ -131,6 +150,178 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("spreadsheet transaction capture", () => {
+  it("starts a compact quick draft with today's date and the configured currency", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-03T08:00:00.000Z"));
+    try {
+      render(<CaptureWorkspace {...props} />);
+      fireEvent.click(screen.getByRole("tab", { name: "Quick add" }));
+
+      expect((screen.getByLabelText("Date") as HTMLInputElement).value).toBe("2026-08-03");
+      expect((screen.getByLabelText("Currency") as HTMLInputElement).value).toBe("VND");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("saves a quick draft into a fresh capture without reusing a pasted capture", async () => {
+    const user = userEvent.setup();
+    const pasted = persistedDraft({ origin: "PASTE", status: "READY" });
+    render(<CaptureWorkspace {...props} initialDrafts={[pasted]} />);
+
+    await user.click(screen.getByRole("tab", { name: "Quick add" }));
+    await user.type(screen.getByLabelText("Title"), "Lunch");
+    await user.type(screen.getByLabelText("Amount"), "45000");
+    await user.selectOptions(screen.getByLabelText("Source"), "wallet");
+    await user.click(screen.getByRole("button", { name: "Save quick draft" }));
+
+    await waitFor(() => expect(mocks.saveQuickDraft).toHaveBeenCalledOnce());
+    expect(mocks.saveQuickDraft.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        captureKey: expect.not.stringMatching(new RegExp(`^${captureKey}$`)),
+        origin: "QUICK",
+        position: 0,
+        amountText: "45000",
+        title: "Lunch",
+        fromMoneySourceId: "wallet"
+      })
+    );
+    expect(await screen.findByText("Lunch")).not.toBeNull();
+  });
+
+  it("summarizes selected ready drafts and saves them as one atomic batch", async () => {
+    const user = userEvent.setup();
+    const ready = persistedDraft({ id: "ready", status: "READY" });
+    const review = persistedDraft({
+      id: "review",
+      position: 1,
+      status: "NEEDS_REVIEW",
+      issues: [{ field: "title", message: "Add a title." }]
+    });
+    render(<CaptureWorkspace {...props} initialDrafts={[ready, review]} />);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+
+    expect(screen.getByText("1 ready · 1 need attention")).not.toBeNull();
+    await user.click(within(ledger).getByRole("checkbox", { name: "Select row 1" }));
+    expect((screen.getByRole("button", { name: "Save 1 transaction" }) as HTMLButtonElement).disabled).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Save 1 transaction" }));
+
+    await waitFor(() => expect(mocks.importTransactionDrafts).toHaveBeenCalledOnce());
+    expect(mocks.importTransactionDrafts).toHaveBeenCalledWith({
+      ids: ["ready"],
+      idempotencyKey: expect.any(String)
+    });
+    expect(navigation.push).toHaveBeenCalledWith("/transactions?created=batch&count=1");
+  });
+
+  it("shows selected, ready, review, and duplicate counts while blocking empty and non-ready selections", async () => {
+    const user = userEvent.setup();
+    const ready = persistedDraft({ id: "ready", status: "READY" });
+    const review = persistedDraft({
+      id: "review",
+      position: 1,
+      status: "NEEDS_REVIEW",
+      possibleDuplicate: true,
+      issues: [{ field: "title", message: "Add a title." }]
+    });
+    render(<CaptureWorkspace {...props} initialDrafts={[ready, review]} />);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    const save = screen.getByRole("button", { name: "Save selected transactions" });
+
+    expect(screen.getByText("0 selected · 1 ready · 1 need attention · 1 duplicate")).not.toBeNull();
+    expect((save as HTMLButtonElement).disabled).toBe(true);
+    await user.click(within(ledger).getByRole("checkbox", { name: "Select row 1" }));
+    expect(screen.getByText("1 selected · 1 ready · 1 need attention · 1 duplicate")).not.toBeNull();
+    expect((screen.getByRole("button", { name: "Save 1 transaction" }) as HTMLButtonElement).disabled).toBe(false);
+    await user.click(within(ledger).getByRole("checkbox", { name: "Select row 2" }));
+    expect(screen.getByText("2 selected · 1 ready · 1 need attention · 1 duplicate")).not.toBeNull();
+    expect((screen.getByRole("button", { name: "Save selected transactions" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("focuses the draft returned by a domain import failure", async () => {
+    const user = userEvent.setup();
+    const first = persistedDraft({ id: "first", status: "READY" });
+    const affected = persistedDraft({ id: "affected", position: 1, status: "READY" });
+    mocks.importTransactionDrafts.mockResolvedValueOnce({
+      ok: false,
+      error: "The source is no longer available.",
+      draftId: "affected"
+    });
+    render(<CaptureWorkspace {...props} initialDrafts={[first, affected]} />);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    await user.click(within(ledger).getByRole("checkbox", { name: "Select row 1" }));
+    await user.click(screen.getByRole("button", { name: "Save 1 transaction" }));
+
+    expect(await screen.findByText("The source is no longer available.")).not.toBeNull();
+    expect(document.activeElement).toBe(
+      within(ledger).getByRole("checkbox", { name: "Select row 2" })
+    );
+  });
+
+  it("requires quick essentials and remembers the last explicit source and category for the next quick entry", async () => {
+    const user = userEvent.setup();
+    render(<CaptureWorkspace {...props} initialCaptureKey={null} />);
+    await user.click(screen.getByRole("tab", { name: "Quick add" }));
+
+    expect((screen.getByRole("button", { name: "Save quick draft" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.type(screen.getByLabelText("Title"), "Lunch");
+    await user.type(screen.getByLabelText("Amount"), "45000");
+    expect((screen.getByRole("button", { name: "Save quick draft" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.selectOptions(screen.getByLabelText("Source"), "wallet");
+    await user.selectOptions(screen.getByLabelText("Category"), "food");
+    await user.click(screen.getByRole("button", { name: "Save quick draft" }));
+    await user.click(await screen.findByRole("button", { name: "Add another quick entry" }));
+
+    expect((screen.getByLabelText("Source") as HTMLSelectElement).value).toBe("wallet");
+    expect((screen.getByLabelText("Category") as HTMLSelectElement).value).toBe("food");
+  });
+
+  it("keeps an honest return path to pasted rows while a quick draft starts separately", async () => {
+    const user = userEvent.setup();
+    render(<CaptureWorkspace {...props} initialDrafts={[persistedDraft({ origin: "PASTE" })]} />);
+    await user.click(screen.getByRole("tab", { name: "Quick add" }));
+
+    expect(screen.getByText("Your pasted rows stay separate while you add one quick transaction.")).not.toBeNull();
+    expect(screen.getByRole("link", { name: "Return to pasted rows" }).getAttribute("href")).toBe(`/transactions/capture?capture=${captureKey}`);
+  });
+
+  it("keeps the same idempotency key and selection after a network failure", async () => {
+    const user = userEvent.setup();
+    mocks.importTransactionDrafts
+      .mockRejectedValueOnce(new Error("network unavailable"))
+      .mockResolvedValueOnce({ ok: true, importedCount: 1, transactionIds: ["transaction-1"] });
+    render(<CaptureWorkspace {...props} initialDrafts={[persistedDraft({ status: "READY" })]} />);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    await user.click(within(ledger).getByRole("checkbox", { name: "Select row 1" }));
+    await user.click(screen.getByRole("button", { name: "Save 1 transaction" }));
+
+    expect((await screen.findByRole("button", { name: "Try saving again" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((within(ledger).getByRole("checkbox", { name: "Select row 1" }) as HTMLInputElement).checked).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Try saving again" }));
+    await waitFor(() => expect(mocks.importTransactionDrafts).toHaveBeenCalledTimes(2));
+    expect(mocks.importTransactionDrafts.mock.calls[1][0]).toEqual(
+      expect.objectContaining({
+        ids: ["draft-1"],
+        idempotencyKey: mocks.importTransactionDrafts.mock.calls[0][0].idempotencyKey
+      })
+    );
+  });
+
+  it("replaces a failed retry key only after the user abandons that attempt", async () => {
+    const user = userEvent.setup();
+    mocks.importTransactionDrafts.mockRejectedValue(new Error("network unavailable"));
+    render(<CaptureWorkspace {...props} initialDrafts={[persistedDraft({ status: "READY" })]} />);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    await user.click(within(ledger).getByRole("checkbox", { name: "Select row 1" }));
+    await user.click(screen.getByRole("button", { name: "Save 1 transaction" }));
+    await screen.findByRole("button", { name: "Try saving again" });
+    const firstKey = mocks.importTransactionDrafts.mock.calls[0][0].idempotencyKey;
+
+    await user.click(screen.getByRole("button", { name: "Abandon this save attempt" }));
+    await user.click(screen.getByRole("button", { name: "Save 1 transaction" }));
+    await waitFor(() => expect(mocks.importTransactionDrafts).toHaveBeenCalledTimes(2));
+    expect(mocks.importTransactionDrafts.mock.calls[1][0].idempotencyKey).not.toBe(firstKey);
+  });
   it("detects TSV columns, Unicode content, exact money text, and previews three rows", async () => {
     const user = userEvent.setup();
     await openPaste(user);

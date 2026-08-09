@@ -1,12 +1,14 @@
 "use client";
 
-import { MoneySourceType, TransactionType } from "@prisma/client";
+import { MoneySourceType, TransactionDraftOrigin, TransactionType } from "@prisma/client";
 import {
   useEffect,
   useRef,
   useState,
   type KeyboardEvent
 } from "react";
+import { useRouter } from "next/navigation";
+import { ImportBar } from "@/components/transaction-capture/ImportBar";
 import { ColumnMapper } from "@/components/transaction-capture/ColumnMapper";
 import { DraftCards } from "@/components/transaction-capture/DraftCards";
 import {
@@ -15,6 +17,7 @@ import {
   draftSourcePatch,
   draftTypePatch,
   draftFieldId,
+  QuickDraftForm,
   type DraftSurface
 } from "@/components/transaction-capture/DraftInspector";
 import {
@@ -25,7 +28,9 @@ import {
 } from "@/components/transaction-capture/DraftLedger";
 import { PasteInput } from "@/components/transaction-capture/PasteInput";
 import {
+  importTransactionDrafts,
   savePasteDrafts,
+  saveQuickDraft,
   updateTransactionDraft
 } from "@/lib/actions/transaction-drafts";
 import {
@@ -133,6 +138,32 @@ function localDateText(date: Date) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function newQuickDraft(
+  captureKey: string,
+  currency: string,
+  sourceId: string | null,
+  categoryId: string | null
+): TransactionDraftInput {
+  return {
+    captureKey, position: 0, origin: TransactionDraftOrigin.QUICK,
+    type: TransactionType.EXPENSE, amountText: null, currency, title: null,
+    description: null, transactionDateText: localDateText(new Date()), categoryId,
+    qualityRating: null, fromMoneySourceId: sourceId, toMoneySourceId: null,
+    adjustedMoneySourceId: null, adjustmentDirection: null, adjustmentTarget: null,
+    projectId: null, relatedTransactionId: null, countTowardFeeWaiver: false,
+    recurringPaymentId: null, isInstallmentRelated: false, duplicateConfirmed: false,
+    rawRow: null
+  };
+}
+
+function useCaptureRouter() {
+  try {
+    return useRouter();
+  } catch {
+    return null;
+  }
 }
 
 function captureWorkspaceId(captureKey: string | null) {
@@ -243,6 +274,7 @@ export function CaptureWorkspace({
   options,
   settings
 }: CaptureWorkspaceProps) {
+  const router = useCaptureRouter();
   const hasInitialPasteDrafts = initialDrafts.some(
     ({ origin }) => origin === "PASTE"
   );
@@ -276,6 +308,17 @@ export function CaptureWorkspace({
     useState<FillableDraftField>("categoryId");
   const [bulkBusy, setBulkBusy] = useState(false);
   const [ledgerAnnouncement, setLedgerAnnouncement] = useState("");
+  const [lastQuickSourceId, setLastQuickSourceId] = useState<string | null>(null);
+  const [lastQuickCategoryId, setLastQuickCategoryId] = useState<string | null>(null);
+  const [quickDraft, setQuickDraft] = useState<TransactionDraftInput>(() =>
+    newQuickDraft("00000000-0000-4000-8000-000000000000", settings.defaultCurrency, null, null)
+  );
+  const [savingQuick, setSavingQuick] = useState(false);
+  const [quickSaved, setQuickSaved] = useState(false);
+  const [quickNotice, setQuickNotice] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const importAttemptRef = useRef<{ ids: readonly string[]; key: string } | null>(null);
   const captureKeyRef = useRef<string | null>(initialCaptureKey);
   const draftsRef = useRef<readonly TransactionDraftView[]>(
     initialDefaultsRef.current.drafts
@@ -296,6 +339,11 @@ export function CaptureWorkspace({
   const persistedPasteCount = drafts.filter(
     ({ origin }) => origin === "PASTE"
   ).length;
+  const readyCount = drafts.filter((draft) => draft.status === "READY").length;
+  const needsReviewCount = drafts.filter((draft) => draft.status === "NEEDS_REVIEW").length;
+  const duplicateCount = drafts.filter((draft) => draft.possibleDuplicate).length;
+  const selectedDrafts = drafts.filter((draft) => selectedIds.has(draft.id));
+  const canImport = selectedDrafts.length > 0 && selectedDrafts.every((draft) => draft.status === "READY");
 
   function fieldVersionKey(id: string, field: keyof DraftPatch) {
     return `${id}:${field}`;
@@ -656,6 +704,121 @@ export function CaptureWorkspace({
     target?.focus();
   }
 
+  function focusDraft(id: string) {
+    const rowNumber = rowNumberFor(id);
+    if (!rowNumber) return;
+    document.querySelector<HTMLInputElement>(
+      `[data-testid="capture-desktop-ledger"] input[aria-label="Select row ${rowNumber}"]`
+    )?.focus();
+  }
+
+  function quickCanSave(draft: TransactionDraftInput) {
+    if (!draft.type || !draft.amountText?.trim() || !draft.title?.trim()) return false;
+    if (draft.type === TransactionType.INCOME || draft.type === TransactionType.REFUND) {
+      return Boolean(draft.toMoneySourceId);
+    }
+    if (draft.type === TransactionType.TRANSFER) {
+      return Boolean(draft.fromMoneySourceId && draft.toMoneySourceId && draft.fromMoneySourceId !== draft.toMoneySourceId);
+    }
+    if (draft.type === TransactionType.ADJUSTMENT) {
+      return Boolean(draft.adjustedMoneySourceId && draft.adjustmentDirection);
+    }
+    return Boolean(draft.fromMoneySourceId);
+  }
+
+  function patchQuickDraft(patch: DraftPatch) {
+    setQuickDraft((current) => {
+      const next = { ...current, ...patch };
+      if (patch.fromMoneySourceId) setLastQuickSourceId(patch.fromMoneySourceId);
+      if (patch.toMoneySourceId) setLastQuickSourceId(patch.toMoneySourceId);
+      if (patch.adjustedMoneySourceId) setLastQuickSourceId(patch.adjustedMoneySourceId);
+      if (patch.categoryId) setLastQuickCategoryId(patch.categoryId);
+      return next;
+    });
+    setQuickSaved(false);
+  }
+
+  async function saveQuick() {
+    if (!quickCanSave(quickDraft)) return;
+    const needsFreshCapture =
+      quickDraft.captureKey === "00000000-0000-4000-8000-000000000000" ||
+      draftsRef.current.some((draft) => draft.origin !== "QUICK");
+    const draftToSave = needsFreshCapture
+      ? { ...quickDraft, captureKey: crypto.randomUUID() }
+      : quickDraft;
+    setSavingQuick(true);
+    setQuickNotice(null);
+    try {
+      const result = await saveQuickDraft(draftToSave);
+      if (!result.ok) {
+        setQuickNotice(result.error);
+        return;
+      }
+      captureKeyRef.current = draftToSave.captureKey;
+      setQuickDraft(draftToSave);
+      draftCollectionVersionRef.current += 1;
+      fieldVersionsRef.current.clear();
+      latestResponseSequenceRef.current.clear();
+      updateDraftState(() => [result.draft]);
+      setSelectedIds(new Set());
+      setQuickSaved(true);
+      window.history.replaceState(window.history.state, "", `/transactions/capture?capture=${draftToSave.captureKey}`);
+    } catch {
+      setQuickNotice("Draft could not be saved. Check your connection and try again.");
+    } finally {
+      setSavingQuick(false);
+    }
+  }
+
+  function beginAnotherQuick() {
+    setQuickDraft(newQuickDraft(crypto.randomUUID(), settings.defaultCurrency, lastQuickSourceId, lastQuickCategoryId));
+    setQuickSaved(false);
+    setQuickNotice(null);
+  }
+
+  async function saveSelectedDrafts() {
+    if (!canImport || importing) return;
+    const ids = selectedDrafts.map((draft) => draft.id);
+    const existing = importAttemptRef.current;
+    const attempt = existing && existing.ids.length === ids.length && existing.ids.every((id, index) => id === ids[index])
+      ? existing
+      : { ids, key: crypto.randomUUID() };
+    importAttemptRef.current = attempt;
+    setImporting(true);
+    setImportError(null);
+    try {
+      const result = await importTransactionDrafts({ ids: attempt.ids, idempotencyKey: attempt.key });
+      if (!result.ok) {
+        setImportError(result.error);
+        if (result.draftId) focusDraft(result.draftId);
+        return;
+      }
+      importAttemptRef.current = null;
+      const destination = `/transactions?created=batch&count=${result.importedCount}`;
+      if (router) {
+        router.push(destination);
+      } else {
+        window.location.assign(destination);
+      }
+    } catch {
+      setImportError("Check your connection and try again.");
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  function abandonImportAttempt() {
+    importAttemptRef.current = null;
+    setImportError(null);
+  }
+
+  function handleSelectionChange(ids: ReadonlySet<string>) {
+    const current = Array.from(selectedIds).sort().join(",");
+    const next = Array.from(ids).sort().join(",");
+    if (current !== next && importAttemptRef.current) abandonImportAttempt();
+    setSelectedIds(ids);
+  }
+
   useEffect(() => {
     if (attemptedInitialDefaultsRef.current) return;
     attemptedInitialDefaultsRef.current = true;
@@ -813,6 +976,10 @@ export function CaptureWorkspace({
 
   function activateTab(nextMode: CaptureMode, moveFocus = false) {
     setMode(nextMode);
+    if (nextMode === "quick" && draftsRef.current.some((draft) => draft.origin !== "QUICK")) {
+      setQuickNotice("Your pasted rows stay separate while you add one quick transaction.");
+      if (quickDraft.captureKey === captureKeyRef.current) beginAnotherQuick();
+    }
     if (moveFocus) {
       tabRefs.current[nextMode]?.focus();
     }
@@ -947,6 +1114,28 @@ export function CaptureWorkspace({
               <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600">
                 {details.description}
               </p>
+              {modeName === "quick" ? (
+                <>
+                  {quickNotice ? (
+                    <p className="mt-4 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-capture-ink" role="status">
+                      {quickNotice}
+                      {initialCaptureKey && drafts.some((draft) => draft.origin === "PASTE") ? (
+                        <a className="ml-2 font-semibold text-capture-primary underline" href={`/transactions/capture?capture=${initialCaptureKey}`}>Return to pasted rows</a>
+                      ) : null}
+                    </p>
+                  ) : null}
+                  <QuickDraftForm
+                    canSave={quickCanSave(quickDraft)}
+                    draft={quickDraft}
+                    onChange={patchQuickDraft}
+                    onNew={beginAnotherQuick}
+                    onSave={saveQuick}
+                    options={options}
+                    saved={quickSaved}
+                    saving={savingQuick}
+                  />
+                </>
+              ) : null}
               {modeName === "paste" ? (
                 <>
                   {persistedPasteCount > 0 ? (
@@ -1033,7 +1222,7 @@ export function CaptureWorkspace({
                 onChange={applyLocalPatch}
                 onFocusIssue={focusIssue}
                 onPatch={patchDraft}
-                onSelectionChange={setSelectedIds}
+                onSelectionChange={handleSelectionChange}
                 options={options}
                 selectedIds={selectedIds}
               />
@@ -1043,7 +1232,7 @@ export function CaptureWorkspace({
                 onChange={applyLocalPatch}
                 onFocusIssue={focusIssue}
                 onPatch={patchDraft}
-                onSelectionChange={setSelectedIds}
+                onSelectionChange={handleSelectionChange}
                 options={options}
                 selectedIds={selectedIds}
               />
@@ -1075,6 +1264,17 @@ export function CaptureWorkspace({
               </p>
             </div>
           )}
+          <ImportBar
+            canSave={canImport}
+            duplicateCount={duplicateCount}
+            error={importError}
+            importing={importing}
+            needsReviewCount={needsReviewCount}
+            onAbandon={abandonImportAttempt}
+            onSave={saveSelectedDrafts}
+            readyCount={readyCount}
+            selectedCount={selectedDrafts.length}
+          />
         </section>
       </div>
     </section>

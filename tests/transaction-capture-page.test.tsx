@@ -48,8 +48,8 @@ type AsyncContentElement = ReactElement<Record<string, unknown>> & {
   type: (props: Record<string, unknown>) => Promise<ReactElement>;
 };
 
-async function renderTransactionsPage() {
-  const shell = (await TransactionsPage({ searchParams: Promise.resolve({}) })) as ReactElement<{
+async function renderTransactionsPage(searchParams: Record<string, string> = {}) {
+  const shell = (await TransactionsPage({ searchParams: Promise.resolve(searchParams) })) as ReactElement<{
     children: AsyncContentElement;
   }>;
   const content = await shell.props.children.type(shell.props.children.props);
@@ -181,5 +181,11 @@ describe("transaction capture page", () => {
     expect(markup).toContain("Capture transactions");
     expect(markup).toContain('href="/transactions/new"');
     expect(markup).toContain("Single entry");
+  });
+
+  it("confirms the imported batch count on the transaction list", async () => {
+    const markup = await renderTransactionsPage({ created: "batch", count: "12" });
+
+    expect(markup).toContain("Saved 12 transactions.");
   });
 });

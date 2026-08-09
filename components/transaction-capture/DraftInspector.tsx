@@ -412,3 +412,40 @@ export function DraftInspector({
     </section>
   );
 }
+
+type QuickDraftFormProps = {
+  draft: TransactionDraftInput;
+  onChange: (patch: DraftPatch) => void;
+  onSave: () => void;
+  onNew: () => void;
+  options: DraftCaptureOptions;
+  canSave: boolean;
+  saving: boolean;
+  saved: boolean;
+};
+
+export function QuickDraftForm({
+  canSave, draft, onChange, onNew, onSave, options, saved, saving
+}: QuickDraftFormProps) {
+  const sourceField = draft.type === TransactionType.INCOME || draft.type === TransactionType.REFUND
+    ? "toMoneySourceId"
+    : draft.type === TransactionType.ADJUSTMENT ? "adjustedMoneySourceId" : "fromMoneySourceId";
+  const sourceLabel = sourceField === "toMoneySourceId" ? "Destination" : sourceField === "adjustedMoneySourceId" ? "Adjusted source" : "Source";
+  const patch = (field: keyof DraftPatch, value: string) => onChange({ [field]: value || null } as DraftPatch);
+
+  return <div className="mt-5 grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-6">
+    <label><span className="text-xs font-semibold text-slate-700">Date</span><Input aria-label="Date" className="mt-1 min-h-11 font-capture-data" onChange={(event) => patch("transactionDateText", event.target.value)} type="date" value={draft.transactionDateText ?? ""} /></label>
+    <label><span className="text-xs font-semibold text-slate-700">Type</span><Select aria-label="Type" className="mt-1 min-h-11" onChange={(event) => patch("type", event.target.value)} value={draft.type ?? ""}>{Object.values(TransactionType).map((type) => <option key={type} value={type}>{type}</option>)}</Select></label>
+    <label className="lg:col-span-2"><span className="text-xs font-semibold text-slate-700">Title</span><Input aria-label="Title" className="mt-1 min-h-11" onChange={(event) => patch("title", event.target.value)} value={draft.title ?? ""} /></label>
+    <label><span className="text-xs font-semibold text-slate-700">Amount</span><Input aria-label="Amount" className="mt-1 min-h-11 font-capture-data" inputMode="decimal" onChange={(event) => patch("amountText", event.target.value)} value={draft.amountText ?? ""} /></label>
+    <label><span className="text-xs font-semibold text-slate-700">Currency</span><Input aria-label="Currency" className="mt-1 min-h-11 font-capture-data" onChange={(event) => patch("currency", event.target.value)} value={draft.currency ?? ""} /></label>
+    <label><span className="text-xs font-semibold text-slate-700">{sourceLabel}</span><Select aria-label={sourceLabel} className="mt-1 min-h-11" onChange={(event) => patch(sourceField, event.target.value)} value={draft[sourceField] ?? ""}><option value="">Choose {sourceLabel.toLowerCase()}</option>{options.moneySources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</Select></label>
+    <label><span className="text-xs font-semibold text-slate-700">Category</span><Select aria-label="Category" className="mt-1 min-h-11" onChange={(event) => patch("categoryId", event.target.value)} value={draft.categoryId ?? ""}><option value="">No category</option>{options.categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</Select></label>
+    {draft.type === TransactionType.TRANSFER ? <label><span className="text-xs font-semibold text-slate-700">Destination</span><Select aria-label="Destination" className="mt-1 min-h-11" onChange={(event) => patch("toMoneySourceId", event.target.value)} value={draft.toMoneySourceId ?? ""}><option value="">Choose destination</option>{options.moneySources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</Select></label> : null}
+    {draft.type === TransactionType.ADJUSTMENT ? <label><span className="text-xs font-semibold text-slate-700">Direction</span><Select aria-label="Direction" className="mt-1 min-h-11" onChange={(event) => patch("adjustmentDirection", event.target.value)} value={draft.adjustmentDirection ?? ""}><option value="">Choose direction</option><option value={AdjustmentDirection.INCREASE}>Increase</option><option value={AdjustmentDirection.DECREASE}>Decrease</option></Select></label> : null}
+    <div className="flex items-end gap-2 sm:col-span-2 lg:col-span-2">
+      {saved ? <button className="min-h-11 rounded-md border border-slate-300 px-3 text-sm font-semibold text-capture-ink" onClick={onNew} type="button">Add another quick entry</button> : null}
+      <button className="min-h-11 rounded-md bg-capture-primary px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50" disabled={!canSave || saving} onClick={onSave} type="button">{saving ? "Saving quick draft" : "Save quick draft"}</button>
+    </div>
+  </div>;
+}

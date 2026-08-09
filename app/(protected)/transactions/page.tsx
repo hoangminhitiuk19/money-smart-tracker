@@ -178,6 +178,11 @@ async function TransactionsPageContent({
           Transaction created from receipt entry.
         </p>
       ) : null}
+      {created === "batch" && /^\d+$/.test(getParam(searchParams, "count") ?? "") ? (
+        <p className="rounded-md border border-income/20 bg-income/10 px-3 py-2 text-sm text-income">
+          Saved {getParam(searchParams, "count")} transactions.
+        </p>
+      ) : null}
 
       <TransactionFilters
         categories={categories.map((category) => ({

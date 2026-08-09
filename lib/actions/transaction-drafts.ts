@@ -351,27 +351,37 @@ export async function saveQuickDraft(
       const expiresAt = new Date(
         createdAt.getTime() + DRAFT_RETENTION_DAYS * MILLISECONDS_PER_DAY
       );
-      await db.transactionDraft.upsert({
+      const existing = await db.transactionDraft.findFirst({
         where: {
-          userId_captureKey_position: {
-            userId: user.id,
-            captureKey: parsed.data.captureKey,
-            position: parsed.data.position
-          }
-        },
-        create: {
+          userId: user.id,
+          captureKey: parsed.data.captureKey,
+          position: parsed.data.position
+        }
+      });
+      if (existing && existing.origin !== TransactionDraftOrigin.QUICK) {
+        return null;
+      }
+      if (existing) {
+        await db.transactionDraft.update({
+          where: { id: existing.id, userId: user.id },
+          data: { ...storedDraftData(parsed.data), origin: parsed.data.origin }
+        });
+      } else {
+        await db.transactionDraft.create({
+          data: {
           userId: user.id,
           captureKey: parsed.data.captureKey,
           position: parsed.data.position,
           origin: parsed.data.origin,
           createdAt,
           expiresAt,
-          ...storedDraftData(parsed.data)
-        },
-        update: { ...storedDraftData(parsed.data), origin: parsed.data.origin }
-      });
+            ...storedDraftData(parsed.data)
+          }
+        });
+      }
       return reassessCapture(db, user.id, parsed.data.captureKey);
     });
+    if (!records) return actionFailure("Quick captures need a new capture.");
     const draft = records.find(({ position }) => position === parsed.data.position);
     return draft
       ? { ok: true, draft: transactionDraftRecordToView(draft) }

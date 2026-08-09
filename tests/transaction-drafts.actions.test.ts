@@ -328,6 +328,20 @@ describe("transaction draft save contracts", () => {
     });
   });
 
+  it("never overwrites a pasted position zero when saving a quick draft", async () => {
+    const pasted = fakeRecord(expenseDraft(), {
+      id: "pasted-position-zero",
+      origin: TransactionDraftOrigin.PASTE
+    });
+    drafts = [pasted];
+
+    await expect(
+      saveQuickDraft(expenseDraft({ origin: TransactionDraftOrigin.QUICK }))
+    ).resolves.toEqual({ ok: false, error: "Quick captures need a new capture." });
+    expect(drafts).toEqual([pasted]);
+    expect(fakeDb.transactionDraft.upsert).not.toHaveBeenCalled();
+  });
+
   it("returns the rate-limit error and performs zero writes", async () => {
     vi.mocked(checkAuthenticatedMutation).mockResolvedValueOnce({
       allowed: false,
