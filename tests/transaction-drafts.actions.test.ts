@@ -530,7 +530,7 @@ describe("transaction draft owned reads and mutations", () => {
     });
   });
 
-  it("returns every reassessed draft when an edit creates and removes a duplicate pair", async () => {
+  it("keeps an unchanged sibling's duplicate acknowledgement sticky across reassessment", async () => {
     drafts = [
       fakeRecord(expenseDraft({ title: "Lunch" }), { id: "draft-1" }),
       fakeRecord(expenseDraft({ position: 1, title: "Dinner" }), {
@@ -568,7 +568,17 @@ describe("transaction draft owned reads and mutations", () => {
       draft: { id: "draft-1", status: "READY", possibleDuplicate: false },
       drafts: [
         { id: "draft-1", status: "READY", possibleDuplicate: false },
-        { id: "draft-2", status: "READY", possibleDuplicate: false, issues: [] }
+        {
+          id: "draft-2",
+          status: "NEEDS_REVIEW",
+          possibleDuplicate: true,
+          issues: [
+            {
+              field: "form",
+              message: "Confirm this possible duplicate before importing."
+            }
+          ]
+        }
       ]
     });
   });

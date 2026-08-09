@@ -833,7 +833,11 @@ describe("transaction draft PostgreSQL ownership", () => {
       draft: { id: stored[0].id, status: "READY" },
       drafts: [
         { id: stored[0].id, status: "READY", possibleDuplicate: false },
-        { id: stored[1].id, status: "READY", possibleDuplicate: false }
+        {
+          id: stored[1].id,
+          status: "NEEDS_REVIEW",
+          possibleDuplicate: true
+        }
       ]
     });
 
@@ -928,6 +932,73 @@ describe("transaction draft PostgreSQL ownership", () => {
           expect.objectContaining({ message: expect.stringMatching(/duplicate/i) })
         ])
       }
+    });
+  }, 20_000);
+
+  it("keeps every unchanged duplicate blocked when an unrelated sibling is edited after partial import", async () => {
+    const captureKey = randomUUID();
+    authState.userId = fixtures.context.userA.id;
+    const saved = await savePasteDrafts({
+      captureKey,
+      rows: [
+        expenseDraft(captureKey, fixtures.bankAId),
+        expenseDraft(captureKey, fixtures.bankAId, { position: 1 }),
+        expenseDraft(captureKey, fixtures.bankAId, {
+          position: 2,
+          title: `Unrelated row ${captureKey}`,
+          amountText: "77.77",
+          rawRow: { Amount: "77.77" }
+        })
+      ]
+    });
+    expect(saved).toMatchObject({
+      ok: true,
+      drafts: [
+        { status: TransactionDraftStatus.READY },
+        {
+          status: TransactionDraftStatus.NEEDS_REVIEW,
+          possibleDuplicate: true
+        },
+        { status: TransactionDraftStatus.READY, possibleDuplicate: false }
+      ]
+    });
+    if (!saved.ok) throw new Error(saved.error);
+
+    await expect(
+      importTransactionDrafts({
+        ids: [saved.drafts[0].id],
+        idempotencyKey: randomUUID()
+      })
+    ).resolves.toMatchObject({ ok: true, importedCount: 1 });
+
+    const reassessed = await updateTransactionDraft(saved.drafts[2].id, {
+      description: "Reviewed unrelated row after the earlier import"
+    });
+    expect(reassessed).toMatchObject({
+      ok: true,
+      draft: { id: saved.drafts[2].id, status: TransactionDraftStatus.READY },
+      drafts: expect.arrayContaining([
+        expect.objectContaining({
+          id: saved.drafts[1].id,
+          status: TransactionDraftStatus.NEEDS_REVIEW,
+          possibleDuplicate: true,
+          duplicateConfirmed: false,
+          issues: expect.arrayContaining([
+            expect.objectContaining({
+              message: expect.stringMatching(/duplicate/i)
+            })
+          ])
+        })
+      ])
+    });
+    await expect(
+      importTransactionDrafts({
+        ids: [saved.drafts[1].id],
+        idempotencyKey: randomUUID()
+      })
+    ).resolves.toEqual({
+      ok: false,
+      error: "Review every selected draft before saving."
     });
   }, 20_000);
 

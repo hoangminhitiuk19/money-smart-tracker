@@ -181,8 +181,7 @@ function invalidStoredDraftIssue(): DraftFieldIssue[] {
 async function reassessCapture(
   db: Prisma.TransactionClient,
   userId: string,
-  captureKey: string,
-  changedDraftId?: string
+  captureKey: string
 ): Promise<TransactionDraft[]> {
   const records = await db.transactionDraft.findMany({
     where: {
@@ -226,7 +225,6 @@ async function reassessCapture(
       const duplicateAcknowledgementRequired = parsed.success
         ? duplicatePositions.has(parsed.data.position) ||
           (!fingerprintChanged &&
-            record.id === changedDraftId &&
             record.duplicateAcknowledgementRequired)
         : record.duplicateAcknowledgementRequired;
       const inputForAssessment = parsed.success
@@ -627,12 +625,7 @@ export async function updateTransactionDraft(
       if (updatedCandidate.count !== 1) {
         return actionFailure(DRAFT_NOT_FOUND_ERROR);
       }
-      const records = await reassessCapture(
-        db,
-        user.id,
-        existing.captureKey,
-        existing.id
-      );
+      const records = await reassessCapture(db, user.id, existing.captureKey);
       const updated = records.find((record) => record.id === existing.id);
       if (!updated) {
         return actionFailure();
