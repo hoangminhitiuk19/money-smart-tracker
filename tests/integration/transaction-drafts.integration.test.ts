@@ -210,6 +210,74 @@ async function installImportLifecycleGate(
   };
 }
 
+async function installReassessmentWriteGate(
+  editedDraftId: string,
+  editedTitle: string,
+  gateNamespace: number,
+  gateKey: number,
+  markerNamespace: number,
+  markerKey: number
+) {
+  const suffix = randomUUID().replaceAll("-", "");
+  const settingName = `mqt.reassess_${suffix}`;
+  const armFunctionName = `arm_draft_reassessment_${suffix}`;
+  const armTriggerName = `arm_draft_reassessment_trigger_${suffix}`;
+  const gateFunctionName = `gate_draft_reassessment_${suffix}`;
+  const gateTriggerName = `gate_draft_reassessment_trigger_${suffix}`;
+
+  await prisma.$executeRawUnsafe(`
+    CREATE FUNCTION "${armFunctionName}"() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      IF OLD."id" = '${editedDraftId}'
+        AND OLD."title" IS DISTINCT FROM NEW."title"
+        AND NEW."title" = '${editedTitle}' THEN
+        PERFORM set_config('${settingName}', 'armed', true);
+      END IF;
+      RETURN NEW;
+    END;
+    $$;
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE FUNCTION "${gateFunctionName}"() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      IF current_setting('${settingName}', true) = 'armed' THEN
+        PERFORM set_config('${settingName}', 'released', true);
+        PERFORM pg_advisory_xact_lock(${markerNamespace}, ${markerKey});
+        PERFORM pg_advisory_xact_lock(${gateNamespace}, ${gateKey});
+      END IF;
+      RETURN NULL;
+    END;
+    $$;
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE TRIGGER "${gateTriggerName}"
+    BEFORE UPDATE ON "TransactionDraft"
+    FOR EACH STATEMENT EXECUTE FUNCTION "${gateFunctionName}"();
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE TRIGGER "${armTriggerName}"
+    BEFORE UPDATE ON "TransactionDraft"
+    FOR EACH ROW EXECUTE FUNCTION "${armFunctionName}"();
+  `);
+
+  return async () => {
+    await prisma.$executeRawUnsafe(
+      `DROP TRIGGER IF EXISTS "${gateTriggerName}" ON "TransactionDraft"`
+    );
+    await prisma.$executeRawUnsafe(
+      `DROP TRIGGER IF EXISTS "${armTriggerName}" ON "TransactionDraft"`
+    );
+    await prisma.$executeRawUnsafe(
+      `DROP FUNCTION IF EXISTS "${gateFunctionName}"()`
+    );
+    await prisma.$executeRawUnsafe(
+      `DROP FUNCTION IF EXISTS "${armFunctionName}"()`
+    );
+  };
+}
+
 async function waitForAdvisoryLock(namespace: number, key: number) {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const [row] = await prisma.$queryRawUnsafe<Array<{ held: boolean }>>(`
@@ -796,6 +864,91 @@ describe("transaction draft PostgreSQL ownership", () => {
 });
 
 describe("transaction draft PostgreSQL import atomicity", () => {
+  it("does not reopen an imported sibling after reassessment snapshots it", async () => {
+    authState.userId = fixtures.context.userA.id;
+    const [editedDraft, importedSibling] = await saveReadyExpenseDrafts(2);
+    const editedTitle = `Edited while sibling imports ${randomUUID()}`;
+    const gateNamespace = 118_733;
+    const markerNamespace = 118_734;
+    const gateKey = Math.floor(Math.random() * 1_000_000_000) + 1;
+    const markerKey = Math.floor(Math.random() * 1_000_000_000) + 1;
+    const uninstallGate = await installReassessmentWriteGate(
+      editedDraft.id,
+      editedTitle,
+      gateNamespace,
+      gateKey,
+      markerNamespace,
+      markerKey
+    );
+    let releaseGate: () => void = () => undefined;
+    let signalGateHeld: () => void = () => undefined;
+    const gateHeld = new Promise<void>((resolve) => {
+      signalGateHeld = resolve;
+    });
+    const gateReleased = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const heldGate = prisma.$transaction(
+      async (db) => {
+        await db.$executeRawUnsafe(
+          `SELECT pg_advisory_xact_lock(${gateNamespace}, ${gateKey})`
+        );
+        signalGateHeld();
+        await gateReleased;
+      },
+      { timeout: 20_000 }
+    );
+    let reassessmentPromise: ReturnType<typeof updateTransactionDraft> | null = null;
+
+    try {
+      await gateHeld;
+      reassessmentPromise = updateTransactionDraft(editedDraft.id, {
+        title: editedTitle
+      });
+      await waitForAdvisoryLock(markerNamespace, markerKey);
+
+      const imported = await importTransactionDrafts({
+        ids: [importedSibling.id],
+        idempotencyKey: randomUUID()
+      });
+      expect(imported).toMatchObject({ ok: true, importedCount: 1 });
+      releaseGate();
+
+      const reassessed = await reassessmentPromise;
+      expect(reassessed).toMatchObject({
+        ok: true,
+        draft: { id: editedDraft.id, status: TransactionDraftStatus.READY },
+        drafts: expect.arrayContaining([
+          expect.objectContaining({
+            id: importedSibling.id,
+            status: TransactionDraftStatus.IMPORTED
+          })
+        ])
+      });
+      await expect(
+        prisma.transactionDraft.findUniqueOrThrow({
+          where: { id: importedSibling.id },
+          select: {
+            status: true,
+            importBatchId: true,
+            importedTransactionId: true,
+            title: true
+          }
+        })
+      ).resolves.toEqual({
+        status: TransactionDraftStatus.IMPORTED,
+        importBatchId: expect.any(String),
+        importedTransactionId: expect.any(String),
+        title: null
+      });
+    } finally {
+      releaseGate();
+      await reassessmentPromise?.catch(() => undefined);
+      await heldGate.catch(() => undefined);
+      await uninstallGate();
+    }
+  }, 30_000);
+
   it("does not reopen a draft when save overlaps its import transition", async () => {
     authState.userId = fixtures.context.userA.id;
     const [draft] = await saveReadyExpenseDrafts(1);
