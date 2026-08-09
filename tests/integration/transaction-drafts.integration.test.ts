@@ -5,11 +5,13 @@ import {
   AdjustmentTarget,
   CategoryType,
   MoneySourceType,
+  QualityRating,
   TransactionDraftOrigin,
   TransactionDraftStatus,
   TransactionType
 } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { GET as exportTransactions } from "@/app/api/export/transactions/route";
 import {
   dismissTransactionDrafts,
   importTransactionDrafts,
@@ -17,11 +19,19 @@ import {
   savePasteDrafts,
   updateTransactionDraft
 } from "@/lib/actions/transaction-drafts";
-import { calculateTrackedBalance } from "@/lib/calc/balance";
 import {
-  calculateCreditCardState,
-  calculateFeeWaiverState
-} from "@/lib/calc/credit-card";
+  getDashboardData
+} from "@/lib/actions/dashboard";
+import {
+  loadCreditCardDebtReport,
+  loadExpenseByCategory,
+  loadFeeWaiverReport,
+  loadIncomeVsExpenseOverTime,
+  loadProjectProfitLoss,
+  loadSpendingBySource,
+  loadSpendingQualityBreakdown
+} from "@/lib/actions/reports";
+import { calculateAccountProjection } from "@/lib/calc/dashboard";
 import { prisma } from "@/lib/prisma";
 import { cleanupExpiredTransactionDrafts } from "@/lib/transaction-drafts/retention";
 import type { TransactionDraftInput } from "@/lib/transaction-drafts/types";
@@ -30,6 +40,7 @@ import {
   createAuditContext,
   type AuditContext
 } from "@/tests/integration/helpers/audit-context";
+import { parseCsv } from "@/tests/integration/helpers/csv";
 
 const authState = vi.hoisted(() => ({ userId: "" }));
 
@@ -47,6 +58,13 @@ vi.mock("@/lib/security/rate-limit", () => ({
     unavailable: false,
     limit: 60,
     remaining: 59,
+    retryAfterSeconds: 60
+  })),
+  checkExport: vi.fn(async () => ({
+    allowed: true,
+    unavailable: false,
+    limit: 10,
+    remaining: 9,
     retryAfterSeconds: 60
   })),
   RATE_LIMIT_MESSAGE: "Too many requests. Please try again shortly."
@@ -280,6 +298,205 @@ describe("transaction draft PostgreSQL ownership", () => {
       userADraft && userADraft.expiresAt.getTime() - userADraft.createdAt.getTime()
     ).toBe(30 * 24 * 60 * 60 * 1_000);
   }, 20_000);
+
+  it("isolates direct draft operations and batch replay keys between two users", async () => {
+    const context = await createAuditContext(`draft-matrix-${randomUUID()}`);
+    contexts.push(context);
+    const captureKey = randomUUID();
+    const idempotencyKey = randomUUID();
+    const [bankA, bankB] = await prisma.$transaction([
+      prisma.moneySource.create({
+        data: {
+          userId: context.userA.id,
+          name: `Matrix bank A ${captureKey}`,
+          type: MoneySourceType.BANK_ACCOUNT
+        }
+      }),
+      prisma.moneySource.create({
+        data: {
+          userId: context.userB.id,
+          name: `Matrix bank B ${captureKey}`,
+          type: MoneySourceType.BANK_ACCOUNT
+        }
+      })
+    ]);
+
+    authState.userId = context.userA.id;
+    const savedA = await savePasteDrafts({
+      captureKey,
+      rows: [
+        expenseDraft(captureKey, bankA.id, {
+          amountText: "11.11",
+          title: `Matrix A ${captureKey}`,
+          rawRow: { Amount: "11.11" }
+        })
+      ]
+    });
+    expect(savedA).toMatchObject({ ok: true, drafts: [{ status: "READY" }] });
+    if (!savedA.ok) throw new Error(savedA.error);
+    const draftAId = savedA.drafts[0].id;
+
+    authState.userId = context.userB.id;
+    await expect(listTransactionDrafts(captureKey)).resolves.toEqual({
+      ok: true,
+      drafts: []
+    });
+    await expect(
+      updateTransactionDraft(draftAId, { title: "Foreign rewrite" })
+    ).resolves.toEqual({ ok: false, error: "Draft not found." });
+    await expect(dismissTransactionDrafts([draftAId])).resolves.toEqual({
+      ok: true,
+      dismissedCount: 0
+    });
+    await expect(
+      importTransactionDrafts({ ids: [draftAId], idempotencyKey })
+    ).resolves.toEqual({
+      ok: false,
+      error: "Review every selected draft before saving."
+    });
+    await expect(
+      prisma.transactionImportBatch.count({
+        where: { userId: context.userB.id, idempotencyKey }
+      })
+    ).resolves.toBe(0);
+
+    const savedB = await savePasteDrafts({
+      captureKey,
+      rows: [
+        expenseDraft(captureKey, bankB.id, {
+          amountText: "22.22",
+          title: `Matrix B ${captureKey}`,
+          rawRow: { Amount: "22.22" }
+        })
+      ]
+    });
+    expect(savedB).toMatchObject({ ok: true, drafts: [{ status: "READY" }] });
+    if (!savedB.ok) throw new Error(savedB.error);
+    const draftBId = savedB.drafts[0].id;
+    await expect(listTransactionDrafts(captureKey)).resolves.toMatchObject({
+      ok: true,
+      drafts: [{ id: draftBId, title: `Matrix B ${captureKey}` }]
+    });
+    const importedB = await importTransactionDrafts({
+      ids: [draftBId],
+      idempotencyKey
+    });
+    expect(importedB).toMatchObject({ ok: true, importedCount: 1 });
+    if (!importedB.ok) throw new Error(importedB.error);
+
+    authState.userId = context.userA.id;
+    const importedA = await importTransactionDrafts({
+      ids: [draftAId],
+      idempotencyKey
+    });
+    expect(importedA).toMatchObject({ ok: true, importedCount: 1 });
+    if (!importedA.ok) throw new Error(importedA.error);
+    await expect(
+      importTransactionDrafts({ ids: [draftAId], idempotencyKey })
+    ).resolves.toEqual(importedA);
+    await expect(listTransactionDrafts(captureKey)).resolves.toMatchObject({
+      ok: true,
+      drafts: [
+        {
+          id: draftAId,
+          status: TransactionDraftStatus.IMPORTED,
+          importedTransactionId: importedA.transactionIds[0]
+        }
+      ]
+    });
+
+    const batches = await prisma.transactionImportBatch.findMany({
+      where: {
+        userId: { in: [context.userA.id, context.userB.id] },
+        idempotencyKey
+      },
+      orderBy: { userId: "asc" }
+    });
+    expect(batches).toHaveLength(2);
+    expect(batches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          userId: context.userA.id,
+          draftIds: [draftAId],
+          transactionIds: importedA.transactionIds
+        }),
+        expect.objectContaining({
+          userId: context.userB.id,
+          draftIds: [draftBId],
+          transactionIds: importedB.transactionIds
+        })
+      ])
+    );
+
+    authState.userId = context.userB.id;
+    const foreignReplay = await importTransactionDrafts({
+      ids: [draftAId],
+      idempotencyKey
+    });
+    expect(foreignReplay).toEqual({
+      ok: false,
+      error: "This save key was already used for another selection."
+    });
+    expect(JSON.stringify(foreignReplay)).not.toContain(
+      importedA.transactionIds[0]
+    );
+    expect(JSON.stringify(foreignReplay)).not.toContain(`Matrix A ${captureKey}`);
+  }, 30_000);
+
+  it.each([
+    TransactionDraftStatus.IMPORTING,
+    TransactionDraftStatus.IMPORTED,
+    TransactionDraftStatus.DISMISSED
+  ])("rejects a direct edit of an owned %s draft", async (status) => {
+    const captureKey = randomUUID();
+    authState.userId = fixtures.context.userA.id;
+    const saved = await savePasteDrafts({
+      captureKey,
+      rows: [
+        expenseDraft(captureKey, fixtures.bankAId, {
+          title: `Terminal ${status} ${captureKey}`
+        })
+      ]
+    });
+    expect(saved).toMatchObject({ ok: true, drafts: [{ status: "READY" }] });
+    if (!saved.ok) throw new Error(saved.error);
+    const draftId = saved.drafts[0].id;
+    await prisma.transactionDraft.update({
+      where: { id: draftId },
+      data: { status }
+    });
+    const dismissalActivitiesBefore = await prisma.activityLog.count({
+      where: {
+        userId: fixtures.context.userA.id,
+        action: "TRANSACTION_DRAFTS_DISMISSED"
+      }
+    });
+
+    await expect(
+      updateTransactionDraft(draftId, { title: `Rewritten ${status}` })
+    ).resolves.toEqual({ ok: false, error: "Draft not found." });
+    await expect(dismissTransactionDrafts([draftId])).resolves.toEqual({
+      ok: true,
+      dismissedCount: 0
+    });
+    await expect(
+      prisma.transactionDraft.findUniqueOrThrow({
+        where: { id: draftId },
+        select: { status: true, title: true }
+      })
+    ).resolves.toEqual({
+      status,
+      title: `Terminal ${status} ${captureKey}`
+    });
+    await expect(
+      prisma.activityLog.count({
+        where: {
+          userId: fixtures.context.userA.id,
+          action: "TRANSACTION_DRAFTS_DISMISSED"
+        }
+      })
+    ).resolves.toBe(dismissalActivitiesBefore);
+  });
 
   it("keeps foreign references in review without creating a transaction or leaking names", async () => {
     const captureKey = randomUUID();
@@ -562,14 +779,24 @@ describe("transaction draft PostgreSQL import atomicity", () => {
     ).resolves.toMatchObject({ ok: true, importedCount: 2 });
   }, 20_000);
 
-  it("imports all five types with exact fields and reconciles the resulting ledgers", async () => {
-    authState.userId = fixtures.context.userA.id;
+  it("imports a literal five-type batch through every downstream financial view", async () => {
+    const context = await createAuditContext(`draft-ledger-${randomUUID()}`);
+    contexts.push(context);
+    authState.userId = context.userA.id;
     const suffix = randomUUID();
-    const [card, category, originalExpense] = await prisma.$transaction([
+    const [bank, card, category, project] = await prisma.$transaction([
       prisma.moneySource.create({
         data: {
-          userId: fixtures.context.userA.id,
-          name: `Import card ${suffix}`,
+          userId: context.userA.id,
+          name: `Batch bank ${suffix}`,
+          type: MoneySourceType.BANK_ACCOUNT,
+          openingBalance: "1000.00"
+        }
+      }),
+      prisma.moneySource.create({
+        data: {
+          userId: context.userA.id,
+          name: `Batch card ${suffix}`,
           type: MoneySourceType.CREDIT_CARD,
           creditLimit: "500.00",
           initialOutstandingDebt: "50.00",
@@ -582,69 +809,90 @@ describe("transaction draft PostgreSQL import atomicity", () => {
       }),
       prisma.category.create({
         data: {
-          userId: fixtures.context.userA.id,
-          name: `Import eligible ${suffix}`,
+          userId: context.userA.id,
+          name: `Batch eligible ${suffix}`,
           type: CategoryType.EXPENSE,
+          defaultQualityRating: QualityRating.A,
           defaultCountTowardFeeWaiver: true
         }
       }),
-      prisma.transaction.create({
+      prisma.financialProject.create({
         data: {
-          userId: fixtures.context.userA.id,
-          type: TransactionType.EXPENSE,
-          amount: "12.00",
-          title: `Import original expense ${suffix}`,
-          transactionDate: new Date("2026-08-01T00:00:00.000Z"),
-          fromMoneySourceId: fixtures.bankAId
+          userId: context.userA.id,
+          name: `Batch project ${suffix}`
         }
       })
     ]);
+    const originalExpense = await prisma.transaction.create({
+      data: {
+        userId: context.userA.id,
+        type: TransactionType.EXPENSE,
+        amount: "30.00",
+        title: `Batch original expense ${suffix}`,
+        transactionDate: new Date("2026-08-09T00:00:00.000Z"),
+        categoryId: category.id,
+        qualityRating: QualityRating.A,
+        fromMoneySourceId: card.id,
+        projectId: project.id,
+        countTowardFeeWaiver: true
+      }
+    });
     const captureKey = randomUUID();
+    const titles = {
+      income: `Batch exact income ${suffix}`,
+      expense: `Batch card expense ${suffix}`,
+      transfer: `Batch card payment ${suffix}`,
+      refund: `Batch card refund ${suffix}`,
+      adjustment: `Batch card credit adjustment ${suffix}`
+    };
     const rows: TransactionDraftInput[] = [
-      expenseDraft(captureKey, fixtures.bankAId, {
+      expenseDraft(captureKey, bank.id, {
         position: 0,
         type: TransactionType.INCOME,
         amountText: "90071992547409.99",
-        title: `Imported exact income ${suffix}`,
+        title: titles.income,
         transactionDateText: "2026-08-10",
         fromMoneySourceId: null,
-        toMoneySourceId: fixtures.bankAId,
+        toMoneySourceId: bank.id,
+        projectId: project.id,
         rawRow: { Amount: "90071992547409.99" }
       }),
       expenseDraft(captureKey, card.id, {
         position: 1,
         amountText: "45.25",
-        title: `Imported card expense ${suffix}`,
+        title: titles.expense,
         transactionDateText: "2026-08-11",
         categoryId: category.id,
+        qualityRating: QualityRating.A,
+        projectId: project.id,
         countTowardFeeWaiver: null,
         rawRow: { Amount: "45.25" }
       }),
-      expenseDraft(captureKey, fixtures.bankAId, {
+      expenseDraft(captureKey, bank.id, {
         position: 2,
         type: TransactionType.TRANSFER,
         amountText: "100.00",
-        title: `Imported card payment ${suffix}`,
+        title: titles.transfer,
         transactionDateText: "2026-08-12",
         toMoneySourceId: card.id,
         rawRow: { Amount: "100.00" }
       }),
-      expenseDraft(captureKey, fixtures.bankAId, {
+      expenseDraft(captureKey, bank.id, {
         position: 3,
         type: TransactionType.REFUND,
         amountText: "10.25",
-        title: `Imported card refund ${suffix}`,
+        title: titles.refund,
         transactionDateText: "2026-08-13",
         fromMoneySourceId: null,
         toMoneySourceId: card.id,
         relatedTransactionId: originalExpense.id,
         rawRow: { Amount: "10.25" }
       }),
-      expenseDraft(captureKey, fixtures.bankAId, {
+      expenseDraft(captureKey, bank.id, {
         position: 4,
         type: TransactionType.ADJUSTMENT,
         amountText: "5.00",
-        title: `Imported card credit adjustment ${suffix}`,
+        title: titles.adjustment,
         transactionDateText: "2026-08-14",
         fromMoneySourceId: null,
         adjustedMoneySourceId: card.id,
@@ -656,9 +904,13 @@ describe("transaction draft PostgreSQL import atomicity", () => {
     const saved = await savePasteDrafts({ captureKey, rows });
     expect(saved).toMatchObject({ ok: true });
     if (!saved.ok) throw new Error(saved.error);
-    expect(saved.drafts.map(({ status }) => status)).toEqual(
-      Array(5).fill(TransactionDraftStatus.READY)
-    );
+    expect(saved.drafts.map(({ status }) => status)).toEqual([
+      TransactionDraftStatus.READY,
+      TransactionDraftStatus.READY,
+      TransactionDraftStatus.READY,
+      TransactionDraftStatus.READY,
+      TransactionDraftStatus.READY
+    ]);
 
     const idempotencyKey = randomUUID();
     const imported = await importTransactionDrafts({
@@ -670,7 +922,7 @@ describe("transaction draft PostgreSQL import atomicity", () => {
     const transactions = await prisma.transaction.findMany({
       where: {
         id: { in: imported.transactionIds },
-        userId: fixtures.context.userA.id
+        userId: context.userA.id
       },
       orderBy: { transactionDate: "asc" }
     });
@@ -678,7 +930,8 @@ describe("transaction draft PostgreSQL import atomicity", () => {
     expect(transactions[0]).toMatchObject({
       type: TransactionType.INCOME,
       fromMoneySourceId: null,
-      toMoneySourceId: fixtures.bankAId,
+      toMoneySourceId: bank.id,
+      projectId: project.id,
       qualityRating: null,
       countTowardFeeWaiver: false
     });
@@ -688,11 +941,13 @@ describe("transaction draft PostgreSQL import atomicity", () => {
       fromMoneySourceId: card.id,
       toMoneySourceId: null,
       categoryId: category.id,
+      qualityRating: QualityRating.A,
+      projectId: project.id,
       countTowardFeeWaiver: true
     });
     expect(transactions[2]).toMatchObject({
       type: TransactionType.TRANSFER,
-      fromMoneySourceId: fixtures.bankAId,
+      fromMoneySourceId: bank.id,
       toMoneySourceId: card.id,
       countTowardFeeWaiver: false
     });
@@ -713,44 +968,334 @@ describe("transaction draft PostgreSQL import atomicity", () => {
       countTowardFeeWaiver: false
     });
 
+    const [dashboard, incomeExpense, categories, qualities, projects, sources, cards, waivers] =
+      await Promise.all([
+        getDashboardData("2026-08-01", "2026-08-31"),
+        loadIncomeVsExpenseOverTime({
+          startDate: "2026-08-01",
+          endDate: "2026-08-31"
+        }),
+        loadExpenseByCategory({
+          startDate: "2026-08-01",
+          endDate: "2026-08-31",
+          categoryId: category.id
+        }),
+        loadSpendingQualityBreakdown({
+          startDate: "2026-08-01",
+          endDate: "2026-08-31"
+        }),
+        loadProjectProfitLoss({
+          startDate: "2026-08-01",
+          endDate: "2026-08-31",
+          projectId: project.id
+        }),
+        loadSpendingBySource({
+          startDate: "2026-08-01",
+          endDate: "2026-08-31",
+          moneySourceId: card.id
+        }),
+        loadCreditCardDebtReport({
+          endDate: "2026-08-31",
+          moneySourceId: card.id
+        }),
+        loadFeeWaiverReport({ moneySourceId: card.id })
+      ]);
+    const dashboardBank = dashboard.moneySources.find(({ id }) => id === bank.id);
+    const dashboardCard = dashboard.creditCards.find(
+      ({ source }) => source.id === card.id
+    );
+    const dashboardWaiver = dashboard.feeWaivers.find(
+      ({ source }) => source.id === card.id
+    );
+    if (!dashboardBank || !dashboardCard || !dashboardWaiver) {
+      throw new Error("Expected imported ledger projections.");
+    }
     expect(
-      calculateTrackedBalance(
-        { id: fixtures.bankAId, openingBalance: "0.00" },
-        transactions
-      ).toFixed(2)
-    ).toBe("90071992547309.99");
-    const cardState = calculateCreditCardState(card, transactions);
+      calculateAccountProjection(dashboardBank, dashboard.transactions).trackedAmount.toFixed(2)
+    ).toBe("90071992548309.99");
     expect({
-      outstandingDebt: cardState.outstandingDebt.toFixed(2),
-      cardCredit: cardState.cardCredit.toFixed(2),
-      availableCredit: cardState.availableCredit.toFixed(2)
+      outstandingDebt: dashboardCard.state.outstandingDebt.toFixed(2),
+      cardCredit: dashboardCard.state.cardCredit.toFixed(2),
+      availableCredit: dashboardCard.state.availableCredit.toFixed(2)
     }).toEqual({
       outstandingDebt: "0.00",
-      cardCredit: "30.00",
+      cardCredit: "0.00",
       availableCredit: "500.00"
     });
-    const feeWaiver = calculateFeeWaiverState(card, transactions);
     expect({
-      eligibleSpending: feeWaiver.eligibleSpending.toFixed(2),
-      remaining: feeWaiver.remaining.toFixed(2)
-    }).toEqual({ eligibleSpending: "45.25", remaining: "154.75" });
+      eligibleSpending: dashboardWaiver.state.eligibleSpending.toFixed(2),
+      progress: dashboardWaiver.state.progress.toFixed(2),
+      remaining: dashboardWaiver.state.remaining.toFixed(2)
+    }).toEqual({
+      eligibleSpending: "65.00",
+      progress: "32.50",
+      remaining: "135.00"
+    });
+    expect({
+      totalIncome: dashboard.summary.totalIncome.toFixed(2),
+      totalExpense: dashboard.summary.totalExpense.toFixed(2),
+      netSavings: dashboard.summary.netSavings.toFixed(2),
+      highQualityPercent: dashboard.summary.highQualityPercent.toFixed(2),
+      lowQualityAmount: dashboard.summary.lowQualityAmount.toFixed(2),
+      estimatedNetPosition: dashboard.summary.estimatedNetPosition.toFixed(2),
+      cardSpend: dashboard.summary.spendingBySource[card.id]?.toFixed(2)
+    }).toEqual({
+      totalIncome: "90071992547409.99",
+      totalExpense: "75.25",
+      netSavings: "90071992547334.74",
+      highQualityPercent: "100.00",
+      lowQualityAmount: "0.00",
+      estimatedNetPosition: "90071992548309.99",
+      cardSpend: "75.25"
+    });
+
+    expect(
+      incomeExpense.map(({ period, income, expense }) => ({
+        period,
+        income: income.toFixed(2),
+        expense: expense.toFixed(2)
+      }))
+    ).toEqual([
+      {
+        period: "2026-08",
+        income: "90071992547409.99",
+        expense: "65.00"
+      }
+    ]);
+    expect(
+      categories.map(({ categoryName, total }) => ({
+        categoryName,
+        total: total.toFixed(2)
+      }))
+    ).toEqual([{ categoryName: category.name, total: "65.00" }]);
+    expect(
+      qualities.map(({ rating, count, total }) => ({
+        rating,
+        count,
+        total: total.toFixed(2)
+      }))
+    ).toEqual([{ rating: QualityRating.A, count: 2, total: "65.00" }]);
+    expect(
+      projects.map(({ projectName, totalIncome, totalExpense, profit }) => ({
+        projectName,
+        totalIncome: totalIncome.toFixed(2),
+        totalExpense: totalExpense.toFixed(2),
+        profit: profit.toFixed(2)
+      }))
+    ).toEqual([
+      {
+        projectName: project.name,
+        totalIncome: "90071992547409.99",
+        totalExpense: "65.00",
+        profit: "90071992547344.99"
+      }
+    ]);
+    expect(
+      sources.map(({ sourceName, total }) => ({
+        sourceName,
+        total: total.toFixed(2)
+      }))
+    ).toEqual([{ sourceName: card.name, total: "65.00" }]);
+    expect({
+      outstandingDebt: cards[0]?.state.outstandingDebt.toFixed(2),
+      cardCredit: cards[0]?.state.cardCredit.toFixed(2),
+      availableCredit: cards[0]?.state.availableCredit.toFixed(2),
+      eligibleSpending: waivers[0]?.state.eligibleSpending.toFixed(2),
+      remaining: waivers[0]?.state.remaining.toFixed(2)
+    }).toEqual({
+      outstandingDebt: "0.00",
+      cardCredit: "0.00",
+      availableCredit: "500.00",
+      eligibleSpending: "65.00",
+      remaining: "135.00"
+    });
+
+    const response = await exportTransactions(
+      new Request(
+        "http://localhost/api/export/transactions?startDate=2026-08-01&endDate=2026-08-31"
+      )
+    );
+    const csv = await response.text();
+    const csvRows = parseCsv(csv);
+    expect(response.status).toBe(200);
+    expect(csvRows[0]).toEqual([
+      "Date",
+      "Type",
+      "Title",
+      "Amount",
+      "Currency",
+      "Category",
+      "Quality Rating",
+      "From Source",
+      "To Source",
+      "Project",
+      "Description",
+      "Count Toward Fee Waiver",
+      "Created At"
+    ]);
+    expect(csvRows).toHaveLength(7);
+    expect(
+      Object.fromEntries(
+        csvRows.slice(1).map((row) => [
+          row[2],
+          {
+            date: row[0],
+            type: row[1],
+            amount: row[3],
+            category: row[5],
+            quality: row[6],
+            from: row[7],
+            to: row[8],
+            project: row[9],
+            feeWaiver: row[11]
+          }
+        ])
+      )
+    ).toEqual({
+      [originalExpense.title]: {
+        date: "2026-08-09T00:00:00.000Z",
+        type: "EXPENSE",
+        amount: "30",
+        category: category.name,
+        quality: "A",
+        from: card.name,
+        to: "",
+        project: project.name,
+        feeWaiver: "true"
+      },
+      [titles.income]: {
+        date: "2026-08-10T00:00:00.000Z",
+        type: "INCOME",
+        amount: "90071992547409.99",
+        category: "",
+        quality: "",
+        from: "",
+        to: bank.name,
+        project: project.name,
+        feeWaiver: "false"
+      },
+      [titles.expense]: {
+        date: "2026-08-11T00:00:00.000Z",
+        type: "EXPENSE",
+        amount: "45.25",
+        category: category.name,
+        quality: "A",
+        from: card.name,
+        to: "",
+        project: project.name,
+        feeWaiver: "true"
+      },
+      [titles.transfer]: {
+        date: "2026-08-12T00:00:00.000Z",
+        type: "TRANSFER",
+        amount: "100",
+        category: "",
+        quality: "",
+        from: bank.name,
+        to: card.name,
+        project: "",
+        feeWaiver: "false"
+      },
+      [titles.refund]: {
+        date: "2026-08-13T00:00:00.000Z",
+        type: "REFUND",
+        amount: "10.25",
+        category: "",
+        quality: "",
+        from: "",
+        to: card.name,
+        project: "",
+        feeWaiver: "false"
+      },
+      [titles.adjustment]: {
+        date: "2026-08-14T00:00:00.000Z",
+        type: "ADJUSTMENT",
+        amount: "5",
+        category: "",
+        quality: "",
+        from: "",
+        to: "",
+        project: "",
+        feeWaiver: "false"
+      }
+    });
+
     const batch = await prisma.transactionImportBatch.findUniqueOrThrow({
       where: {
         userId_idempotencyKey: {
-          userId: fixtures.context.userA.id,
+          userId: context.userA.id,
           idempotencyKey
         }
       }
     });
+    const activities = await prisma.activityLog.findMany({
+      where: {
+        userId: context.userA.id,
+        entityId: { in: [...imported.transactionIds, batch.id] }
+      },
+      select: { action: true, entityId: true, metadata: true }
+    });
+    expect(activities).toHaveLength(6);
+    expect(
+      activities.find(({ entityId }) => entityId === batch.id)
+    ).toEqual({
+      action: "TRANSACTION_BATCH_IMPORTED",
+      entityId: batch.id,
+      metadata: { origin: "PASTE", count: 5 }
+    });
+    expect(
+      Object.fromEntries(
+        activities
+          .filter(({ action }) => action === "TRANSACTION_CREATED")
+          .map(({ metadata }) => {
+            const value = metadata as { title: string };
+            return [value.title, metadata];
+          })
+      )
+    ).toEqual({
+      [titles.income]: {
+        amount: "90071992547409.99",
+        type: "INCOME",
+        title: titles.income,
+        fromSourceId: null,
+        toSourceId: bank.id
+      },
+      [titles.expense]: {
+        amount: "45.25",
+        type: "EXPENSE",
+        title: titles.expense,
+        fromSourceId: card.id,
+        toSourceId: null
+      },
+      [titles.transfer]: {
+        amount: "100.00",
+        type: "TRANSFER",
+        title: titles.transfer,
+        fromSourceId: bank.id,
+        toSourceId: card.id
+      },
+      [titles.refund]: {
+        amount: "10.25",
+        type: "REFUND",
+        title: titles.refund,
+        fromSourceId: null,
+        toSourceId: card.id
+      },
+      [titles.adjustment]: {
+        amount: "5.00",
+        type: "ADJUSTMENT",
+        title: titles.adjustment,
+        fromSourceId: null,
+        toSourceId: null
+      }
+    });
     await expect(
-      prisma.activityLog.count({
-        where: {
-          userId: fixtures.context.userA.id,
-          entityId: { in: [...imported.transactionIds, batch.id] }
-        }
+      prisma.activityLog.findFirst({
+        where: { userId: context.userA.id, action: "CSV_EXPORTED" },
+        orderBy: { createdAt: "desc" }
       })
-    ).resolves.toBe(6);
-  }, 30_000);
+    ).resolves.toMatchObject({ metadata: { rowCount: 6 } });
+  }, 60_000);
 
   it("rejects not-ready, foreign-draft, and foreign-reference selections without partial writes or leakage", async () => {
     authState.userId = fixtures.context.userA.id;

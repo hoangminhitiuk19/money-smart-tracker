@@ -817,6 +817,24 @@ describe("editable transaction draft ledger", () => {
     expect(document.activeElement).toBe(source);
   });
 
+  it("moves vertically between text cells in the same ledger column", async () => {
+    const user = userEvent.setup();
+    renderDrafts([
+      persistedDraft(),
+      persistedDraft({ id: "draft-2", position: 1, title: "Tea" })
+    ]);
+    const ledger = screen.getByTestId("capture-desktop-ledger");
+    const firstTitle = within(ledger).getByRole("textbox", { name: "Row 1 title" });
+    const secondTitle = within(ledger).getByRole("textbox", { name: "Row 2 title" });
+
+    firstTitle.focus();
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(secondTitle);
+
+    await user.keyboard("{ArrowUp}");
+    expect(document.activeElement).toBe(firstTitle);
+  });
+
   it("retains fields that remain compatible during a type transition", async () => {
     const user = userEvent.setup();
     renderDrafts([

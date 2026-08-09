@@ -186,15 +186,25 @@ export function DraftLedger({
     draftId: string,
     field: FillableDraftField
   ) {
-    if (
-      event.altKey ||
-      event.ctrlKey ||
-      event.metaKey ||
-      event.shiftKey ||
-      (event.key !== "ArrowLeft" && event.key !== "ArrowRight")
-    ) {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
       return;
     }
+
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      const rowIndex = drafts.findIndex((draft) => draft.id === draftId);
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const nextDraft = drafts[rowIndex + direction];
+      const nextControl = nextDraft
+        ? controls.current.get(`${nextDraft.id}:${field}`)
+        : null;
+      if (!nextControl) return;
+
+      event.preventDefault();
+      nextControl.focus();
+      return;
+    }
+
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
 
     const input = event.currentTarget;
     const start = input.selectionStart;

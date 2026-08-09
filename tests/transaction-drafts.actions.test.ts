@@ -431,6 +431,27 @@ describe("transaction draft owned reads and mutations", () => {
     expect(fakeDb.transactionDraft.update).not.toHaveBeenCalled();
   });
 
+  it("does not edit a draft that becomes importing after the ownership preflight", async () => {
+    drafts = [
+      fakeRecord(expenseDraft({ title: "Original title" }), {
+        id: "owned-draft",
+        status: "READY"
+      })
+    ];
+    fakeDb.transactionDraft.updateMany.mockImplementationOnce(async () => {
+      drafts[0].status = "IMPORTING";
+      return { count: 0 };
+    });
+
+    await expect(
+      updateTransactionDraft("owned-draft", { title: "Late edit" })
+    ).resolves.toEqual({ ok: false, error: "Draft not found." });
+    expect(drafts[0]).toMatchObject({
+      status: "IMPORTING",
+      title: "Original title"
+    });
+  });
+
   it("revalidates a merged patch and never accepts client status or issues", async () => {
     drafts = [fakeRecord(expenseDraft(), { id: "owned-draft" })];
 

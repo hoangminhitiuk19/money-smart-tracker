@@ -449,7 +449,16 @@ export async function updateTransactionDraft(
   try {
     return await prisma.$transaction(async (db) => {
       const existing = await db.transactionDraft.findFirst({
-        where: { id: parsedId.data, userId: user.id }
+        where: {
+          id: parsedId.data,
+          userId: user.id,
+          status: {
+            in: [
+              TransactionDraftStatus.NEEDS_REVIEW,
+              TransactionDraftStatus.READY
+            ]
+          }
+        }
       });
       if (!existing) {
         return actionFailure(DRAFT_NOT_FOUND_ERROR);
@@ -475,10 +484,22 @@ export async function updateTransactionDraft(
         return actionFailure();
       }
 
-      await db.transactionDraft.update({
-        where: { id: existing.id, userId: user.id },
+      const updatedCandidate = await db.transactionDraft.updateMany({
+        where: {
+          id: existing.id,
+          userId: user.id,
+          status: {
+            in: [
+              TransactionDraftStatus.NEEDS_REVIEW,
+              TransactionDraftStatus.READY
+            ]
+          }
+        },
         data: storedDraftData(merged.data)
       });
+      if (updatedCandidate.count !== 1) {
+        return actionFailure(DRAFT_NOT_FOUND_ERROR);
+      }
       const records = await reassessCapture(
         db,
         user.id,
@@ -548,7 +569,16 @@ export async function dismissTransactionDrafts(
   try {
     const dismissedCount = await prisma.$transaction(async (db) => {
       const owned = await db.transactionDraft.findMany({
-        where: { userId: user.id, id: { in: uniqueIds } },
+        where: {
+          userId: user.id,
+          id: { in: uniqueIds },
+          status: {
+            in: [
+              TransactionDraftStatus.NEEDS_REVIEW,
+              TransactionDraftStatus.READY
+            ]
+          }
+        },
         select: { id: true, origin: true }
       });
       if (owned.length === 0) {
@@ -556,7 +586,16 @@ export async function dismissTransactionDrafts(
       }
       const ownedIds = owned.map(({ id }) => id);
       const dismissed = await db.transactionDraft.updateMany({
-        where: { userId: user.id, id: { in: ownedIds } },
+        where: {
+          userId: user.id,
+          id: { in: ownedIds },
+          status: {
+            in: [
+              TransactionDraftStatus.NEEDS_REVIEW,
+              TransactionDraftStatus.READY
+            ]
+          }
+        },
         data: dismissedCandidateData
       });
       await db.activityLog.create({

@@ -32,7 +32,8 @@ const captureData = IBM_Plex_Mono({
 
 export const metadata: Metadata = {
   title: "Money Smart Tracker",
-  description: "A personal finance tracker built with Next.js."
+  description: "A personal finance tracker built with Next.js.",
+  icons: { icon: "/favicon.ico" }
 };
 
 export default function RootLayout({
@@ -41,7 +42,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html data-scroll-behavior="smooth" lang="en">
       <body
         className={`${inter.variable} ${captureDisplay.variable} ${captureUi.variable} ${captureData.variable}`}
       >
