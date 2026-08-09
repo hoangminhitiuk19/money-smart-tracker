@@ -2,10 +2,12 @@
 
 ## Result and scope
 
-The local transaction-capture foundation is **IMPLEMENTED_AND_VERIFIED** against
-the disposable PostgreSQL database on 2026-08-09. This record covers Quick and
-paste capture, owned draft review, atomic/idempotent import, five-type financial
-reconciliation, two-user isolation, and local Chromium acceptance.
+The local transaction-capture foundation is
+**IMPLEMENTED_AND_LOCALLY_VERIFIED — REVIEW_PENDING** against the disposable
+PostgreSQL database on 2026-08-09. This record covers Quick and paste capture,
+owned draft review, atomic/idempotent import, five-type financial
+reconciliation, two-user isolation, lifecycle concurrency, and local Chromium
+acceptance.
 
 Independent specification and security reviews are owned by the task
 controller and are not claimed here. Email ingestion and Production release
@@ -23,13 +25,15 @@ accessibility, and acceptance sections.
 
 | Check | Result | Exact evidence |
 | --- | --- | --- |
-| Draft integration | Passed | `tests/integration/transaction-drafts.integration.test.ts`: 14/14 tests in 48.86 s after the final status-predicate fix |
-| Complete PostgreSQL integration | Passed | Final Node.js 22 `npm run test:integration`: 17 files and 119 tests in 50.16 s |
-| Terminal draft status guard | Passed | Direct update and dismiss probes reject owned `IMPORTING`, `IMPORTED`, and `DISMISSED` rows without mutation or activity leakage |
+| Draft action boundary | Passed | `tests/transaction-drafts.actions.test.ts`: 23/23 tests, including forced sibling-reassessment and zero/partial dismissal races |
+| Draft integration | Passed | `tests/integration/transaction-drafts.integration.test.ts`: 22/22 tests in 60.93 s |
+| Complete PostgreSQL integration | Passed | Final Node.js 22 `npm run test:integration`: 17 files and 127 tests in 61.36 s |
+| Terminal draft lifecycle guard | Passed | PASTE and QUICK reject owned `IMPORTING`, `IMPORTED`, and `DISMISSED` position reuse; a mixed terminal/editable capture is rejected atomically; an advisory-gated save/import overlap cannot reopen the imported row |
 | Two-user direct objects | Passed | Capture-key lists, edit, dismiss, import, idempotency-key reuse, and replay are scoped independently; foreign operations return empty or generic safe results |
 | Five-type ledger | Passed | A literal INCOME, EXPENSE, TRANSFER, REFUND, and ADJUSTMENT batch created five canonical transactions through the normal import boundary |
-| Focused browser regressions | Passed | Node.js 22: 3 assertions for vertical keyboard navigation, smooth-scroll metadata, and favicon behavior |
-| Final clean Node.js 22 gate | Passed | Clean install; 54 files/636 unit and rendered tests; valid Prisma schema; zero production vulnerabilities; successful 21-page build; 17 files/119 integration tests; five migrations current |
+| Focused browser regressions | Passed | Node.js 22: three focused tests cover vertical keyboard navigation, smooth-scroll metadata, and favicon behavior |
+| Browser acceptance | Passed | Node.js 22 Chromium: 25 recorded checks and 191 accessible-focus observations, including full pointer-free Quick and Paste/import journeys and forced-colors focus proof |
+| Final Node.js 22 gate | Passed | 54 files/640 unit and rendered tests; valid Prisma schema; zero production vulnerabilities; successful 21-page build; 17 files/127 integration tests; five migrations current |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -41,7 +45,7 @@ notice; it did not fail a suite.
 The deterministic scenario begins with a bank opening balance of `1,000.00`, a
 credit card with a `500.00` limit, and an existing card expense of `30.00`. The
 imported batch contains income `90071992547409.99`, card expense `45.25`,
-bank-to-card transfer `100.00`, linked card refund `10.25`, and a `5.00`
+bank-to-card transfer `100.00`, linked card refund `10.25`, and a `2.00`
 decrease to card credit.
 
 <!-- markdownlint-disable MD013 -->
@@ -49,13 +53,13 @@ decrease to card credit.
 | Projection | Independently asserted result |
 | --- | --- |
 | Bank tracked balance | `90071992548309.99` |
-| Card state | Debt `0.00`; card credit `0.00`; available credit `500.00` |
+| Card state | Debt `0.00`; card credit `3.00`; available credit `500.00` |
 | Fee waiver | Eligible spend `65.00`; progress `32.50%`; remaining `135.00` |
 | Dashboard | Income `90071992547409.99`; raw expense `75.25`; net savings `90071992547334.74`; estimated net position `90071992548309.99` |
 | Effective-expense reports | Income `90071992547409.99`; expense/category/quality/source totals `65.00` |
 | Project | Income `90071992547409.99`; effective expense `65.00`; profit `90071992547344.99` |
 | Activity | Five `TRANSACTION_CREATED` rows and one `TRANSACTION_BATCH_IMPORTED` row with count 5 |
-| CSV | Exact 13-column header and six owned data rows (the existing expense plus five imported rows); `CSV_EXPORTED.rowCount` is 6 |
+| CSV | Exact 13-column header, row length 13, and every cell of all six owned data rows, including Currency, Description, and deterministic Created At; `CSV_EXPORTED.rowCount` is 6 |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -72,8 +76,13 @@ not run the application or acceptance script.
 
 - [x] Register and authenticate a fresh user, then create a bank account and a
   credit card through the UI.
-- [x] Render Quick capture at 1440×1000 and save a keyboard-entered expense
-  draft, then atomically import the selected row.
+- [x] From natural document focus, complete Quick capture and its one-row
+  import using `Tab`, `Shift+Tab`, `Enter`, `Space`, `Escape`, typing, and
+  type-ahead, with no pointer focus, `fill`, `check`, or `selectOption` helper
+  in that journey.
+- [x] From a fresh natural document focus, activate Paste with `ArrowRight`,
+  enter spreadsheet text, review two rows, select with `Space`, fill Category
+  with arrows, and import with `Enter`, with no pointer helper in that journey.
 - [x] Preserve malformed CSV for correction and parse both tab-separated and
   comma-separated spreadsheet rows.
 - [x] Require an explicit mapping for ambiguous amount headers.
@@ -83,6 +92,9 @@ not run the application or acceptance script.
   regression also verifies `ArrowUp`.
 - [x] Correct the adjustment source in the row inspector and reach six READY
   rows.
+- [x] Activate Chromium forced colors; retain visible Ready and Needs review
+  text, a visible enabled primary action, and keyboard `:focus-visible` with a
+  solid 2px outline; capture `forced-colors-ledger.png`.
 - [x] Match `prefers-reduced-motion: reduce`; the ledger row transition measured
   `0.00001s`.
 - [x] Reflow the 1440px desktop surface into a 720 CSS-pixel viewport as a
@@ -101,16 +113,18 @@ equivalent, not browser-chrome zoom UI.
 
 The final diagnostic record contains zero page errors, zero HTTP responses at
 400 or above, zero unexpected console warnings/errors, and zero unexpected
-request failures. Eight `ERR_ABORTED` entries were Next navigation cancellations.
-One exact POST to `/transactions/capture` was deliberately failed with
-`ERR_FAILED` to exercise retry, and was tagged by request object identity. No
-5xx, Prisma, uniqueness, ownership, fatal, or unhandled error appeared in the
-bounded server log.
+request failures. Six expected `ERR_ABORTED` entries were Next navigation
+cancellations. Separately, one exact POST to `/transactions/capture` was
+deliberately failed with `ERR_FAILED` to exercise retry and was tagged by
+request object identity. No retained server-log artifact was created in this
+fix round, so the durable diagnostic claim is intentionally limited to the raw
+browser console, response, page-error, and request-failure record.
 
 Screenshots and raw JSON are retained locally under
 `.superpowers/sdd/2026-08-03-transaction-capture-foundation/task-12-browser/`:
 
 - `desktop-quick-empty.png`
+- `forced-colors-ledger.png`
 - `desktop-reviewed-ledger.png`
 - `desktop-200-percent-zoom-equivalent.png`
 - `mobile-375-reviewed-cards.png`
@@ -119,6 +133,26 @@ Screenshots and raw JSON are retained locally under
 
 ## Findings closed during acceptance
 
+- PASTE and QUICK save paths could reset terminal or in-flight draft positions
+  to `NEEDS_REVIEW`, including after a canonical import. Both now run at
+  serializable isolation, reject a capture containing any non-editable row,
+  reject origin conversion, condition actual updates on owner/origin/editable
+  status, and roll back on a mutation-boundary lifecycle conflict. PASTE
+  surplus deletion is also restricted to editable PASTE rows.
+- Capture reassessment could overwrite a sibling that imported after the
+  assessment snapshot. Each reassessment write now conditions on the sibling
+  still being editable and tolerates a zero-row result.
+- Dismissal activity could report stale count/origin metadata after a race.
+  The conditional PostgreSQL mutation now returns the rows actually changed;
+  zero rows create no activity, and partial metadata is derived only from the
+  affected rows.
+- The five-type proof previously cancelled all card credit. The `2.00`
+  decrease now leaves card debt `0.00`, card credit `3.00`, and available
+  credit `500.00`; activity and all 13 CSV cells per row are asserted exactly.
+- The retained browser path previously forced focus and used pointer value
+  helpers. Dedicated natural-focus Quick and Paste/import journeys now retain
+  191 accessible-focus observations, and forced-colors evidence proves visible
+  text, action, and keyboard focus styling.
 - Direct `updateTransactionDraft` and dismiss operations previously allowed
   terminal or in-flight drafts to return to an editable/dismissed state. RED
   PostgreSQL probes reproduced the issue; owner-and-status predicates now limit
@@ -140,21 +174,27 @@ register-only predicate, affected no Production data, and was not repeated. The
 final successful browser pass was attempt 4 of the configured 5 registrations
 after that cleanup.
 
-## Final clean Node.js 22 gate
+Fix-round harness retries later removed only disposable rows with exact scope
+`register:ip`: two rows before the corrected journeys and one row before the
+final streaming-safe sequence. No users, financial rows, email buckets, login
+buckets, mutation buckets, or Production data were deleted.
 
-All commands ran from a clean `npm ci` under Node.js `v22.23.2` in the required
-order:
+## Final Node.js 22 gate
+
+The dependency tree still comes from the previously recorded clean `npm ci`;
+package inputs did not change in this fix round. The fix round reran verify,
+complete integration, and deploy under Node.js `v22.23.2` in that order:
 
 <!-- markdownlint-disable MD013 -->
 
 | Command | Exact result |
 | --- | --- |
-| `npm ci` | Passed; 594 packages installed and 595 audited. The development-inclusive audit reports 8 tooling advisories: 3 moderate, 4 high, and 1 critical. |
-| `npm run verify` | Passed; lint had zero warnings, typecheck passed, 54 files and 636 unit/rendered tests passed, Prisma schema validated, production audit found 0 vulnerabilities, and the 21-page production build completed. |
-| `npm run test:integration` | Passed; 17 files and 119 PostgreSQL tests in 50.16 s. |
+| Prior clean `npm ci` baseline | Passed; 594 packages installed and 595 audited. The development-inclusive audit reports 8 tooling advisories: 3 moderate, 4 high, and 1 critical. |
+| `npm run verify` | Passed; lint had zero warnings, typecheck passed, 54 files and 640 unit/rendered tests passed, Prisma schema validated, production audit found 0 vulnerabilities, and the 21-page production build completed. |
+| `npm run test:integration` | Passed; 17 files and 127 PostgreSQL tests in 61.36 s. |
 | `npm run prisma:deploy` | Passed; five migrations found and no pending migrations. |
 | `git diff --check` | Passed with no whitespace errors. |
-| `git status --short` | Listed only eleven intended source, test, documentation, and dependency-lock paths before commit. |
+| `git status --short` | After generated-artifact restoration, listed only the intended action, two test, and acceptance-document paths before commit. |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -172,7 +212,7 @@ run; direct Node 22 Prisma validation had already succeeded. Generated
 `next-env.d.ts` and `tsconfig.tsbuildinfo` changes were restored to HEAD after
 the final build.
 
-The final deploy check initially reached PostgreSQL but timed out on Prisma's
+An earlier baseline deploy check reached PostgreSQL but timed out on Prisma's
 advisory lock `72707369`. Read-only inspection found no local Prisma/test
 process and identified one idle PgBouncer backend holding exactly that lock
 after the completed integration suite. Only that idle backend connection was

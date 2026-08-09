@@ -47,6 +47,13 @@ const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1_000;
 const IMPORT_TRANSACTION_TIMEOUT_MS = 60_000;
 const INVALID_DRAFT_ERROR = "Enter valid draft data.";
 const DRAFT_NOT_FOUND_ERROR = "Draft not found.";
+const CAPTURE_NOT_EDITABLE_ERROR = "This capture can no longer be edited.";
+const EDITABLE_DRAFT_STATUSES = [
+  TransactionDraftStatus.NEEDS_REVIEW,
+  TransactionDraftStatus.READY
+] as const;
+
+class DraftLifecycleConflict extends Error {}
 
 const saveDraftsSchema = z
   .object({
@@ -211,8 +218,12 @@ async function reassessCapture(
         ? computeDraftFingerprint(parsed.data)
         : null;
 
-      return db.transactionDraft.update({
-        where: { id: record.id, userId },
+      return db.transactionDraft.updateMany({
+        where: {
+          id: record.id,
+          userId,
+          status: { in: [...EDITABLE_DRAFT_STATUSES] }
+        },
         data: {
           status: assessment.status,
           validationIssues: assessment.issues,
@@ -241,6 +252,12 @@ function actionFailure(error = INVALID_DRAFT_ERROR): {
   draftId?: string;
 } {
   return { ok: false, error };
+}
+
+function isEditableDraftStatus(status: TransactionDraftStatus) {
+  return EDITABLE_DRAFT_STATUSES.includes(
+    status as (typeof EDITABLE_DRAFT_STATUSES)[number]
+  );
 }
 
 function readStoredIds(value: Prisma.JsonValue) {
@@ -290,32 +307,64 @@ export async function savePasteDrafts(input: {
   }
 
   try {
-    const records = await prisma.$transaction(async (db) => {
+    const saved = await runSerializable(async (db) => {
       const createdAt = new Date();
       const expiresAt = new Date(
         createdAt.getTime() + DRAFT_RETENTION_DAYS * MILLISECONDS_PER_DAY
       );
+      const captureRecords = await db.transactionDraft.findMany({
+        where: {
+          userId: user.id,
+          captureKey: parsed.data.captureKey
+        },
+        orderBy: [{ position: "asc" }, { id: "asc" }]
+      });
+      if (captureRecords.some(({ status }) => !isEditableDraftStatus(status))) {
+        return { ok: false as const, error: CAPTURE_NOT_EDITABLE_ERROR };
+      }
+      const recordsByPosition = new Map(
+        captureRecords.map((record) => [record.position, record])
+      );
+      if (
+        parsed.data.rows.some((row) => {
+          const existing = recordsByPosition.get(row.position);
+          return existing && existing.origin !== TransactionDraftOrigin.PASTE;
+        })
+      ) {
+        return {
+          ok: false as const,
+          error: "Paste captures need a new capture."
+        };
+      }
 
       for (const row of parsed.data.rows) {
-        await db.transactionDraft.upsert({
-          where: {
-            userId_captureKey_position: {
+        const existing = recordsByPosition.get(row.position);
+        if (existing) {
+          const updated = await db.transactionDraft.updateMany({
+            where: {
+              id: existing.id,
               userId: user.id,
-              captureKey: parsed.data.captureKey,
-              position: row.position
+              origin: TransactionDraftOrigin.PASTE,
+              status: { in: [...EDITABLE_DRAFT_STATUSES] }
+            },
+            data: { ...storedDraftData(row), origin: row.origin }
+          });
+          if (updated.count !== 1) {
+            throw new DraftLifecycleConflict(CAPTURE_NOT_EDITABLE_ERROR);
+          }
+        } else {
+          await db.transactionDraft.create({
+            data: {
+              userId: user.id,
+              captureKey: row.captureKey,
+              position: row.position,
+              origin: row.origin,
+              createdAt,
+              expiresAt,
+              ...storedDraftData(row)
             }
-          },
-          create: {
-            userId: user.id,
-            captureKey: row.captureKey,
-            position: row.position,
-            origin: row.origin,
-            createdAt,
-            expiresAt,
-            ...storedDraftData(row)
-          },
-          update: { ...storedDraftData(row), origin: row.origin }
-        });
+          });
+        }
       }
 
       await db.transactionDraft.deleteMany({
@@ -323,15 +372,27 @@ export async function savePasteDrafts(input: {
           userId: user.id,
           captureKey: parsed.data.captureKey,
           origin: TransactionDraftOrigin.PASTE,
-          position: { gte: parsed.data.rows.length }
+          position: { gte: parsed.data.rows.length },
+          status: { in: [...EDITABLE_DRAFT_STATUSES] }
         }
       });
 
-      return reassessCapture(db, user.id, parsed.data.captureKey);
+      return {
+        ok: true as const,
+        records: await reassessCapture(db, user.id, parsed.data.captureKey)
+      };
     });
 
-    return { ok: true, drafts: records.map(transactionDraftRecordToView) };
-  } catch {
+    return saved.ok
+      ? {
+          ok: true,
+          drafts: saved.records.map(transactionDraftRecordToView)
+        }
+      : actionFailure(saved.error);
+  } catch (error) {
+    if (error instanceof DraftLifecycleConflict) {
+      return actionFailure(error.message);
+    }
     return actionFailure();
   }
 }
@@ -350,7 +411,7 @@ export async function saveQuickDraft(
   }
 
   try {
-    const records = await prisma.$transaction(async (db) => {
+    const saved = await runSerializable(async (db) => {
       const createdAt = new Date();
       const expiresAt = new Date(
         createdAt.getTime() + DRAFT_RETENTION_DAYS * MILLISECONDS_PER_DAY
@@ -363,13 +424,27 @@ export async function saveQuickDraft(
         }
       });
       if (existing && existing.origin !== TransactionDraftOrigin.QUICK) {
-        return null;
+        return {
+          ok: false as const,
+          error: "Quick captures need a new capture."
+        };
       }
       if (existing) {
-        await db.transactionDraft.update({
-          where: { id: existing.id, userId: user.id },
+        if (!isEditableDraftStatus(existing.status)) {
+          return { ok: false as const, error: CAPTURE_NOT_EDITABLE_ERROR };
+        }
+        const updated = await db.transactionDraft.updateMany({
+          where: {
+            id: existing.id,
+            userId: user.id,
+            origin: TransactionDraftOrigin.QUICK,
+            status: { in: [...EDITABLE_DRAFT_STATUSES] }
+          },
           data: { ...storedDraftData(parsed.data), origin: parsed.data.origin }
         });
+        if (updated.count !== 1) {
+          throw new DraftLifecycleConflict(CAPTURE_NOT_EDITABLE_ERROR);
+        }
       } else {
         await db.transactionDraft.create({
           data: {
@@ -383,14 +458,22 @@ export async function saveQuickDraft(
           }
         });
       }
-      return reassessCapture(db, user.id, parsed.data.captureKey);
+      return {
+        ok: true as const,
+        records: await reassessCapture(db, user.id, parsed.data.captureKey)
+      };
     });
-    if (!records) return actionFailure("Quick captures need a new capture.");
-    const draft = records.find(({ position }) => position === parsed.data.position);
+    if (!saved.ok) return actionFailure(saved.error);
+    const draft = saved.records.find(
+      ({ position }) => position === parsed.data.position
+    );
     return draft
       ? { ok: true, draft: transactionDraftRecordToView(draft) }
       : actionFailure();
-  } catch {
+  } catch (error) {
+    if (error instanceof DraftLifecycleConflict) {
+      return actionFailure(error.message);
+    }
     return actionFailure();
   }
 }
@@ -568,48 +651,30 @@ export async function dismissTransactionDrafts(
 
   try {
     const dismissedCount = await prisma.$transaction(async (db) => {
-      const owned = await db.transactionDraft.findMany({
+      const dismissed = await db.transactionDraft.updateManyAndReturn({
         where: {
           userId: user.id,
           id: { in: uniqueIds },
-          status: {
-            in: [
-              TransactionDraftStatus.NEEDS_REVIEW,
-              TransactionDraftStatus.READY
-            ]
-          }
+          status: { in: [...EDITABLE_DRAFT_STATUSES] }
         },
-        select: { id: true, origin: true }
+        data: dismissedCandidateData,
+        select: { origin: true }
       });
-      if (owned.length === 0) {
+      if (dismissed.length === 0) {
         return 0;
       }
-      const ownedIds = owned.map(({ id }) => id);
-      const dismissed = await db.transactionDraft.updateMany({
-        where: {
-          userId: user.id,
-          id: { in: ownedIds },
-          status: {
-            in: [
-              TransactionDraftStatus.NEEDS_REVIEW,
-              TransactionDraftStatus.READY
-            ]
-          }
-        },
-        data: dismissedCandidateData
-      });
       await db.activityLog.create({
         data: {
           userId: user.id,
           action: "TRANSACTION_DRAFTS_DISMISSED",
           entityType: "TransactionDraft",
           metadata: {
-            count: dismissed.count,
-            origin: activityOrigin(owned)
+            count: dismissed.length,
+            origin: activityOrigin(dismissed)
           }
         }
       });
-      return dismissed.count;
+      return dismissed.length;
     });
     return { ok: true, dismissedCount };
   } catch {

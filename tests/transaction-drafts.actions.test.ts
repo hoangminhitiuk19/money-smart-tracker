@@ -69,6 +69,9 @@ function matchesWhere(draft: FakeDraft, where: Record<string, any>) {
   if (where.status?.in && !where.status.in.includes(draft.status)) {
     return false;
   }
+  if (typeof where.status === "string" && draft.status !== where.status) {
+    return false;
+  }
   if (where.origin !== undefined && draft.origin !== where.origin) {
     return false;
   }
@@ -157,6 +160,13 @@ const fakeDb = {
       );
       return { count: selected.length };
     }),
+    updateManyAndReturn: vi.fn(async ({ where, data }: any) => {
+      const selected = drafts.filter((draft) => matchesWhere(draft, where));
+      selected.forEach((draft) =>
+        Object.assign(draft, fakeDatabaseData(data), { updatedAt: new Date() })
+      );
+      return selected.map((draft) => ({ ...draft }));
+    }),
     deleteMany: vi.fn(async ({ where }: any) => {
       const before = drafts.length;
       drafts = drafts.filter((draft) => !matchesWhere(draft, where));
@@ -235,6 +245,28 @@ beforeEach(() => {
       ? [{ id: "bank-a", type: "BANK_ACCOUNT" }]
       : []
   );
+  fakeDb.transactionDraft.update.mockImplementation(async ({ where, data }: any) => {
+    const existing = drafts.find((draft) => draft.id === where.id);
+    if (!existing) throw new Error("missing draft");
+    Object.assign(existing, data, { updatedAt: new Date() });
+    return { ...existing };
+  });
+  fakeDb.transactionDraft.updateMany.mockImplementation(async ({ where, data }: any) => {
+    const selected = drafts.filter((draft) => matchesWhere(draft, where));
+    selected.forEach((draft) =>
+      Object.assign(draft, fakeDatabaseData(data), { updatedAt: new Date() })
+    );
+    return { count: selected.length };
+  });
+  fakeDb.transactionDraft.updateManyAndReturn.mockImplementation(
+    async ({ where, data }: any) => {
+      const selected = drafts.filter((draft) => matchesWhere(draft, where));
+      selected.forEach((draft) =>
+        Object.assign(draft, fakeDatabaseData(data), { updatedAt: new Date() })
+      );
+      return selected.map((draft) => ({ ...draft }));
+    }
+  );
 });
 
 afterEach(() => {
@@ -289,7 +321,7 @@ describe("transaction draft save contracts", () => {
 
   it("deletes only surplus rows in the owned capture when replacing a paste", async () => {
     drafts = [
-      fakeRecord(expenseDraft({ position: 0 }), { origin: TransactionDraftOrigin.QUICK }),
+      fakeRecord(expenseDraft({ position: 0 })),
       fakeRecord(expenseDraft({ position: 1, title: "Dinner" })),
       fakeRecord(expenseDraft({ position: 2, title: "Coffee" })),
       fakeRecord(expenseDraft({ position: 3, title: "Email capture" }), {
@@ -320,6 +352,25 @@ describe("transaction draft save contracts", () => {
         expect.objectContaining({ captureKey: "f03a2c0d-d6d2-452e-842b-bce9bdb89cc7" })
       ])
     );
+  });
+
+  it("never converts an editable QUICK position into a PASTE position", async () => {
+    const quick = fakeRecord(
+      expenseDraft({
+        origin: TransactionDraftOrigin.QUICK,
+        title: "Existing quick capture"
+      }),
+      { id: "quick-position-zero", status: "READY" }
+    );
+    drafts = [quick];
+
+    await expect(
+      savePasteDrafts({
+        captureKey,
+        rows: [expenseDraft({ title: "Converted paste capture" })]
+      })
+    ).resolves.toMatchObject({ ok: false });
+    expect(drafts).toEqual([quick]);
   });
 
   it("writes one QUICK draft through the same assessment path", async () => {
@@ -522,6 +573,58 @@ describe("transaction draft owned reads and mutations", () => {
     });
   });
 
+  it("does not reopen a sibling that starts importing during capture reassessment", async () => {
+    drafts = [
+      fakeRecord(expenseDraft({ title: "Edited row" }), {
+        id: "draft-1",
+        status: "READY"
+      }),
+      fakeRecord(expenseDraft({ position: 1, title: "Importing sibling" }), {
+        id: "draft-2",
+        status: "READY"
+      })
+    ];
+    let transitioned = false;
+    const forceSiblingImport = () => {
+      if (!transitioned) {
+        transitioned = true;
+        drafts[1].status = "IMPORTED";
+      }
+    };
+    fakeDb.transactionDraft.update.mockImplementation(async ({ where, data }: any) => {
+      if (Object.hasOwn(data, "validationIssues")) {
+        forceSiblingImport();
+      }
+      const existing = drafts.find((draft) => draft.id === where.id);
+      if (!existing) throw new Error("missing draft");
+      Object.assign(existing, data, { updatedAt: new Date() });
+      return { ...existing };
+    });
+    fakeDb.transactionDraft.updateMany.mockImplementation(async ({ where, data }: any) => {
+      if (
+        Object.hasOwn(data, "validationIssues") &&
+        !Object.hasOwn(data, "title")
+      ) {
+        forceSiblingImport();
+      }
+      const selected = drafts.filter((draft) => matchesWhere(draft, where));
+      selected.forEach((draft) =>
+        Object.assign(draft, fakeDatabaseData(data), { updatedAt: new Date() })
+      );
+      return { count: selected.length };
+    });
+
+    const result = await updateTransactionDraft("draft-1", {
+      title: "Edited row after reassessment"
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(drafts.find(({ id }) => id === "draft-2")).toMatchObject({
+      status: "IMPORTED",
+      title: "Importing sibling"
+    });
+  });
+
   it("rejects a bounded patch that pushes the owned capture above one million UTF-8 bytes", async () => {
     drafts = [
       fakeRecord(
@@ -591,6 +694,63 @@ describe("transaction draft owned reads and mutations", () => {
     ).resolves.toEqual({ ok: true, dismissedCount: 2 });
     expect(activities[0].metadata).toEqual({ count: 2, origin: "MIXED" });
     expect(Object.keys(activities[0].metadata)).toEqual(["count", "origin"]);
+  });
+
+  it("does not log a dismissal when the candidate becomes importing at the write", async () => {
+    drafts = [
+      fakeRecord(expenseDraft(), { id: "racing-draft", status: "READY" })
+    ];
+    const forceImportAndReturnNoRows = async () => {
+      drafts[0].status = "IMPORTING";
+      return { count: 0 };
+    };
+    fakeDb.transactionDraft.updateMany.mockImplementationOnce(
+      forceImportAndReturnNoRows
+    );
+    fakeDb.transactionDraft.updateManyAndReturn.mockImplementationOnce(async () => {
+      drafts[0].status = "IMPORTING";
+      return [];
+    });
+
+    await expect(dismissTransactionDrafts(["racing-draft"])).resolves.toEqual({
+      ok: true,
+      dismissedCount: 0
+    });
+    expect(drafts[0].status).toBe("IMPORTING");
+    expect(activities).toEqual([]);
+  });
+
+  it("logs count and origin only from rows actually dismissed in a partial race", async () => {
+    drafts = [
+      fakeRecord(expenseDraft(), { id: "paste-draft", status: "READY" }),
+      fakeRecord(
+        expenseDraft({
+          captureKey: "34ac7c99-d2ee-491d-bac5-f4ad10155596",
+          origin: TransactionDraftOrigin.QUICK
+        }),
+        { id: "quick-draft", status: "READY" }
+      )
+    ];
+    const dismissOnlyPaste = (data: Record<string, any>) => {
+      drafts[1].status = "IMPORTING";
+      Object.assign(drafts[0], fakeDatabaseData(data), { updatedAt: new Date() });
+    };
+    fakeDb.transactionDraft.updateMany.mockImplementationOnce(async ({ data }: any) => {
+      dismissOnlyPaste(data);
+      return { count: 1 };
+    });
+    fakeDb.transactionDraft.updateManyAndReturn.mockImplementationOnce(
+      async ({ data }: any) => {
+        dismissOnlyPaste(data);
+        return [{ ...drafts[0] }];
+      }
+    );
+
+    await expect(
+      dismissTransactionDrafts(["paste-draft", "quick-draft"])
+    ).resolves.toEqual({ ok: true, dismissedCount: 1 });
+    expect(activities).toHaveLength(1);
+    expect(activities[0].metadata).toEqual({ count: 1, origin: "PASTE" });
   });
 });
 

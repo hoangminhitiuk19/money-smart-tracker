@@ -17,6 +17,7 @@ import {
   importTransactionDrafts,
   listTransactionDrafts,
   savePasteDrafts,
+  saveQuickDraft,
   updateTransactionDraft
 } from "@/lib/actions/transaction-drafts";
 import {
@@ -166,6 +167,66 @@ async function installDraftImportActivityFailure(userId: string) {
       `DROP FUNCTION IF EXISTS "${functionName}"()`
     );
   };
+}
+
+async function installImportLifecycleGate(
+  draftId: string,
+  gateNamespace: number,
+  gateKey: number,
+  markerNamespace: number,
+  markerKey: number
+) {
+  const suffix = randomUUID().replaceAll("-", "");
+  const functionName = `gate_draft_import_${suffix}`;
+  const triggerName = `gate_draft_import_trigger_${suffix}`;
+
+  await prisma.$executeRawUnsafe(`
+    CREATE FUNCTION "${functionName}"() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      IF OLD."id" = '${draftId}'
+        AND OLD."status" = 'READY'
+        AND NEW."status" = 'IMPORTING' THEN
+        PERFORM pg_advisory_xact_lock(${markerNamespace}, ${markerKey});
+        PERFORM pg_advisory_xact_lock(${gateNamespace}, ${gateKey});
+      END IF;
+      RETURN NEW;
+    END;
+    $$;
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE TRIGGER "${triggerName}"
+    BEFORE UPDATE ON "TransactionDraft"
+    FOR EACH ROW EXECUTE FUNCTION "${functionName}"();
+  `);
+
+  return async () => {
+    await prisma.$executeRawUnsafe(
+      `DROP TRIGGER IF EXISTS "${triggerName}" ON "TransactionDraft"`
+    );
+    await prisma.$executeRawUnsafe(
+      `DROP FUNCTION IF EXISTS "${functionName}"()`
+    );
+  };
+}
+
+async function waitForAdvisoryLock(namespace: number, key: number) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const [row] = await prisma.$queryRawUnsafe<Array<{ held: boolean }>>(`
+      SELECT EXISTS (
+        SELECT 1
+        FROM pg_locks
+        WHERE locktype = 'advisory'
+          AND classid = '${namespace}'::oid
+          AND objid = '${key}'::oid
+          AND objsubid = 2
+          AND granted
+      ) AS "held"
+    `);
+    if (row?.held) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Timed out waiting for the forced import lifecycle gate.");
 }
 
 beforeAll(async () => {
@@ -498,6 +559,126 @@ describe("transaction draft PostgreSQL ownership", () => {
     ).resolves.toBe(dismissalActivitiesBefore);
   });
 
+  it.each([
+    TransactionDraftStatus.IMPORTING,
+    TransactionDraftStatus.IMPORTED,
+    TransactionDraftStatus.DISMISSED
+  ])("does not reuse an owned %s PASTE position", async (status) => {
+    const captureKey = randomUUID();
+    authState.userId = fixtures.context.userA.id;
+    const originalTitle = `Paste lifecycle ${status} ${captureKey}`;
+    const saved = await savePasteDrafts({
+      captureKey,
+      rows: [
+        expenseDraft(captureKey, fixtures.bankAId, { title: originalTitle })
+      ]
+    });
+    expect(saved).toMatchObject({ ok: true, drafts: [{ status: "READY" }] });
+    if (!saved.ok) throw new Error(saved.error);
+    await prisma.transactionDraft.update({
+      where: { id: saved.drafts[0].id },
+      data: { status }
+    });
+
+    const replacement = await savePasteDrafts({
+      captureKey,
+      rows: [
+        expenseDraft(captureKey, fixtures.bankAId, {
+          title: `Reopened paste ${status}`
+        })
+      ]
+    });
+
+    expect(replacement).toMatchObject({ ok: false });
+    await expect(
+      prisma.transactionDraft.findUniqueOrThrow({
+        where: { id: saved.drafts[0].id },
+        select: { status: true, title: true }
+      })
+    ).resolves.toEqual({ status, title: originalTitle });
+  });
+
+  it.each([
+    TransactionDraftStatus.IMPORTING,
+    TransactionDraftStatus.IMPORTED,
+    TransactionDraftStatus.DISMISSED
+  ])("does not reuse an owned %s QUICK position", async (status) => {
+    const captureKey = randomUUID();
+    authState.userId = fixtures.context.userA.id;
+    const originalTitle = `Quick lifecycle ${status} ${captureKey}`;
+    const saved = await saveQuickDraft(
+      expenseDraft(captureKey, fixtures.bankAId, {
+        origin: TransactionDraftOrigin.QUICK,
+        title: originalTitle
+      })
+    );
+    expect(saved).toMatchObject({ ok: true, draft: { status: "READY" } });
+    if (!saved.ok) throw new Error(saved.error);
+    await prisma.transactionDraft.update({
+      where: { id: saved.draft.id },
+      data: { status }
+    });
+
+    const replacement = await saveQuickDraft(
+      expenseDraft(captureKey, fixtures.bankAId, {
+        origin: TransactionDraftOrigin.QUICK,
+        title: `Reopened quick ${status}`
+      })
+    );
+
+    expect(replacement).toMatchObject({ ok: false });
+    await expect(
+      prisma.transactionDraft.findUniqueOrThrow({
+        where: { id: saved.draft.id },
+        select: { status: true, title: true }
+      })
+    ).resolves.toEqual({ status, title: originalTitle });
+  });
+
+  it("rejects a mixed terminal PASTE capture without changing an editable sibling", async () => {
+    const captureKey = randomUUID();
+    authState.userId = fixtures.context.userA.id;
+    const saved = await savePasteDrafts({
+      captureKey,
+      rows: [
+        expenseDraft(captureKey, fixtures.bankAId, { title: "Editable head" }),
+        expenseDraft(captureKey, fixtures.bankAId, {
+          position: 1,
+          title: "Terminal surplus"
+        })
+      ]
+    });
+    expect(saved).toMatchObject({ ok: true });
+    if (!saved.ok) throw new Error(saved.error);
+    await prisma.transactionDraft.update({
+      where: { id: saved.drafts[1].id },
+      data: { status: TransactionDraftStatus.IMPORTED }
+    });
+
+    const replacement = await savePasteDrafts({
+      captureKey,
+      rows: [
+        expenseDraft(captureKey, fixtures.bankAId, {
+          title: "Replaced editable head"
+        })
+      ]
+    });
+    expect(replacement).toMatchObject({ ok: false });
+    await expect(
+      prisma.transactionDraft.findMany({
+        where: { id: { in: saved.drafts.map(({ id }) => id) } },
+        orderBy: { position: "asc" },
+        select: { status: true, title: true }
+      })
+    ).resolves.toEqual([
+      { status: TransactionDraftStatus.READY, title: "Editable head" },
+      {
+        status: TransactionDraftStatus.IMPORTED,
+        title: "Terminal surplus"
+      }
+    ]);
+  });
+
   it("keeps foreign references in review without creating a transaction or leaking names", async () => {
     const captureKey = randomUUID();
     authState.userId = fixtures.context.userA.id;
@@ -615,6 +796,89 @@ describe("transaction draft PostgreSQL ownership", () => {
 });
 
 describe("transaction draft PostgreSQL import atomicity", () => {
+  it("does not reopen a draft when save overlaps its import transition", async () => {
+    authState.userId = fixtures.context.userA.id;
+    const [draft] = await saveReadyExpenseDrafts(1);
+    const gateNamespace = 118_731;
+    const markerNamespace = 118_732;
+    const gateKey = Math.floor(Math.random() * 1_000_000_000) + 1;
+    const markerKey = Math.floor(Math.random() * 1_000_000_000) + 1;
+    const uninstallGate = await installImportLifecycleGate(
+      draft.id,
+      gateNamespace,
+      gateKey,
+      markerNamespace,
+      markerKey
+    );
+    let releaseGate: () => void = () => undefined;
+    let signalGateHeld: () => void = () => undefined;
+    const gateHeld = new Promise<void>((resolve) => {
+      signalGateHeld = resolve;
+    });
+    const gateReleased = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const heldGate = prisma.$transaction(
+      async (db) => {
+        await db.$executeRawUnsafe(
+          `SELECT pg_advisory_xact_lock(${gateNamespace}, ${gateKey})`
+        );
+        signalGateHeld();
+        await gateReleased;
+      },
+      { timeout: 20_000 }
+    );
+
+    try {
+      await gateHeld;
+      const importPromise = importTransactionDrafts({
+        ids: [draft.id],
+        idempotencyKey: randomUUID()
+      });
+      await waitForAdvisoryLock(markerNamespace, markerKey);
+      let saveSettled = false;
+      const savePromise = savePasteDrafts({
+        captureKey: draft.captureKey,
+        rows: [
+          expenseDraft(draft.captureKey, fixtures.bankAId, {
+            title: "Concurrent lifecycle overwrite"
+          })
+        ]
+      }).finally(() => {
+        saveSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(saveSettled).toBe(false);
+      releaseGate();
+
+      const [imported, resaved] = await Promise.all([
+        importPromise,
+        savePromise,
+        heldGate
+      ]).then(([importResult, saveResult]) => [importResult, saveResult]);
+      expect(imported).toMatchObject({ ok: true, importedCount: 1 });
+      expect(resaved).toMatchObject({ ok: false });
+      await expect(
+        prisma.transactionDraft.findUniqueOrThrow({
+          where: { id: draft.id },
+          select: {
+            status: true,
+            importedTransactionId: true,
+            title: true
+          }
+        })
+      ).resolves.toEqual({
+        status: TransactionDraftStatus.IMPORTED,
+        importedTransactionId: expect.any(String),
+        title: null
+      });
+    } finally {
+      releaseGate();
+      await heldGate.catch(() => undefined);
+      await uninstallGate();
+    }
+  }, 30_000);
+
   it("imports the selected READY drafts once and replays the completed result", async () => {
     authState.userId = fixtures.context.userA.id;
     const drafts = await saveReadyExpenseDrafts(2);
@@ -829,7 +1093,9 @@ describe("transaction draft PostgreSQL import atomicity", () => {
         type: TransactionType.EXPENSE,
         amount: "30.00",
         title: `Batch original expense ${suffix}`,
+        description: "Original card expense description",
         transactionDate: new Date("2026-08-09T00:00:00.000Z"),
+        createdAt: new Date("2026-08-09T09:00:00.000Z"),
         categoryId: category.id,
         qualityRating: QualityRating.A,
         fromMoneySourceId: card.id,
@@ -851,6 +1117,7 @@ describe("transaction draft PostgreSQL import atomicity", () => {
         type: TransactionType.INCOME,
         amountText: "90071992547409.99",
         title: titles.income,
+        description: "Exact income description",
         transactionDateText: "2026-08-10",
         fromMoneySourceId: null,
         toMoneySourceId: bank.id,
@@ -861,6 +1128,7 @@ describe("transaction draft PostgreSQL import atomicity", () => {
         position: 1,
         amountText: "45.25",
         title: titles.expense,
+        description: "Card expense description",
         transactionDateText: "2026-08-11",
         categoryId: category.id,
         qualityRating: QualityRating.A,
@@ -873,6 +1141,7 @@ describe("transaction draft PostgreSQL import atomicity", () => {
         type: TransactionType.TRANSFER,
         amountText: "100.00",
         title: titles.transfer,
+        description: "Card payment description",
         transactionDateText: "2026-08-12",
         toMoneySourceId: card.id,
         rawRow: { Amount: "100.00" }
@@ -882,6 +1151,7 @@ describe("transaction draft PostgreSQL import atomicity", () => {
         type: TransactionType.REFUND,
         amountText: "10.25",
         title: titles.refund,
+        description: "Card refund description",
         transactionDateText: "2026-08-13",
         fromMoneySourceId: null,
         toMoneySourceId: card.id,
@@ -891,14 +1161,15 @@ describe("transaction draft PostgreSQL import atomicity", () => {
       expenseDraft(captureKey, bank.id, {
         position: 4,
         type: TransactionType.ADJUSTMENT,
-        amountText: "5.00",
+        amountText: "2.00",
         title: titles.adjustment,
+        description: "Card credit adjustment description",
         transactionDateText: "2026-08-14",
         fromMoneySourceId: null,
         adjustedMoneySourceId: card.id,
         adjustmentDirection: AdjustmentDirection.DECREASE,
         adjustmentTarget: AdjustmentTarget.CARD_CREDIT,
-        rawRow: { Amount: "5.00" }
+        rawRow: { Amount: "2.00" }
       })
     ];
     const saved = await savePasteDrafts({ captureKey, rows });
@@ -919,6 +1190,21 @@ describe("transaction draft PostgreSQL import atomicity", () => {
     });
     expect(imported).toMatchObject({ ok: true, importedCount: 5 });
     if (!imported.ok) throw new Error(imported.error);
+    const importedCreatedAt = [
+      "2026-08-10T10:00:00.000Z",
+      "2026-08-11T11:00:00.000Z",
+      "2026-08-12T12:00:00.000Z",
+      "2026-08-13T13:00:00.000Z",
+      "2026-08-14T14:00:00.000Z"
+    ];
+    await prisma.$transaction(
+      imported.transactionIds.map((id, index) =>
+        prisma.transaction.update({
+          where: { id },
+          data: { createdAt: new Date(importedCreatedAt[index]) }
+        })
+      )
+    );
     const transactions = await prisma.transaction.findMany({
       where: {
         id: { in: imported.transactionIds },
@@ -1019,7 +1305,7 @@ describe("transaction draft PostgreSQL import atomicity", () => {
       availableCredit: dashboardCard.state.availableCredit.toFixed(2)
     }).toEqual({
       outstandingDebt: "0.00",
-      cardCredit: "0.00",
+      cardCredit: "3.00",
       availableCredit: "500.00"
     });
     expect({
@@ -1104,7 +1390,7 @@ describe("transaction draft PostgreSQL import atomicity", () => {
       remaining: waivers[0]?.state.remaining.toFixed(2)
     }).toEqual({
       outstandingDebt: "0.00",
-      cardCredit: "0.00",
+      cardCredit: "3.00",
       availableCredit: "500.00",
       eligibleSpending: "65.00",
       remaining: "135.00"
@@ -1134,90 +1420,102 @@ describe("transaction draft PostgreSQL import atomicity", () => {
       "Created At"
     ]);
     expect(csvRows).toHaveLength(7);
+    expect(csvRows.slice(1).every((row) => row.length === 13)).toBe(true);
     expect(
       Object.fromEntries(
-        csvRows.slice(1).map((row) => [
-          row[2],
-          {
-            date: row[0],
-            type: row[1],
-            amount: row[3],
-            category: row[5],
-            quality: row[6],
-            from: row[7],
-            to: row[8],
-            project: row[9],
-            feeWaiver: row[11]
-          }
-        ])
+        csvRows.slice(1).map((row) => [row[2], row])
       )
     ).toEqual({
-      [originalExpense.title]: {
-        date: "2026-08-09T00:00:00.000Z",
-        type: "EXPENSE",
-        amount: "30",
-        category: category.name,
-        quality: "A",
-        from: card.name,
-        to: "",
-        project: project.name,
-        feeWaiver: "true"
-      },
-      [titles.income]: {
-        date: "2026-08-10T00:00:00.000Z",
-        type: "INCOME",
-        amount: "90071992547409.99",
-        category: "",
-        quality: "",
-        from: "",
-        to: bank.name,
-        project: project.name,
-        feeWaiver: "false"
-      },
-      [titles.expense]: {
-        date: "2026-08-11T00:00:00.000Z",
-        type: "EXPENSE",
-        amount: "45.25",
-        category: category.name,
-        quality: "A",
-        from: card.name,
-        to: "",
-        project: project.name,
-        feeWaiver: "true"
-      },
-      [titles.transfer]: {
-        date: "2026-08-12T00:00:00.000Z",
-        type: "TRANSFER",
-        amount: "100",
-        category: "",
-        quality: "",
-        from: bank.name,
-        to: card.name,
-        project: "",
-        feeWaiver: "false"
-      },
-      [titles.refund]: {
-        date: "2026-08-13T00:00:00.000Z",
-        type: "REFUND",
-        amount: "10.25",
-        category: "",
-        quality: "",
-        from: "",
-        to: card.name,
-        project: "",
-        feeWaiver: "false"
-      },
-      [titles.adjustment]: {
-        date: "2026-08-14T00:00:00.000Z",
-        type: "ADJUSTMENT",
-        amount: "5",
-        category: "",
-        quality: "",
-        from: "",
-        to: "",
-        project: "",
-        feeWaiver: "false"
-      }
+      [originalExpense.title]: [
+        "2026-08-09T00:00:00.000Z",
+        "EXPENSE",
+        originalExpense.title,
+        "30",
+        "VND",
+        category.name,
+        "A",
+        card.name,
+        "",
+        project.name,
+        "Original card expense description",
+        "true",
+        "2026-08-09T09:00:00.000Z"
+      ],
+      [titles.income]: [
+        "2026-08-10T00:00:00.000Z",
+        "INCOME",
+        titles.income,
+        "90071992547409.99",
+        "VND",
+        "",
+        "",
+        "",
+        bank.name,
+        project.name,
+        "Exact income description",
+        "false",
+        importedCreatedAt[0]
+      ],
+      [titles.expense]: [
+        "2026-08-11T00:00:00.000Z",
+        "EXPENSE",
+        titles.expense,
+        "45.25",
+        "VND",
+        category.name,
+        "A",
+        card.name,
+        "",
+        project.name,
+        "Card expense description",
+        "true",
+        importedCreatedAt[1]
+      ],
+      [titles.transfer]: [
+        "2026-08-12T00:00:00.000Z",
+        "TRANSFER",
+        titles.transfer,
+        "100",
+        "VND",
+        "",
+        "",
+        bank.name,
+        card.name,
+        "",
+        "Card payment description",
+        "false",
+        importedCreatedAt[2]
+      ],
+      [titles.refund]: [
+        "2026-08-13T00:00:00.000Z",
+        "REFUND",
+        titles.refund,
+        "10.25",
+        "VND",
+        "",
+        "",
+        "",
+        card.name,
+        "",
+        "Card refund description",
+        "false",
+        importedCreatedAt[3]
+      ],
+      [titles.adjustment]: [
+        "2026-08-14T00:00:00.000Z",
+        "ADJUSTMENT",
+        titles.adjustment,
+        "2",
+        "VND",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "Card credit adjustment description",
+        "false",
+        importedCreatedAt[4]
+      ]
     });
 
     const batch = await prisma.transactionImportBatch.findUniqueOrThrow({
@@ -1282,7 +1580,7 @@ describe("transaction draft PostgreSQL import atomicity", () => {
         toSourceId: card.id
       },
       [titles.adjustment]: {
-        amount: "5.00",
+        amount: "2.00",
         type: "ADJUSTMENT",
         title: titles.adjustment,
         fromSourceId: null,
