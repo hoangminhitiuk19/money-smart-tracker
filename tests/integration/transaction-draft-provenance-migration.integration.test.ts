@@ -1,17 +1,63 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 
-const migrationPath = new URL(
-  "../../prisma/migrations/20260809000000_add_transaction_draft_provenance/migration.sql",
+const migrationsDirectory = new URL(
+  "../../prisma/migrations/",
   import.meta.url
 );
+const baseMigration = "20260809000000_add_transaction_draft_provenance";
 
 const schemasToDrop = new Set<string>();
 
 function quotedIdentifier(value: string) {
   return `"${value.replaceAll('"', '""')}"`;
+}
+
+function sqlStatements(migration: string) {
+  return migration
+    .split(/;\s*(?:\r?\n|$)/)
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+}
+
+async function forwardMigrationStatements() {
+  const entries = await readdir(migrationsDirectory, { withFileTypes: true });
+  const directories = entries
+    .filter((entry) => entry.isDirectory() && entry.name > baseMigration)
+    .map(({ name }) => name)
+    .sort();
+  const migrations = await Promise.all(
+    directories.map((directory) =>
+      readFile(
+        new URL(`${directory}/migration.sql`, migrationsDirectory),
+        "utf8"
+      )
+    )
+  );
+  return migrations.flatMap(sqlStatements);
+}
+
+async function readProvenanceRows(quotedSchema: string) {
+  return prisma.$queryRawUnsafe<
+    Array<{
+      id: string;
+      countTowardFeeWaiverTouched: boolean;
+      qualityRatingTouched: boolean;
+      duplicateAcknowledgementRequired: boolean;
+      invalidMappedFields: unknown;
+    }>
+  >(`
+    SELECT
+      "id",
+      "countTowardFeeWaiverTouched",
+      "qualityRatingTouched",
+      "duplicateAcknowledgementRequired",
+      "invalidMappedFields"
+    FROM ${quotedSchema}."TransactionDraft"
+    ORDER BY "position"
+  `);
 }
 
 afterEach(async () => {
@@ -24,7 +70,7 @@ afterEach(async () => {
 });
 
 describe("transaction draft provenance migration", () => {
-  it("backfills editable legacy overrides, clears, and unacknowledged duplicate findings", async () => {
+  it("backfills a post-base database through forward migration history", async () => {
     const schema = `draft_provenance_${randomUUID().replaceAll("-", "")}`;
     const quotedSchema = quotedIdentifier(schema);
     schemasToDrop.add(schema);
@@ -32,13 +78,6 @@ describe("transaction draft provenance migration", () => {
     await prisma.$executeRawUnsafe(`
       CREATE TABLE ${quotedSchema}."TransactionDraft"
       (LIKE public."TransactionDraft" INCLUDING ALL)
-    `);
-    await prisma.$executeRawUnsafe(`
-      ALTER TABLE ${quotedSchema}."TransactionDraft"
-        DROP COLUMN "countTowardFeeWaiverTouched",
-        DROP COLUMN "qualityRatingTouched",
-        DROP COLUMN "duplicateAcknowledgementRequired",
-        DROP COLUMN "invalidMappedFields"
     `);
     await prisma.$executeRawUnsafe(`
       INSERT INTO ${quotedSchema}."TransactionDraft" (
@@ -65,11 +104,31 @@ describe("transaction draft provenance migration", () => {
         )
     `);
 
-    const migration = await readFile(migrationPath, "utf8");
-    const statements = migration
-      .split(/;\s*(?:\r?\n|$)/)
-      .map((statement) => statement.trim())
-      .filter(Boolean);
+    expect(await readProvenanceRows(quotedSchema)).toEqual([
+      {
+        id: "legacy-clear",
+        countTowardFeeWaiverTouched: false,
+        qualityRatingTouched: false,
+        duplicateAcknowledgementRequired: false,
+        invalidMappedFields: []
+      },
+      {
+        id: "legacy-choice",
+        countTowardFeeWaiverTouched: false,
+        qualityRatingTouched: false,
+        duplicateAcknowledgementRequired: false,
+        invalidMappedFields: []
+      },
+      {
+        id: "legacy-terminal",
+        countTowardFeeWaiverTouched: false,
+        qualityRatingTouched: false,
+        duplicateAcknowledgementRequired: false,
+        invalidMappedFields: []
+      }
+    ]);
+
+    const statements = await forwardMigrationStatements();
     await prisma.$transaction(async (db) => {
       await db.$executeRawUnsafe(
         `SET LOCAL search_path TO ${quotedSchema}, public`
@@ -79,26 +138,7 @@ describe("transaction draft provenance migration", () => {
       }
     });
 
-    const rows = await prisma.$queryRawUnsafe<
-      Array<{
-        id: string;
-        countTowardFeeWaiverTouched: boolean;
-        qualityRatingTouched: boolean;
-        duplicateAcknowledgementRequired: boolean;
-        invalidMappedFields: unknown;
-      }>
-    >(`
-      SELECT
-        "id",
-        "countTowardFeeWaiverTouched",
-        "qualityRatingTouched",
-        "duplicateAcknowledgementRequired",
-        "invalidMappedFields"
-      FROM ${quotedSchema}."TransactionDraft"
-      ORDER BY "position"
-    `);
-
-    expect(rows).toEqual([
+    expect(await readProvenanceRows(quotedSchema)).toEqual([
       {
         id: "legacy-clear",
         countTowardFeeWaiverTouched: true,
