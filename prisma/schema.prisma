@@ -34,6 +34,34 @@ enum TransactionImportBatchStatus {
   IMPORTED
 }
 
+enum InboundMailboxProvider {
+  RESEND
+}
+
+enum InboundMailboxStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum InboundEmailReceiptState {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  IGNORED
+  RETRYABLE_FAILED
+  TERMINAL_FAILED
+}
+
+enum InboundEmailDisposition {
+  TEST_DRAFT_CREATED
+  DUPLICATE
+  UNSUPPORTED
+  OVERSIZED
+  RATE_LIMITED
+  PROVIDER_ERROR
+  PARSER_ERROR
+}
+
 enum CategoryType {
   INCOME
   EXPENSE
@@ -142,6 +170,8 @@ model User {
   activityLogs             ActivityLog[]
   transactionDrafts        TransactionDraft[]
   transactionImportBatches TransactionImportBatch[]
+  inboundMailbox           InboundMailbox?
+  inboundEmailReceipts     InboundEmailReceipt[]
   settings                 UserSettings?
 }
 
@@ -424,11 +454,13 @@ model TransactionDraft {
   rawRow                           Json?
   importBatchId                    String?
   importedTransactionId            String?
+  inboundEmailReceiptId            String?                 @unique
   expiresAt                        DateTime
   createdAt                        DateTime                @default(now())
   updatedAt                        DateTime                @updatedAt
   user                             User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   importBatch                      TransactionImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  inboundEmailReceipt              InboundEmailReceipt?    @relation(fields: [inboundEmailReceiptId], references: [id], onDelete: SetNull)
 
   @@unique([userId, captureKey, position])
   @@index([userId, status])
@@ -452,6 +484,43 @@ model TransactionImportBatch {
 
   @@unique([userId, idempotencyKey])
   @@index([userId, createdAt])
+}
+
+model InboundMailbox {
+  id                String                    @id @default(cuid())
+  userId            String                    @unique
+  provider          InboundMailboxProvider    @default(RESEND)
+  aliasLocalPart    String                    @unique @db.VarChar(64)
+  status            InboundMailboxStatus      @default(ACTIVE)
+  lastDisposition   InboundEmailDisposition?
+  lastReceivedAt    DateTime?
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+  user              User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  receipts          InboundEmailReceipt[]
+
+  @@index([status])
+}
+
+model InboundEmailReceipt {
+  id                  String                   @id @default(cuid())
+  userId              String
+  mailboxId           String
+  providerEventHash   String                   @unique @db.Char(64)
+  providerMessageHash String                   @db.Char(64)
+  state               InboundEmailReceiptState @default(RECEIVED)
+  disposition         InboundEmailDisposition?
+  attemptCount        Int                      @default(0)
+  expiresAt           DateTime
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+  user                User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mailbox             InboundMailbox           @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  draft               TransactionDraft?
+
+  @@unique([mailboxId, providerMessageHash])
+  @@index([userId, state])
+  @@index([expiresAt])
 }
 
 model RateLimitBucket {

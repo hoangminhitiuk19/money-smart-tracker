@@ -134,6 +134,7 @@ function record(
     rawRow: { Amount: "45.00" },
     importBatchId: null,
     importedTransactionId: null,
+    inboundEmailReceiptId: null,
     expiresAt: new Date("2026-09-02T00:00:00.000Z"),
     createdAt: new Date("2026-08-03T00:00:00.000Z"),
     updatedAt: new Date("2026-08-03T00:00:00.000Z"),
