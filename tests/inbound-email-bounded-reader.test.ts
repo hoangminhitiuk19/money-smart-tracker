@@ -28,6 +28,48 @@ function requestWithChunks(
 }
 
 describe("bounded inbound-email readers", () => {
+  it.each([
+    {
+      entryPoint: "request",
+      createBody: () =>
+        new Request("http://localhost", {
+          method: "POST",
+          body: "locked request"
+        }),
+      read: (body: Request | Response) =>
+        readBoundedRequestText(body as Request, 100)
+    },
+    {
+      entryPoint: "response",
+      createBody: () => new Response("locked response"),
+      read: (body: Request | Response) =>
+        readBoundedResponseText(body as Response, 100)
+    }
+  ])(
+    "maps a caller-locked $entryPoint body without releasing its lock",
+    async ({ createBody, read }) => {
+      const body = createBody();
+      const heldReader = body.body!.getReader();
+
+      try {
+        const rejection = read(body).catch((error: unknown) => error);
+
+        await expect(rejection).resolves.toEqual({
+          code: "BODY_READ_FAILED"
+        });
+        await expect(rejection).resolves.toSatisfy(
+          (error: unknown) =>
+            typeof error === "object" &&
+            error !== null &&
+            Object.keys(error).join(",") === "code"
+        );
+        expect(body.body!.locked).toBe(true);
+      } finally {
+        heldReader.releaseLock();
+      }
+    }
+  );
+
   it("rejects a declared request length before trusting its small body", async () => {
     const rejection = readBoundedRequestText(
       new Request("http://localhost", {

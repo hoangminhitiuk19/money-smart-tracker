@@ -52,7 +52,13 @@ async function readBoundedBody(
     return "";
   }
 
-  const reader = body.getReader();
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  try {
+    reader = body.getReader();
+  } catch {
+    throw safeError("BODY_READ_FAILED");
+  }
+
   const decoder = new TextDecoder();
   const textChunks: string[] = [];
   let totalBytes = 0;
