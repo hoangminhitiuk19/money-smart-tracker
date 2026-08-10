@@ -48,8 +48,12 @@ mobile, loading, empty-state, receipt, and settings checks.
 
 ## Security and Domain Constraints
 
-- Use only `DATABASE_URL`, `NEXTAUTH_SECRET`, and `NEXTAUTH_URL`. Never use
-  `AUTH_SECRET` or `AUTH_URL`, and never commit real secrets.
+- Use only `DATABASE_URL`, `NEXTAUTH_SECRET`, and `NEXTAUTH_URL`, with the
+  optional inbound-email testing group as the sole exception:
+  `INBOUND_EMAIL_API_KEY`, `INBOUND_EMAIL_WEBHOOK_SECRET`, and
+  `INBOUND_EMAIL_DOMAIN`. Configure that group all-or-none, keep
+  `NEXTAUTH_SECRET` and `NEXTAUTH_URL` exact, never use `AUTH_SECRET` or
+  `AUTH_URL`, and never commit real secrets.
 - Obtain `userId` from `requireAuth()` only. Scope every private query by it,
   verify ownership before reads or mutations, and ownership-check every
   referenced foreign key.

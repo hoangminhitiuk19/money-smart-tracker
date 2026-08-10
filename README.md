@@ -23,6 +23,15 @@ NEXTAUTH_SECRET=
 NEXTAUTH_URL=
 ```
 
+For optional inbound-email testing only, configure this entire group or leave
+the entire group absent:
+
+```bash
+INBOUND_EMAIL_API_KEY=
+INBOUND_EMAIL_WEBHOOK_SECRET=
+INBOUND_EMAIL_DOMAIN=
+```
+
 Do not commit `.env` or any file containing real secret values.
 
 ## Vercel and Neon release runbook
@@ -35,15 +44,17 @@ npm ci
 npm run verify
 ```
 
-Configure only these environment variables in each environment:
+Configure these foundational environment variables in each environment. The
+optional inbound-email testing group is described below and is not authorized
+for Production.
 
 <!-- markdownlint-disable MD013 -->
 
-| Environment | `DATABASE_URL` | `NEXTAUTH_SECRET` | `NEXTAUTH_URL` |
-| --- | --- | --- | --- |
-| Local | `postgresql://<local-user>:<local-password>@<local-endpoint>-pooler.<neon-host>/<local-database>?sslmode=require` | `<generated-local-secret-at-least-32-characters>` | `http://localhost:3000` |
-| Vercel Preview | `postgresql://<preview-user>:<preview-password>@<preview-endpoint>-pooler.<neon-host>/<preview-database>?sslmode=require` | `<generated-preview-secret-at-least-32-characters>` | `https://<preview-deployment-or-branch-url>` |
-| Vercel Production | `postgresql://<production-user>:<production-password>@<production-endpoint>-pooler.<neon-host>/<production-database>?sslmode=require` | `<generated-production-secret-at-least-32-characters>` | `https://<canonical-production-domain>` |
+| Environment | `DATABASE_URL` | `NEXTAUTH_SECRET` | `NEXTAUTH_URL` | Inbound-email testing group |
+| --- | --- | --- | --- | --- |
+| Local | `postgresql://<local-user>:<local-password>@<local-endpoint>-pooler.<neon-host>/<local-database>?sslmode=require` | `<generated-local-secret-at-least-32-characters>` | `http://localhost:3000` | Optional complete testing-only group |
+| Vercel Preview | `postgresql://<preview-user>:<preview-password>@<preview-endpoint>-pooler.<neon-host>/<preview-database>?sslmode=require` | `<generated-preview-secret-at-least-32-characters>` | `https://<preview-deployment-or-branch-url>` | Optional complete testing-only group |
+| Vercel Production | `postgresql://<production-user>:<production-password>@<production-endpoint>-pooler.<neon-host>/<production-database>?sslmode=require` | `<generated-production-secret-at-least-32-characters>` | `https://<canonical-production-domain>` | Not authorized |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -56,6 +67,13 @@ above are placeholders, never real credentials or secrets.
 For application traffic, use Neon’s pooled connection URL: its hostname includes
 `-pooler`. See Neon’s [connection-pooling guidance](https://neon.com/docs/connect/connection-pooling).
 Never commit database URLs or secret values.
+
+## Free inbound-email testing
+
+The inbound-email group is optional: leave all three values absent unless this
+testing foundation is explicitly enabled, and configure all three together when
+it is. It accepts synthetic or redacted messages only. This testing setup does
+not authorize Production use.
 
 Before deploying, run `npm run verify`. During the release, run migrations with:
 
