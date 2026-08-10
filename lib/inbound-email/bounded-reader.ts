@@ -10,7 +10,9 @@ function safeError(code: BoundedReaderError["code"]): BoundedReaderError {
   return error;
 }
 
-function isBoundedReaderError(error: unknown): error is BoundedReaderError {
+export function isBoundedReaderError(
+  error: unknown
+): error is BoundedReaderError {
   return typeof error === "object" && error !== null && internalErrors.has(error);
 }
 

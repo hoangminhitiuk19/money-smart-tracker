@@ -2,7 +2,10 @@ import { Resend } from "resend";
 import { z } from "zod";
 
 import type { InboundEmailConfig } from "@/lib/env";
-import { readBoundedResponseText } from "@/lib/inbound-email/bounded-reader";
+import {
+  isBoundedReaderError,
+  readBoundedResponseText
+} from "@/lib/inbound-email/bounded-reader";
 import {
   MAX_INBOUND_CONTENT_BYTES,
   MAX_PROVIDER_RESPONSE_BYTES
@@ -26,7 +29,7 @@ type ProviderErrorCode =
   | "PROVIDER_ERROR"
   | "PAYLOAD_TOO_LARGE";
 
-const eventTypeSchema = z.object({ type: z.string() }).passthrough();
+const eventTypeSchema = z.object({ type: z.string() });
 
 const receivedEventSchema = z
   .object({
@@ -95,35 +98,62 @@ export class ResendInboundEmailProvider implements InboundEmailProvider {
       throw safeError("INVALID_SIGNATURE");
     }
 
-    const eventType = eventTypeSchema.safeParse(verified);
-    if (!eventType.success) {
+    let parsed:
+      | { kind: "invalid" }
+      | { kind: "unsupported" }
+      | { kind: "notification"; notification: InboundNotification };
+    try {
+      const eventType = eventTypeSchema.safeParse(verified);
+      if (!eventType.success) {
+        parsed = { kind: "invalid" };
+      } else if (eventType.data.type !== "email.received") {
+        parsed = { kind: "unsupported" };
+      } else {
+        const event = receivedEventSchema.safeParse(verified);
+        parsed = event.success
+          ? {
+              kind: "notification",
+              notification: {
+                eventId: id,
+                messageId: event.data.data.email_id,
+                recipients: event.data.data.to,
+                occurredAt: new Date(event.data.created_at)
+              }
+            }
+          : { kind: "invalid" };
+      }
+    } catch {
+      parsed = { kind: "invalid" };
+    }
+
+    if (parsed.kind === "invalid") {
       throw safeError("INVALID_NOTIFICATION");
     }
-    if (eventType.data.type !== "email.received") {
+    if (parsed.kind === "unsupported") {
       throw safeError("UNSUPPORTED_EVENT");
     }
-
-    const event = receivedEventSchema.safeParse(verified);
-    if (!event.success) {
-      throw safeError("INVALID_NOTIFICATION");
-    }
-
-    return {
-      eventId: id,
-      messageId: event.data.data.email_id,
-      recipients: event.data.data.to,
-      occurredAt: new Date(event.data.created_at)
-    };
+    return parsed.notification;
   }
 
   async retrieveMessage(
     messageId: string,
     signal: AbortSignal
   ): Promise<InboundMessage> {
+    let requestUrl: string;
+    try {
+      const url = new URL(
+        `https://api.resend.com/emails/receiving/${encodeURIComponent(messageId)}`
+      );
+      url.searchParams.set("html_format", "cid");
+      requestUrl = url.toString();
+    } catch {
+      throw safeError("PROVIDER_ERROR");
+    }
+
     let response: Response;
     try {
       response = await this.dependencies.fetch(
-        `https://api.resend.com/emails/receiving/${encodeURIComponent(messageId)}`,
+        requestUrl,
         {
           method: "GET",
           headers: { Authorization: `Bearer ${this.config.apiKey}` },
@@ -134,7 +164,14 @@ export class ResendInboundEmailProvider implements InboundEmailProvider {
       throw safeError("PROVIDER_ERROR");
     }
 
-    if (!response.ok) {
+    let responseOk: boolean;
+    try {
+      responseOk = response.ok;
+    } catch {
+      throw safeError("PROVIDER_ERROR");
+    }
+
+    if (!responseOk) {
       try {
         await response.body?.cancel();
       } catch {
@@ -151,9 +188,7 @@ export class ResendInboundEmailProvider implements InboundEmailProvider {
       );
     } catch (error) {
       if (
-        typeof error === "object" &&
-        error !== null &&
-        "code" in error &&
+        isBoundedReaderError(error) &&
         error.code === "PAYLOAD_TOO_LARGE"
       ) {
         throw safeError("PAYLOAD_TOO_LARGE");

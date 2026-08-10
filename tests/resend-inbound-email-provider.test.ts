@@ -130,6 +130,27 @@ describe("ResendInboundEmailProvider", () => {
     expectOnlyCode(error, "INVALID_SIGNATURE");
   });
 
+  it("maps hostile access to a verified payload to a data-free notification error", () => {
+    const verifiedPayload = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("synthetic verified payload private detail");
+        }
+      }
+    );
+    const { provider } = createProvider({ verify: () => verifiedPayload });
+
+    let error: unknown;
+    try {
+      provider.verifyNotification("{}", signatureHeaders);
+    } catch (caught) {
+      error = caught;
+    }
+
+    expectOnlyCode(error, "INVALID_NOTIFICATION");
+  });
+
   it.each([
     {
       case: "non-UUID message ID",
@@ -204,11 +225,18 @@ describe("ResendInboundEmailProvider", () => {
   });
 
   it("rejects a verified non-email event before provider retrieval", () => {
+    const unsupportedEvent = { type: "domain.updated" } as {
+      type: string;
+      data?: unknown;
+    };
+    Object.defineProperty(unsupportedEvent, "data", {
+      enumerable: true,
+      get() {
+        throw new Error("unsupported event data must not be accessed");
+      }
+    });
     const { provider, fetch } = createProvider({
-      verify: () => ({
-        type: "domain.updated",
-        data: { provider_private_shape: "must-not-be-read" }
-      })
+      verify: () => unsupportedEvent
     });
 
     let error: unknown;
@@ -242,13 +270,44 @@ describe("ResendInboundEmailProvider", () => {
       attachmentCount: 0
     });
     expect(fetch).toHaveBeenCalledWith(
-      "https://api.resend.com/emails/receiving/synthetic%2Fid%20with%20spaces%3Fprivate%3Dtrue",
+      "https://api.resend.com/emails/receiving/synthetic%2Fid%20with%20spaces%3Fprivate%3Dtrue?html_format=cid",
       {
         method: "GET",
         headers: { Authorization: "Bearer re_test_key" },
         signal
       }
     );
+  });
+
+  it("requests CID HTML so inline attachment bytes are not embedded", async () => {
+    const { provider } = createProvider({
+      fetch: async (input) => {
+        const requestedUrl = String(input);
+        const html = requestedUrl.endsWith("?html_format=cid")
+          ? '<img src="cid:synthetic-inline-image">'
+          : '<img src="data:image/png;base64,c3ludGhldGljLXByaXZhdGUtYnl0ZXM=">';
+
+        return new Response(
+          JSON.stringify({
+            text: null,
+            html,
+            attachments: [{ id: "att_synthetic_inline" }]
+          })
+        );
+      }
+    });
+
+    const message = await provider.retrieveMessage(
+      "4d51a650-e7a6-4a61-bf49-3a1cf1eaf830",
+      new AbortController().signal
+    );
+
+    expect(message).toEqual({
+      text: null,
+      html: '<img src="cid:synthetic-inline-image">',
+      attachmentCount: 1
+    });
+    expect(message.html).not.toContain("data:image/");
   });
 
   it("counts attachment metadata without following attachment or raw URLs", async () => {
@@ -345,6 +404,83 @@ describe("ResendInboundEmailProvider", () => {
 
     expectOnlyCode(error, "PROVIDER_ERROR");
   });
+
+  it("maps hostile access to a resolved response to a data-free provider error", async () => {
+    const hostileResponse = new Proxy(
+      {} as Response,
+      {
+        get(_target, property) {
+          if (property === "ok") {
+            throw new Error("synthetic response property private detail");
+          }
+          return undefined;
+        }
+      }
+    );
+    const { provider } = createProvider({
+      fetch: async () => hostileResponse
+    });
+
+    const error = await provider
+      .retrieveMessage(
+        "4d51a650-e7a6-4a61-bf49-3a1cf1eaf830",
+        new AbortController().signal
+      )
+      .catch((caught: unknown) => caught);
+
+    expectOnlyCode(error, "PROVIDER_ERROR");
+  });
+
+  it.each([
+    {
+      case: "spoofs the size code",
+      thrown: { code: "PAYLOAD_TOO_LARGE", privateDetail: "synthetic" }
+    },
+    {
+      case: "traps property inspection",
+      thrown: new Proxy(
+        {},
+        {
+          has() {
+            throw new Error("synthetic has trap private detail");
+          },
+          get() {
+            throw new Error("synthetic get trap private detail");
+          }
+        }
+      )
+    }
+  ])(
+    "does not trust a foreign reader failure that $case",
+    async ({ thrown }) => {
+      const hostileResponse = new Proxy(
+        {} as Response,
+        {
+          get(_target, property) {
+            if (property === "ok") {
+              return true;
+            }
+            if (property === "body") {
+              throw thrown;
+            }
+            return undefined;
+          }
+        }
+      );
+      const { provider } = createProvider({
+        fetch: async () => hostileResponse
+      });
+
+      const error = await provider
+        .retrieveMessage(
+          "4d51a650-e7a6-4a61-bf49-3a1cf1eaf830",
+          new AbortController().signal
+        )
+        .catch((caught: unknown) => caught);
+
+      expectOnlyCode(error, "PROVIDER_ERROR");
+    }
+  );
 
   it.each([
     {
