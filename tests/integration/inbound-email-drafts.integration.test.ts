@@ -111,6 +111,23 @@ type GateCleanup = () => Promise<void>;
 
 const TEST_GATE_NAMESPACE_MIN = 219_701;
 const TEST_GATE_NAMESPACE_MAX = 219_707;
+const GATE_SUFFIX_PATTERN = /^[0-9a-f]{32}$/;
+const INBOUND_GATE_FUNCTION_PATTERN =
+  /^gate_inbound_mailbox_[0-9a-f]{32}$/;
+const INBOUND_GATE_TRIGGER_PATTERN =
+  /^gate_inbound_mailbox_trigger_[0-9a-f]{32}$/;
+const DRAFT_GATE_FUNCTION_PATTERN =
+  /^gate_email_draft_insert_[0-9a-f]{32}$/;
+const DRAFT_GATE_TRIGGER_PATTERN =
+  /^gate_email_draft_trigger_[0-9a-f]{32}$/;
+const INBOUND_GATE_FUNCTION_SQL_PATTERN =
+  "^gate_inbound_mailbox_[0-9a-f]{32}$";
+const INBOUND_GATE_TRIGGER_SQL_PATTERN =
+  "^gate_inbound_mailbox_trigger_[0-9a-f]{32}$";
+const DRAFT_GATE_FUNCTION_SQL_PATTERN =
+  "^gate_email_draft_insert_[0-9a-f]{32}$";
+const DRAFT_GATE_TRIGGER_SQL_PATTERN =
+  "^gate_email_draft_trigger_[0-9a-f]{32}$";
 
 function sqlLiteral(value: string) {
   return value.replaceAll("'", "''");
@@ -120,24 +137,62 @@ function sqlIdentifier(value: string) {
   return `"${value.replaceAll('"', '""')}"`;
 }
 
+async function currentSchemaName() {
+  const [schema] = await prisma.$queryRaw<Array<{ name: string }>>`
+    SELECT current_schema() AS "name"
+  `;
+  if (!schema) throw new Error("Synthetic test schema is unavailable.");
+  return schema.name;
+}
+
+function generatedGateName(prefix: string, suffix: string) {
+  if (!GATE_SUFFIX_PATTERN.test(suffix)) {
+    throw new Error("Synthetic gate suffix is invalid.");
+  }
+  return `${prefix}${suffix}`;
+}
+
+function isGeneratedGateFunctionName(name: string) {
+  return (
+    INBOUND_GATE_FUNCTION_PATTERN.test(name) ||
+    DRAFT_GATE_FUNCTION_PATTERN.test(name)
+  );
+}
+
+function expectedGateTableForTrigger(name: string) {
+  if (INBOUND_GATE_TRIGGER_PATTERN.test(name)) return "InboundMailbox";
+  if (DRAFT_GATE_TRIGGER_PATTERN.test(name)) return "TransactionDraft";
+  return null;
+}
+
 function databaseGateCleanup(
+  schemaName: string,
   tableName: "InboundMailbox" | "TransactionDraft",
   triggerName: string,
   functionName: string
 ): GateCleanup {
   return async () => {
     let firstError: unknown;
+    const cleanupSchemaName = await currentSchemaName();
+
+    if (
+      schemaName !== cleanupSchemaName ||
+      !isGeneratedGateFunctionName(functionName) ||
+      expectedGateTableForTrigger(triggerName) !== tableName
+    ) {
+      throw new Error("Synthetic gate cleanup target is invalid.");
+    }
 
     try {
       await prisma.$executeRawUnsafe(
-        `DROP TRIGGER IF EXISTS ${sqlIdentifier(triggerName)} ON ${sqlIdentifier(tableName)}`
+        `DROP TRIGGER IF EXISTS ${sqlIdentifier(triggerName)} ON ${sqlIdentifier(schemaName)}.${sqlIdentifier(tableName)}`
       );
     } catch (error) {
       firstError = error;
     }
     try {
       await prisma.$executeRawUnsafe(
-        `DROP FUNCTION IF EXISTS ${sqlIdentifier(functionName)}()`
+        `DROP FUNCTION IF EXISTS ${sqlIdentifier(schemaName)}.${sqlIdentifier(functionName)}()`
       );
     } catch (error) {
       firstError ??= error;
@@ -153,13 +208,18 @@ async function installMailboxLifecycleGate(
   gateNamespace: number,
   gateKey: number,
   markerNamespace: number,
-  markerKey: number
+  markerKey: number,
+  suffix = randomUUID().replaceAll("-", "")
 ) {
-  const suffix = randomUUID().replaceAll("-", "");
-  const functionName = `gate_inbound_mailbox_${suffix}`;
-  const triggerName = `gate_inbound_mailbox_trigger_${suffix}`;
+  const schemaName = await currentSchemaName();
+  const functionName = generatedGateName("gate_inbound_mailbox_", suffix);
+  const triggerName = generatedGateName(
+    "gate_inbound_mailbox_trigger_",
+    suffix
+  );
   const rowId = sqlLiteral(mailboxId);
   const cleanup = databaseGateCleanup(
+    schemaName,
     "InboundMailbox",
     triggerName,
     functionName
@@ -168,7 +228,7 @@ async function installMailboxLifecycleGate(
 
   try {
     await prisma.$executeRawUnsafe(`
-      CREATE FUNCTION "${functionName}"() RETURNS trigger
+      CREATE FUNCTION ${sqlIdentifier(schemaName)}.${sqlIdentifier(functionName)}() RETURNS trigger
       LANGUAGE plpgsql AS $$
       BEGIN
         IF OLD."id" = '${rowId}' THEN
@@ -181,9 +241,9 @@ async function installMailboxLifecycleGate(
     `);
     functionCreated = true;
     await prisma.$executeRawUnsafe(`
-      CREATE TRIGGER "${triggerName}"
-      BEFORE ${event} ON "InboundMailbox"
-      FOR EACH ROW EXECUTE FUNCTION "${functionName}"();
+      CREATE TRIGGER ${sqlIdentifier(triggerName)}
+      BEFORE ${event} ON ${sqlIdentifier(schemaName)}."InboundMailbox"
+      FOR EACH ROW EXECUTE FUNCTION ${sqlIdentifier(schemaName)}.${sqlIdentifier(functionName)}();
     `);
     return cleanup;
   } catch (error) {
@@ -206,13 +266,15 @@ async function installDraftInsertGate(
   gateNamespace: number,
   gateKey: number,
   markerNamespace: number,
-  markerKey: number
+  markerKey: number,
+  suffix = randomUUID().replaceAll("-", "")
 ) {
-  const suffix = randomUUID().replaceAll("-", "");
-  const functionName = `gate_email_draft_insert_${suffix}`;
-  const triggerName = `gate_email_draft_insert_trigger_${suffix}`;
+  const schemaName = await currentSchemaName();
+  const functionName = generatedGateName("gate_email_draft_insert_", suffix);
+  const triggerName = generatedGateName("gate_email_draft_trigger_", suffix);
   const ownedReceiptId = sqlLiteral(receiptId);
   const cleanup = databaseGateCleanup(
+    schemaName,
     "TransactionDraft",
     triggerName,
     functionName
@@ -221,7 +283,7 @@ async function installDraftInsertGate(
 
   try {
     await prisma.$executeRawUnsafe(`
-      CREATE FUNCTION "${functionName}"() RETURNS trigger
+      CREATE FUNCTION ${sqlIdentifier(schemaName)}.${sqlIdentifier(functionName)}() RETURNS trigger
       LANGUAGE plpgsql AS $$
       BEGIN
         IF NEW."inboundEmailReceiptId" = '${ownedReceiptId}' THEN
@@ -234,9 +296,9 @@ async function installDraftInsertGate(
     `);
     functionCreated = true;
     await prisma.$executeRawUnsafe(`
-      CREATE TRIGGER "${triggerName}"
-      BEFORE INSERT ON "TransactionDraft"
-      FOR EACH ROW EXECUTE FUNCTION "${functionName}"();
+      CREATE TRIGGER ${sqlIdentifier(triggerName)}
+      BEFORE INSERT ON ${sqlIdentifier(schemaName)}."TransactionDraft"
+      FOR EACH ROW EXECUTE FUNCTION ${sqlIdentifier(schemaName)}.${sqlIdentifier(functionName)}();
     `);
     return cleanup;
   } catch (error) {
@@ -409,8 +471,8 @@ async function financialSnapshot(
 
 type TestGateResources = {
   advisoryLocks: Array<{ pid: number }>;
-  functions: Array<{ name: string }>;
-  triggers: Array<{ name: string; tableName: string }>;
+  functions: Array<{ name: string; schemaName: string }>;
+  triggers: Array<{ name: string; schemaName: string; tableName: string }>;
 };
 
 async function inspectTestGateResources(): Promise<TestGateResources> {
@@ -426,26 +488,39 @@ async function inspectTestGateResources(): Promise<TestGateResources> {
         )
         AND pid <> pg_backend_pid()
     `,
-    prisma.$queryRaw<Array<{ name: string }>>`
-      SELECT procedure.proname AS "name"
+    prisma.$queryRaw<Array<{ name: string; schemaName: string }>>`
+      SELECT
+        procedure.proname AS "name",
+        namespace.nspname AS "schemaName"
       FROM pg_proc AS procedure
       JOIN pg_namespace AS namespace
         ON namespace.oid = procedure.pronamespace
       WHERE namespace.nspname = current_schema()
         AND (
-          procedure.proname LIKE 'gate_inbound_mailbox_%'
-          OR procedure.proname LIKE 'gate_email_draft_insert_%'
+          procedure.proname ~ ${INBOUND_GATE_FUNCTION_SQL_PATTERN}
+          OR procedure.proname ~ ${DRAFT_GATE_FUNCTION_SQL_PATTERN}
         )
     `,
-    prisma.$queryRaw<Array<{ name: string; tableName: string }>>`
-      SELECT trigger.tgname AS "name", relation.relname AS "tableName"
+    prisma.$queryRaw<
+      Array<{ name: string; schemaName: string; tableName: string }>
+    >`
+      SELECT
+        trigger.tgname AS "name",
+        namespace.nspname AS "schemaName",
+        relation.relname AS "tableName"
       FROM pg_trigger AS trigger
       JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
       JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
       WHERE namespace.nspname = current_schema()
         AND (
-          trigger.tgname LIKE 'gate_inbound_mailbox_trigger_%'
-          OR trigger.tgname LIKE 'gate_email_draft_insert_trigger_%'
+          (
+            relation.relname = 'InboundMailbox'
+            AND trigger.tgname ~ ${INBOUND_GATE_TRIGGER_SQL_PATTERN}
+          )
+          OR (
+            relation.relname = 'TransactionDraft'
+            AND trigger.tgname ~ ${DRAFT_GATE_TRIGGER_SQL_PATTERN}
+          )
         )
     `
   ]);
@@ -455,6 +530,7 @@ async function inspectTestGateResources(): Promise<TestGateResources> {
 
 async function recoverTestGateResources(resources: TestGateResources) {
   const cleanupErrors: unknown[] = [];
+  const schemaName = await currentSchemaName();
 
   for (const { pid } of resources.advisoryLocks) {
     try {
@@ -483,18 +559,34 @@ async function recoverTestGateResources(resources: TestGateResources) {
   }
 
   for (const trigger of resources.triggers) {
+    if (
+      trigger.schemaName !== schemaName ||
+      expectedGateTableForTrigger(trigger.name) !== trigger.tableName
+    ) {
+      cleanupErrors.push(new Error("Synthetic trigger cleanup target rejected."));
+      continue;
+    }
     try {
       await prisma.$executeRawUnsafe(
-        `DROP TRIGGER IF EXISTS ${sqlIdentifier(trigger.name)} ON ${sqlIdentifier(trigger.tableName)}`
+        `DROP TRIGGER IF EXISTS ${sqlIdentifier(trigger.name)} ON ${sqlIdentifier(trigger.schemaName)}.${sqlIdentifier(trigger.tableName)}`
       );
     } catch (error) {
       cleanupErrors.push(error);
     }
   }
   for (const gateFunction of resources.functions) {
+    if (
+      gateFunction.schemaName !== schemaName ||
+      !isGeneratedGateFunctionName(gateFunction.name)
+    ) {
+      cleanupErrors.push(
+        new Error("Synthetic function cleanup target rejected.")
+      );
+      continue;
+    }
     try {
       await prisma.$executeRawUnsafe(
-        `DROP FUNCTION IF EXISTS ${sqlIdentifier(gateFunction.name)}()`
+        `DROP FUNCTION IF EXISTS ${sqlIdentifier(gateFunction.schemaName)}.${sqlIdentifier(gateFunction.name)}()`
       );
     } catch (error) {
       cleanupErrors.push(error);
@@ -537,11 +629,118 @@ afterAll(async () => {
 });
 
 describe("verified inbound EMAIL drafts", () => {
+  it("recovers exact generated gate objects without dropping wildcard decoys", async () => {
+    const suffix = randomUUID().replaceAll("-", "");
+    const genuineFunction = `gate_inbound_mailbox_${suffix}`;
+    const genuineTrigger = `gate_inbound_mailbox_trigger_${suffix}`;
+    const decoyFunction = "gateXinboundYmailboxZdecoy";
+    const decoyTrigger = "gateXinboundYmailboxZtriggerQdecoy";
+    const [schema] = await prisma.$queryRaw<Array<{ name: string }>>`
+      SELECT current_schema() AS "name"
+    `;
+    if (!schema) throw new Error("Synthetic test schema is unavailable.");
+    const qualifiedFunction = (name: string) =>
+      `${sqlIdentifier(schema.name)}.${sqlIdentifier(name)}`;
+
+    try {
+      await prisma.$executeRawUnsafe(`
+        CREATE FUNCTION ${qualifiedFunction(decoyFunction)}() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE TRIGGER ${sqlIdentifier(decoyTrigger)}
+        BEFORE UPDATE ON ${sqlIdentifier(schema.name)}."User"
+        FOR EACH ROW EXECUTE FUNCTION ${qualifiedFunction(decoyFunction)}()
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE FUNCTION ${qualifiedFunction(genuineFunction)}() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE TRIGGER ${sqlIdentifier(genuineTrigger)}
+        BEFORE UPDATE ON ${sqlIdentifier(schema.name)}."InboundMailbox"
+        FOR EACH ROW EXECUTE FUNCTION ${qualifiedFunction(genuineFunction)}()
+      `);
+
+      const resources = await inspectTestGateResources();
+      await expect(recoverTestGateResources(resources)).resolves.toBe(0);
+
+      const [state] = await prisma.$queryRaw<
+        Array<{
+          decoyFunction: boolean;
+          decoyTrigger: boolean;
+          genuineFunction: boolean;
+          genuineTrigger: boolean;
+        }>
+      >`
+        SELECT
+          EXISTS (
+            SELECT 1
+            FROM pg_proc AS procedure
+            JOIN pg_namespace AS namespace
+              ON namespace.oid = procedure.pronamespace
+            WHERE namespace.nspname = ${schema.name}
+              AND procedure.proname = ${decoyFunction}
+          ) AS "decoyFunction",
+          EXISTS (
+            SELECT 1
+            FROM pg_trigger AS trigger
+            JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+            JOIN pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = ${schema.name}
+              AND relation.relname = 'User'
+              AND trigger.tgname = ${decoyTrigger}
+          ) AS "decoyTrigger",
+          EXISTS (
+            SELECT 1
+            FROM pg_proc AS procedure
+            JOIN pg_namespace AS namespace
+              ON namespace.oid = procedure.pronamespace
+            WHERE namespace.nspname = ${schema.name}
+              AND procedure.proname = ${genuineFunction}
+          ) AS "genuineFunction",
+          EXISTS (
+            SELECT 1
+            FROM pg_trigger AS trigger
+            JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+            JOIN pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = ${schema.name}
+              AND relation.relname = 'InboundMailbox'
+              AND trigger.tgname = ${genuineTrigger}
+          ) AS "genuineTrigger"
+      `;
+      expect(state).toEqual({
+        decoyFunction: true,
+        decoyTrigger: true,
+        genuineFunction: false,
+        genuineTrigger: false
+      });
+    } finally {
+      await prisma.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS ${sqlIdentifier(decoyTrigger)} ON ${sqlIdentifier(schema.name)}."User"`
+      );
+      await prisma.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS ${sqlIdentifier(genuineTrigger)} ON ${sqlIdentifier(schema.name)}."InboundMailbox"`
+      );
+      await prisma.$executeRawUnsafe(
+        `DROP FUNCTION IF EXISTS ${qualifiedFunction(decoyFunction)}()`
+      );
+      await prisma.$executeRawUnsafe(
+        `DROP FUNCTION IF EXISTS ${qualifiedFunction(genuineFunction)}()`
+      );
+    }
+  });
+
   it("removes a gate function when trigger installation fails", async () => {
     const gateNamespace = 219_705;
     const markerNamespace = 219_706;
     const gateKey = Math.floor(Math.random() * 1_000_000_000) + 1;
     const markerKey = Math.floor(Math.random() * 1_000_000_000) + 1;
+    const suffix = randomUUID().replaceAll("-", "");
+    const functionName = `gate_inbound_mailbox_${suffix}`;
+    const schemaName = await currentSchemaName();
 
     try {
       await expect(
@@ -551,26 +750,47 @@ describe("verified inbound EMAIL drafts", () => {
           gateNamespace,
           gateKey,
           markerNamespace,
-          markerKey
+          markerKey,
+          suffix
         )
       ).rejects.toThrow();
 
-      const leakedFunctions = await prisma.$queryRaw<Array<{ name: string }>>`
-        SELECT proname AS "name"
-        FROM pg_proc
-        WHERE proname LIKE 'gate_inbound_mailbox_%'
+      const leakedFunctions = await prisma.$queryRaw<
+        Array<{ name: string; schemaName: string }>
+      >`
+        SELECT
+          procedure.proname AS "name",
+          namespace.nspname AS "schemaName"
+        FROM pg_proc AS procedure
+        JOIN pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = ${schemaName}
+          AND procedure.proname = ${functionName}
       `;
       expect(leakedFunctions).toEqual([]);
     } finally {
-      const leakedFunctions = await prisma.$queryRaw<Array<{ name: string }>>`
-        SELECT proname AS "name"
-        FROM pg_proc
-        WHERE proname LIKE 'gate_inbound_mailbox_%'
+      const leakedFunctions = await prisma.$queryRaw<
+        Array<{ name: string; schemaName: string }>
+      >`
+        SELECT
+          procedure.proname AS "name",
+          namespace.nspname AS "schemaName"
+        FROM pg_proc AS procedure
+        JOIN pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = ${schemaName}
+          AND procedure.proname = ${functionName}
       `;
-      for (const { name } of leakedFunctions) {
-        const quotedName = name.replaceAll('"', '""');
+      for (const leaked of leakedFunctions) {
+        if (
+          leaked.schemaName !== schemaName ||
+          leaked.name !== functionName ||
+          !INBOUND_GATE_FUNCTION_PATTERN.test(leaked.name)
+        ) {
+          throw new Error("Synthetic failure cleanup target rejected.");
+        }
         await prisma.$executeRawUnsafe(
-          `DROP FUNCTION IF EXISTS "${quotedName}"()`
+          `DROP FUNCTION IF EXISTS ${sqlIdentifier(leaked.schemaName)}.${sqlIdentifier(leaked.name)}()`
         );
       }
     }
