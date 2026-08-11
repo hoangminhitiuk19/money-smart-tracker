@@ -19,6 +19,7 @@ import {
 import { MAX_DRAFT_ROWS, MAX_PASTE_BYTES } from "@/lib/transaction-drafts/paste";
 import { cleanupExpiredTransactionDrafts } from "@/lib/transaction-drafts/retention";
 import {
+  storedTransactionDraftInputSchema,
   transactionDraftInputSchema,
   transactionDraftPatchSchema,
   type DraftFieldIssue,
@@ -197,7 +198,9 @@ async function reassessCapture(
     orderBy: [{ position: "asc" }, { id: "asc" }]
   });
   const parsedInputs = records.map((record) =>
-    transactionDraftInputSchema.safeParse(transactionDraftRecordToInput(record))
+    storedTransactionDraftInputSchema.safeParse(
+      transactionDraftRecordToInput(record)
+    )
   );
   const validInputs = parsedInputs.flatMap((result) =>
     result.success ? [result.data] : []
@@ -578,7 +581,7 @@ export async function updateTransactionDraft(
         return actionFailure(DRAFT_NOT_FOUND_ERROR);
       }
 
-      const merged = transactionDraftInputSchema.safeParse({
+      const merged = storedTransactionDraftInputSchema.safeParse({
         ...transactionDraftRecordToInput(existing),
         ...parsedPatch.data,
         invalidMappedFields: (
@@ -779,7 +782,7 @@ export async function importTransactionDrafts(
 
       const origin = drafts[0].origin;
       if (drafts.some((draft) => draft.origin !== origin)) {
-        return actionFailure("Save QUICK and PASTE drafts in separate batches.");
+        return actionFailure("Save drafts from one source in each batch.");
       }
 
       const parsedRows = drafts.map((draft) => ({

@@ -113,6 +113,11 @@ export const transactionDraftInputSchema = z
   })
   .strict();
 
+export const storedTransactionDraftInputSchema =
+  transactionDraftInputSchema.extend({
+    origin: z.nativeEnum(TransactionDraftOrigin)
+  });
+
 export const transactionDraftPatchSchema = transactionDraftInputSchema
   .omit({
     captureKey: true,

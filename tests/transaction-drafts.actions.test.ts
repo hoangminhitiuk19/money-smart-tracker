@@ -115,6 +115,7 @@ const fakeDb = {
   financialProject: { findMany: vi.fn(async () => []) },
   transaction: { findMany: vi.fn(async () => []) },
   recurringPayment: { findMany: vi.fn(async () => []) },
+  transactionImportBatch: { findUnique: vi.fn(async () => null) },
   transactionDraft: {
     findMany: vi.fn(async ({ where }: any) =>
       drafts
@@ -274,6 +275,16 @@ afterEach(() => {
 });
 
 describe("transaction draft save contracts", () => {
+  it("rejects client-created EMAIL drafts through both public save actions", async () => {
+    const emailDraft = expenseDraft({ origin: TransactionDraftOrigin.EMAIL });
+
+    await expect(saveQuickDraft(emailDraft)).resolves.toMatchObject({ ok: false });
+    await expect(
+      savePasteDrafts({ captureKey, rows: [emailDraft] })
+    ).resolves.toMatchObject({ ok: false });
+    expect(fakeDb.transactionDraft.create).not.toHaveBeenCalled();
+  });
+
   it("saves bounded paste rows, preserves exact money text, and returns serializable views", async () => {
     const result = await savePasteDrafts({
       captureKey,
@@ -480,6 +491,29 @@ describe("transaction draft owned reads and mutations", () => {
       updateTransactionDraft("foreign-draft", { title: "Stolen update" })
     ).resolves.toEqual({ ok: false, error: "Draft not found." });
     expect(fakeDb.transactionDraft.update).not.toHaveBeenCalled();
+  });
+
+  it("edits an owned persisted EMAIL draft through stored validation", async () => {
+    drafts = [
+      fakeRecord(expenseDraft({ origin: TransactionDraftOrigin.EMAIL }), {
+        id: "owned-email-draft"
+      })
+    ];
+
+    await expect(
+      updateTransactionDraft("owned-email-draft", {
+        fromMoneySourceId: "bank-a",
+        title: "Reviewed email expense"
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      draft: {
+        id: "owned-email-draft",
+        origin: "EMAIL",
+        title: "Reviewed email expense",
+        status: "READY"
+      }
+    });
   });
 
   it("does not edit a draft that becomes importing after the ownership preflight", async () => {
@@ -694,6 +728,68 @@ describe("transaction draft owned reads and mutations", () => {
     expect(JSON.stringify(activities)).not.toContain("45.00");
   });
 
+  it("clears every EMAIL candidate field on dismissal and retains receipt provenance", async () => {
+    drafts = [
+      fakeRecord(
+        expenseDraft({
+          origin: TransactionDraftOrigin.EMAIL,
+          categoryId: "category-a",
+          qualityRating: "A",
+          projectId: "project-a",
+          countTowardFeeWaiver: true,
+          recurringPaymentId: "renewal-a",
+          duplicateConfirmed: true
+        }),
+        {
+          id: "owned-email-draft",
+          confidence: 100,
+          inboundEmailReceiptId: "receipt-1",
+          duplicateFingerprint: "candidate-fingerprint",
+          validationIssues: [{ field: "form", message: "candidate issue" }]
+        }
+      )
+    ];
+
+    await expect(
+      dismissTransactionDrafts(["owned-email-draft"])
+    ).resolves.toMatchObject({ ok: true, dismissedCount: 1 });
+
+    expect(drafts[0]).toMatchObject({
+      id: "owned-email-draft",
+      userId: mockUser.id,
+      origin: "EMAIL",
+      inboundEmailReceiptId: "receipt-1",
+      status: "DISMISSED",
+      confidence: null,
+      type: null,
+      amountText: null,
+      currency: null,
+      title: null,
+      description: null,
+      transactionDateText: null,
+      categoryId: null,
+      qualityRating: null,
+      fromMoneySourceId: null,
+      toMoneySourceId: null,
+      adjustedMoneySourceId: null,
+      adjustmentDirection: null,
+      adjustmentTarget: null,
+      projectId: null,
+      relatedTransactionId: null,
+      countTowardFeeWaiver: null,
+      countTowardFeeWaiverTouched: false,
+      qualityRatingTouched: false,
+      recurringPaymentId: null,
+      isInstallmentRelated: false,
+      duplicateFingerprint: null,
+      duplicateConfirmed: false,
+      duplicateAcknowledgementRequired: false,
+      invalidMappedFields: [],
+      validationIssues: [],
+      rawRow: null
+    });
+  });
+
   it("logs a metadata-only MIXED origin for a mixed owned dismissal", async () => {
     drafts = [
       fakeRecord(expenseDraft(), { id: "paste-draft" }),
@@ -816,6 +912,26 @@ describe("transaction draft import input boundary", () => {
       importTransactionDrafts({ ids: [anotherDraftId], idempotencyKey })
     ).resolves.toEqual({ ok: false, error: RATE_LIMIT_MESSAGE });
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects mixed origins with source-neutral guidance", async () => {
+    drafts = [
+      fakeRecord(expenseDraft(), { id: draftId, status: "READY" }),
+      fakeRecord(
+        expenseDraft({
+          captureKey: "34ac7c99-d2ee-491d-bac5-f4ad10155596",
+          origin: TransactionDraftOrigin.EMAIL
+        }),
+        { id: anotherDraftId, status: "READY" }
+      )
+    ];
+
+    await expect(
+      importTransactionDrafts({ ids: [draftId, anotherDraftId], idempotencyKey })
+    ).resolves.toEqual({
+      ok: false,
+      error: "Save drafts from one source in each batch."
+    });
   });
 
   it("recovers a P2002 race only for the completed identical selection", async () => {
