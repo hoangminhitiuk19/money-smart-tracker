@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { InboundEmailDisposition, Prisma } from "@prisma/client";
 import Link from "next/link";
 import { after } from "next/server";
 import { Suspense } from "react";
@@ -43,8 +43,25 @@ const actionOptions = [
   "RENEWAL_RESUMED",
   "RENEWAL_CANCELLED",
   "RENEWAL_DELETED",
-  "CSV_EXPORTED"
+  "CSV_EXPORTED",
+  "INBOUND_EMAIL_CONNECTED",
+  "INBOUND_EMAIL_ALIAS_ROTATED",
+  "INBOUND_EMAIL_ENABLED",
+  "INBOUND_EMAIL_DISABLED",
+  "INBOUND_EMAIL_PENDING_DELETED",
+  "INBOUND_EMAIL_DISCONNECTED",
+  "INBOUND_EMAIL_RECEIVED"
 ];
+
+const inboundDispositionLabels: Record<InboundEmailDisposition, string> = {
+  TEST_DRAFT_CREATED: "Test draft created",
+  DUPLICATE: "Duplicate ignored",
+  UNSUPPORTED: "Unsupported message",
+  OVERSIZED: "Message too large",
+  RATE_LIMITED: "Delivery rate limited",
+  PROVIDER_ERROR: "Provider unavailable",
+  PARSER_ERROR: "Message could not be processed"
+};
 
 function getParam(searchParams: SearchParams, key: string) {
   const value = searchParams[key];
@@ -169,6 +186,32 @@ function activitySummary(action: string, metadata: Prisma.JsonValue | null) {
       return `Deleted renewal: ${title}`;
     case "CSV_EXPORTED":
       return `Exported ${metadataNumber(data, "rowCount")} transactions to CSV`;
+    case "INBOUND_EMAIL_CONNECTED":
+      return "Connected inbound email testing";
+    case "INBOUND_EMAIL_ALIAS_ROTATED":
+      return "Rotated inbound email testing address";
+    case "INBOUND_EMAIL_ENABLED":
+      return "Enabled inbound email testing";
+    case "INBOUND_EMAIL_DISABLED":
+      return "Disabled inbound email testing";
+    case "INBOUND_EMAIL_PENDING_DELETED": {
+      const count = metadataNumber(data, "deletedDraftCount");
+      return `Deleted ${count} pending email ${count === 1 ? "draft" : "drafts"}`;
+    }
+    case "INBOUND_EMAIL_DISCONNECTED":
+      return "Disconnected inbound email testing";
+    case "INBOUND_EMAIL_RECEIVED": {
+      const disposition = data.disposition;
+      const label =
+        typeof disposition === "string" &&
+        Object.prototype.hasOwnProperty.call(
+          inboundDispositionLabels,
+          disposition
+        )
+          ? inboundDispositionLabels[disposition as InboundEmailDisposition]
+          : null;
+      return label ? `Received inbound email: ${label}` : "Received inbound email";
+    }
     default:
       return actionLabel(action);
   }

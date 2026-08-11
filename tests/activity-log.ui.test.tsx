@@ -113,4 +113,63 @@ describe("ActivityLogPage retained pagination", () => {
       "Created ADJUSTMENT transaction: Ledger correction (15.00 VND)"
     );
   });
+
+  it("renders safe inbound-email lifecycle and known disposition summaries", async () => {
+    activityPageMocks.findMany.mockResolvedValue([
+      {
+        id: "activity-inbound-1",
+        action: "INBOUND_EMAIL_CONNECTED",
+        entityType: "InboundEmail",
+        entityId: null,
+        metadata: null,
+        createdAt: new Date("2026-07-31T11:00:00.000Z")
+      },
+      {
+        id: "activity-inbound-2",
+        action: "INBOUND_EMAIL_PENDING_DELETED",
+        entityType: "InboundEmail",
+        entityId: null,
+        metadata: { deletedDraftCount: 2 },
+        createdAt: new Date("2026-07-31T10:00:00.000Z")
+      },
+      {
+        id: "activity-inbound-3",
+        action: "INBOUND_EMAIL_RECEIVED",
+        entityType: "InboundEmail",
+        entityId: null,
+        metadata: { disposition: "TEST_DRAFT_CREATED" },
+        createdAt: new Date("2026-07-31T09:00:00.000Z")
+      }
+    ]);
+    activityPageMocks.count.mockResolvedValue(3);
+
+    const markup = await renderActivityPage({});
+
+    expect(markup).toContain("Connected inbound email testing");
+    expect(markup).toContain("Deleted 2 pending email drafts");
+    expect(markup).toContain("Received inbound email: Test draft created");
+    expect(markup).toContain('value="INBOUND_EMAIL_ALIAS_ROTATED"');
+    expect(markup).toContain('value="INBOUND_EMAIL_ENABLED"');
+    expect(markup).toContain('value="INBOUND_EMAIL_DISABLED"');
+    expect(markup).toContain('value="INBOUND_EMAIL_DISCONNECTED"');
+  });
+
+  it("does not render an unknown received disposition from activity metadata", async () => {
+    activityPageMocks.findMany.mockResolvedValue([
+      {
+        id: "activity-inbound-4",
+        action: "INBOUND_EMAIL_RECEIVED",
+        entityType: "InboundEmail",
+        entityId: null,
+        metadata: { disposition: "private-address@example.test" },
+        createdAt: new Date("2026-07-31T09:00:00.000Z")
+      }
+    ]);
+    activityPageMocks.count.mockResolvedValue(1);
+
+    const markup = await renderActivityPage({});
+
+    expect(markup).toContain("Received inbound email");
+    expect(markup).not.toContain("private-address@example.test");
+  });
 });
