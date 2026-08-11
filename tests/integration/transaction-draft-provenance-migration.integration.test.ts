@@ -8,6 +8,8 @@ const migrationsDirectory = new URL(
   import.meta.url
 );
 const baseMigration = "20260809000000_add_transaction_draft_provenance";
+const terminalMigration =
+  "20260809180000_backfill_transaction_draft_provenance";
 
 const schemasToDrop = new Set<string>();
 
@@ -25,7 +27,12 @@ function sqlStatements(migration: string) {
 async function forwardMigrationStatements() {
   const entries = await readdir(migrationsDirectory, { withFileTypes: true });
   const directories = entries
-    .filter((entry) => entry.isDirectory() && entry.name > baseMigration)
+    .filter(
+      (entry) =>
+        entry.isDirectory() &&
+        entry.name > baseMigration &&
+        entry.name <= terminalMigration
+    )
     .map(({ name }) => name)
     .sort();
   const migrations = await Promise.all(
@@ -137,6 +144,13 @@ describe("transaction draft provenance migration", () => {
         await db.$executeRawUnsafe(statement);
       }
     });
+
+    const [unrelatedInboundRelation] = await prisma.$queryRawUnsafe<
+      Array<{ relationName: string | null }>
+    >(
+      `SELECT to_regclass('${schema}."InboundEmailReceipt"')::text AS "relationName"`
+    );
+    expect(unrelatedInboundRelation).toEqual({ relationName: null });
 
     expect(await readProvenanceRows(quotedSchema)).toEqual([
       {
