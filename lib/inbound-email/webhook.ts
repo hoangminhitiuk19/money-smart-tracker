@@ -12,6 +12,7 @@ import {
   claimInboundEmailReceipt,
   findActiveMailboxForRecipient,
   markInboundReceipt,
+  parseInboundEmailRecipient,
   type InboundReceiptClaim
 } from "@/lib/inbound-email/receipts";
 import { cleanupExpiredInboundEmailData } from "@/lib/inbound-email/retention";
@@ -244,7 +245,7 @@ async function updateOwnedDuplicateMailbox(
       return;
     }
 
-    await db.inboundMailbox.updateMany({
+    const updated = await db.inboundMailbox.updateMany({
       where: {
         id: mailbox.id,
         userId: mailbox.userId,
@@ -256,6 +257,9 @@ async function updateOwnedDuplicateMailbox(
         lastReceivedAt: now
       }
     });
+    if (updated.count !== 1) {
+      throw new Error("Inbound duplicate mailbox status update failed.");
+    }
   });
 }
 
@@ -350,12 +354,17 @@ export async function handleInboundEmailWebhook(
     return result(400, "INVALID");
   }
 
+  const recipient = notification.recipients[0];
+  if (!parseInboundEmailRecipient(recipient, input.domain)) {
+    return result(400, "INVALID");
+  }
+
   const receivedAt = dependencies.now();
   let mailbox: ResolvedMailbox | null;
   try {
     mailbox = await dependencies.resolveMailbox(
       prisma,
-      notification.recipients[0],
+      recipient,
       input.domain
     );
   } catch {
@@ -389,14 +398,16 @@ export async function handleInboundEmailWebhook(
   if (claim.kind === "duplicate") {
     try {
       await updateOwnedDuplicateMailbox(dependencies, mailbox, receivedAt);
-      return finishWithCleanup(
-        dependencies,
-        receivedAt,
-        result(200, "DUPLICATE")
-      );
-    } catch {
-      return finishWithCleanup(dependencies, receivedAt, result(503, "RETRY"));
+    } catch (error) {
+      console.error("Inbound email duplicate status update failed.", {
+        errorClass: safeErrorClass(error)
+      });
     }
+    return finishWithCleanup(
+      dependencies,
+      receivedAt,
+      result(200, "DUPLICATE")
+    );
   }
 
   let limitDecision: Awaited<ReturnType<typeof checkInboundEmailAlias>>;

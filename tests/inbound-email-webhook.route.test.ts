@@ -115,6 +115,20 @@ describe("inbound-email webhook route", () => {
     );
   });
 
+  it("returns a generic 400 for an orchestrator-rejected malformed recipient", async () => {
+    routeMocks.handle.mockResolvedValueOnce({ status: 400, code: "INVALID" });
+
+    const response = await POST(
+      new Request("http://localhost/api/webhooks/inbound-email", {
+        method: "POST",
+        body: "synthetic-malformed-recipient-notification"
+      })
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ message: "Invalid webhook request." });
+  });
+
   it.each([
     [401, "INVALID", "Invalid webhook request."],
     [400, "INVALID", "Invalid webhook request."],

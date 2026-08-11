@@ -170,12 +170,57 @@ describe("inbound-email webhook PostgreSQL orchestration", () => {
       }
     );
     const injected = dependencies(provider);
+    const firstAttemptAt = new Date();
+    let clock = firstAttemptAt;
+    injected.now = () => clock;
     const input = webhookInput(`synthetic-retry-raw-${randomUUID()}`);
 
     await expect(handleInboundEmailWebhook(input, injected)).resolves.toEqual({
       status: 503,
       code: "RETRY"
     });
+
+    const [failedReceipt, failedMailbox, failedActivities] = await Promise.all([
+      prisma.inboundEmailReceipt.findFirstOrThrow({
+        where: { userId: fixture.user.id },
+        select: { attemptCount: true, state: true, disposition: true }
+      }),
+      prisma.inboundMailbox.findUniqueOrThrow({
+        where: { id: fixture.mailbox.id, userId: fixture.user.id },
+        select: { lastDisposition: true, lastReceivedAt: true }
+      }),
+      prisma.activityLog.findMany({
+        where: {
+          userId: fixture.user.id,
+          action: "INBOUND_EMAIL_RECEIVED"
+        },
+        select: {
+          action: true,
+          entityType: true,
+          entityId: true,
+          metadata: true
+        }
+      })
+    ]);
+    expect(failedReceipt).toEqual({
+      attemptCount: 1,
+      state: "RETRYABLE_FAILED",
+      disposition: "PROVIDER_ERROR"
+    });
+    expect(failedMailbox).toEqual({
+      lastDisposition: "PROVIDER_ERROR",
+      lastReceivedAt: firstAttemptAt
+    });
+    expect(failedActivities).toEqual([
+      {
+        action: "INBOUND_EMAIL_RECEIVED",
+        entityType: "InboundEmail",
+        entityId: null,
+        metadata: { disposition: "PROVIDER_ERROR" }
+      }
+    ]);
+
+    clock = new Date(firstAttemptAt.getTime() + 1_000);
     await expect(handleInboundEmailWebhook(input, injected)).resolves.toEqual({
       status: 200,
       code: "ACCEPTED"
@@ -197,6 +242,35 @@ describe("inbound-email webhook PostgreSQL orchestration", () => {
         where: { userId: fixture.user.id, origin: "EMAIL" }
       })
     ).resolves.toBe(1);
+    const completedActivities = await prisma.activityLog.findMany({
+      where: {
+        userId: fixture.user.id,
+        action: "INBOUND_EMAIL_RECEIVED"
+      },
+      select: {
+        action: true,
+        entityType: true,
+        entityId: true,
+        metadata: true
+      }
+    });
+    expect(completedActivities).toHaveLength(2);
+    expect(completedActivities).toEqual(
+      expect.arrayContaining([
+        {
+          action: "INBOUND_EMAIL_RECEIVED",
+          entityType: "InboundEmail",
+          entityId: null,
+          metadata: { disposition: "PROVIDER_ERROR" }
+        },
+        {
+          action: "INBOUND_EMAIL_RECEIVED",
+          entityType: "InboundEmail",
+          entityId: null,
+          metadata: { disposition: "TEST_DRAFT_CREATED" }
+        }
+      ])
+    );
   }, 30_000);
 
   it("reclaims an abandoned processing receipt only after its fixed lease", async () => {
@@ -224,10 +298,33 @@ describe("inbound-email webhook PostgreSQL orchestration", () => {
     });
     const abandoned = await prisma.inboundEmailReceipt.findFirstOrThrow({
       where: { userId: fixture.user.id },
-      select: { id: true, attemptCount: true, state: true, updatedAt: true }
+      select: {
+        id: true,
+        attemptCount: true,
+        state: true,
+        disposition: true,
+        updatedAt: true
+      }
     });
-    expect(abandoned).toMatchObject({ attemptCount: 1, state: "PROCESSING" });
-
+    expect(abandoned).toMatchObject({
+      attemptCount: 1,
+      state: "PROCESSING",
+      disposition: null
+    });
+    await expect(
+      prisma.inboundMailbox.findUniqueOrThrow({
+        where: { id: fixture.mailbox.id, userId: fixture.user.id },
+        select: { lastDisposition: true, lastReceivedAt: true }
+      })
+    ).resolves.toEqual({ lastDisposition: null, lastReceivedAt: null });
+    await expect(
+      prisma.activityLog.count({
+        where: {
+          userId: fixture.user.id,
+          action: "INBOUND_EMAIL_RECEIVED"
+        }
+      })
+    ).resolves.toBe(0);
     clock = new Date(
       abandoned.updatedAt.getTime() + INBOUND_PROCESSING_LEASE_MS - 1
     );
@@ -241,6 +338,24 @@ describe("inbound-email webhook PostgreSQL orchestration", () => {
         where: { userId: fixture.user.id, origin: "EMAIL" }
       })
     ).resolves.toBe(0);
+    await expect(
+      prisma.activityLog.count({
+        where: {
+          userId: fixture.user.id,
+          action: "INBOUND_EMAIL_RECEIVED"
+        }
+      })
+    ).resolves.toBe(0);
+    await expect(
+      prisma.inboundEmailReceipt.findUniqueOrThrow({
+        where: { id: abandoned.id },
+        select: { attemptCount: true, state: true, disposition: true }
+      })
+    ).resolves.toEqual({
+      attemptCount: 1,
+      state: "PROCESSING",
+      disposition: null
+    });
 
     clock = new Date(
       abandoned.updatedAt.getTime() + INBOUND_PROCESSING_LEASE_MS
@@ -266,25 +381,39 @@ describe("inbound-email webhook PostgreSQL orchestration", () => {
       })
     ).resolves.toBe(1);
     await expect(
-      prisma.activityLog.count({
+      prisma.activityLog.findMany({
         where: {
           userId: fixture.user.id,
           action: "INBOUND_EMAIL_RECEIVED"
+        },
+        select: {
+          action: true,
+          entityType: true,
+          entityId: true,
+          metadata: true
         }
       })
-    ).resolves.toBe(1);
+    ).resolves.toEqual([
+      {
+        action: "INBOUND_EMAIL_RECEIVED",
+        entityType: "InboundEmail",
+        entityId: null,
+        metadata: { disposition: "TEST_DRAFT_CREATED" }
+      }
+    ]);
   }, 30_000);
 
   it("blocks a draft when alias rotation commits between retrieval and transaction", async () => {
     const fixture = await createOwnedMailbox("rotation");
     const currentMessage = syntheticMessage(randomUUID().slice(0, 12));
+    const rotatedAliasLocalPart = opaqueAlias();
     const provider = new FakeProvider(
       notification(fixture.recipient),
       currentMessage,
       async () => {
         await prisma.inboundMailbox.update({
           where: { id: fixture.mailbox.id, userId: fixture.user.id },
-          data: { aliasLocalPart: opaqueAlias() }
+          data: { aliasLocalPart: rotatedAliasLocalPart }
         });
         return currentMessage;
       }
@@ -307,6 +436,30 @@ describe("inbound-email webhook PostgreSQL orchestration", () => {
         select: { state: true, disposition: true }
       })
     ).resolves.toEqual({ state: "IGNORED", disposition: "UNSUPPORTED" });
+    await expect(
+      prisma.inboundMailbox.findUniqueOrThrow({
+        where: { id: fixture.mailbox.id, userId: fixture.user.id },
+        select: {
+          aliasLocalPart: true,
+          status: true,
+          lastDisposition: true,
+          lastReceivedAt: true
+        }
+      })
+    ).resolves.toEqual({
+      aliasLocalPart: rotatedAliasLocalPart,
+      status: "ACTIVE",
+      lastDisposition: null,
+      lastReceivedAt: null
+    });
+    await expect(
+      prisma.activityLog.count({
+        where: {
+          userId: fixture.user.id,
+          action: "INBOUND_EMAIL_RECEIVED"
+        }
+      })
+    ).resolves.toBe(0);
   }, 30_000);
 
   it("keeps a cross-owner event replay opaque and leaves the second owner unchanged", async () => {

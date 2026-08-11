@@ -61,21 +61,56 @@ export function hashInboundIdentifier(
     .digest("hex");
 }
 
-function strictRecipientParts(recipient: string) {
-  if (recipient.length === 0 || /[\r\n]/.test(recipient)) {
+export function parseInboundEmailRecipient(
+  recipient: string,
+  configuredDomain: string
+): { localPart: string; domain: string } | null {
+  if (
+    recipient.length === 0 ||
+    recipient.length > 320 ||
+    configuredDomain.length === 0 ||
+    configuredDomain.length > 253 ||
+    /[\r\n]/.test(recipient) ||
+    /[\r\n]/.test(configuredDomain)
+  ) {
     return null;
   }
 
-  const match = recipient.match(
-    /^([a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?)@([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)$/i
-  );
-  if (!match) {
+  const separator = recipient.indexOf("@");
+  if (separator <= 0 || separator !== recipient.lastIndexOf("@")) {
+    return null;
+  }
+
+  const localPart = recipient.slice(0, separator);
+  const domain = recipient.slice(separator + 1);
+  if (
+    !/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/i.test(localPart) ||
+    localPart.includes("..")
+  ) {
+    return null;
+  }
+
+  const normalizedDomain = domain.toLowerCase();
+  const expectedDomain = configuredDomain.toLowerCase();
+  const validDomain = (value: string) =>
+    value.length <= 253 &&
+    value.split(".").every(
+      (label) =>
+        label.length >= 1 &&
+        label.length <= 63 &&
+        /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label)
+    );
+  if (
+    !validDomain(normalizedDomain) ||
+    !validDomain(expectedDomain) ||
+    normalizedDomain !== expectedDomain
+  ) {
     return null;
   }
 
   return {
-    localPart: match[1].toLowerCase(),
-    domain: match[2].toLowerCase()
+    localPart: localPart.toLowerCase(),
+    domain: normalizedDomain
   };
 }
 
@@ -88,9 +123,8 @@ export async function findActiveMailboxForRecipient(
   userId: string;
   aliasLocalPart: string;
 } | null> {
-  const parsed = strictRecipientParts(recipient);
-  const configuredDomain = domain.toLowerCase();
-  if (!parsed || parsed.domain !== configuredDomain) {
+  const parsed = parseInboundEmailRecipient(recipient, domain);
+  if (!parsed) {
     return null;
   }
 

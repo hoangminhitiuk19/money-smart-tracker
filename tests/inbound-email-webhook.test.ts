@@ -237,6 +237,32 @@ describe("signed inbound-email webhook orchestration", () => {
     expect(harness.calls).toEqual(["verify"]);
   });
 
+  it.each([
+    ["missing-at", "not-an-address"],
+    ["wrong-domain", "opaque-recipient@other.audit.invalid"],
+    ["display-name", "Name <opaque-recipient@inbound.audit.invalid>"],
+    [
+      "recipient-list",
+      "opaque-one@inbound.audit.invalid,opaque-two@inbound.audit.invalid"
+    ],
+    [
+      "crlf",
+      "opaque-recipient@inbound.audit.invalid\r\nBcc:x@audit.invalid"
+    ],
+    ["userinfo", "opaque-recipient:secret@inbound.audit.invalid"],
+    ["extra-at", "opaque-recipient@@inbound.audit.invalid"]
+  ])("rejects malformed single recipient case %s before alias lookup", async (_case, recipient) => {
+    const harness = testHarness({
+      notification: { ...notification, recipients: [recipient] }
+    });
+
+    await expect(
+      handleInboundEmailWebhook(input, harness.dependencies)
+    ).resolves.toEqual({ status: 400, code: "INVALID" });
+    expect(harness.calls).toEqual(["verify"]);
+    expect(harness.spies.resolveMailbox).not.toHaveBeenCalled();
+  });
+
   it("acknowledges an unknown alias without a claim", async () => {
     const harness = testHarness({ mailbox: null });
 
@@ -380,6 +406,53 @@ describe("signed inbound-email webhook orchestration", () => {
       },
       data: { lastDisposition: "DUPLICATE", lastReceivedAt: now }
     });
+  });
+
+  it("acknowledges a duplicate when its optional mailbox-status update fails", async () => {
+    class SyntheticDuplicateStatusFailure extends Error {}
+    const harness = testHarness({ receiptKind: "duplicate" });
+    harness.spies.runTransaction.mockRejectedValueOnce(
+      new SyntheticDuplicateStatusFailure(
+        "private duplicate status detail 7d22f4c9"
+      )
+    );
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    await expect(
+      handleInboundEmailWebhook(input, harness.dependencies)
+    ).resolves.toEqual({ status: 200, code: "DUPLICATE" });
+    expect(harness.calls).toEqual(["verify", "resolve", "claim"]);
+    expect(harness.spies.cleanup).toHaveBeenCalledWith(now);
+    expect(harness.spies.markReceipt).not.toHaveBeenCalled();
+    expect(harness.spies.activityCreate).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledWith(
+      "Inbound email duplicate status update failed.",
+      { errorClass: "SyntheticDuplicateStatusFailure" }
+    );
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(
+      "private duplicate status detail"
+    );
+  });
+
+  it("safely logs a zero-row duplicate mailbox-status update and acknowledges it", async () => {
+    const harness = testHarness({ receiptKind: "duplicate" });
+    harness.spies.mailboxUpdate.mockResolvedValueOnce({ count: 0 });
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    await expect(
+      handleInboundEmailWebhook(input, harness.dependencies)
+    ).resolves.toEqual({ status: 200, code: "DUPLICATE" });
+    expect(harness.spies.cleanup).toHaveBeenCalledWith(now);
+    expect(harness.spies.markReceipt).not.toHaveBeenCalled();
+    expect(harness.spies.activityCreate).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledWith(
+      "Inbound email duplicate status update failed.",
+      { errorClass: "Error" }
+    );
   });
 
   it("blocks draft creation when the alias rotated during retrieval", async () => {

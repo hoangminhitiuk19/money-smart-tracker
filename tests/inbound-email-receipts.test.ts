@@ -5,7 +5,8 @@ import {
   claimInboundEmailReceipt,
   findActiveMailboxForRecipient,
   hashInboundIdentifier,
-  markInboundReceipt
+  markInboundReceipt,
+  parseInboundEmailRecipient
 } from "@/lib/inbound-email/receipts";
 import {
   INBOUND_PROCESSING_LEASE_MS,
@@ -77,6 +78,32 @@ describe("inbound receipt identifier hashing", () => {
 });
 
 describe("active inbound mailbox recipient resolution", () => {
+  it("parses and normalizes one strict configured-domain recipient", () => {
+    expect(
+      parseInboundEmailRecipient(
+        "M_OPAQUE@INBOUND.AUDIT.INVALID",
+        "inbound.audit.invalid"
+      )
+    ).toEqual({
+      localPart: "m_opaque",
+      domain: "inbound.audit.invalid"
+    });
+  });
+
+  it.each([
+    ["missing-at", "not-an-address"],
+    ["wrong-domain", "m_opaque@other.audit.invalid"],
+    ["display-name", "Name <m_opaque@inbound.audit.invalid>"],
+    ["recipient-list", "m_one@inbound.audit.invalid,m_two@inbound.audit.invalid"],
+    ["crlf", "m_opaque@inbound.audit.invalid\r\nBcc:x@audit.invalid"],
+    ["userinfo", "m_opaque:secret@inbound.audit.invalid"],
+    ["extra-at", "m_opaque@@inbound.audit.invalid"]
+  ])("rejects malformed recipient case %s without ambiguity", (_case, recipient) => {
+    expect(
+      parseInboundEmailRecipient(recipient, "inbound.audit.invalid")
+    ).toBeNull();
+  });
+
   it("normalizes one strict address and queries only its active alias", async () => {
     const aliasLocalPart = `m_${randomBytes(20).toString("hex")}`;
     const domain = `${opaque("mail")}.resend.app`;
