@@ -162,8 +162,11 @@ async function TransactionsPageContent({
             <Link href="/transactions/capture">
               <Button variant="primary">Capture transactions</Button>
             </Link>
-            <Link href="/transactions/capture/email">
-              <Button variant="outline">Email forwarding</Button>
+            <Link
+              className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50 motion-reduce:transition-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary md:min-h-0"
+              href="/transactions/capture/email"
+            >
+              Email forwarding
             </Link>
             <Link href="/transactions/new">
               <Button variant="outline">Single entry</Button>

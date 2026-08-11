@@ -185,6 +185,7 @@ export function EmailSetupPanel({
   const [focusVersion, setFocusVersion] = useState(0);
   const statusHeadingRef = useRef<HTMLHeadingElement>(null);
   const mailbox = setup.mailbox;
+  const hasUsableAddress = setup.configured && Boolean(mailbox?.address);
   const currentStatus = statusFor(setup);
   const reviewCaptureKey =
     mailbox?.reviewCaptureKey &&
@@ -318,7 +319,20 @@ export function EmailSetupPanel({
     }
   }
 
-  const dialogDetails = dialog ? dialogs[dialog] : null;
+  const dialogDetails = dialog
+    ? {
+        ...dialogs[dialog],
+        ...(dialog === "delete"
+          ? {
+              description: !hasUsableAddress
+                ? "All pending email test drafts will be permanently deleted. Email forwarding remains unavailable."
+                : mailbox?.status === "DISABLED"
+                  ? "All pending email test drafts will be permanently deleted. Your forwarding address remains disabled."
+                  : dialogs.delete.description
+            }
+          : {})
+      }
+    : null;
 
   return (
     <div className="min-w-0 space-y-5">
@@ -331,21 +345,21 @@ export function EmailSetupPanel({
             <Card className="min-w-0" title="Private test address">
               <div className="flex items-start gap-3 rounded-lg border border-indigo-200 bg-indigo-50/70 p-4">
                 <StatusMark>
-                  {mailbox
+                  {hasUsableAddress && mailbox
                     ? mailbox.status === "DISABLED"
                       ? "×"
                       : "✓"
-                    : setup.configured
+                    : setup.configured && !mailbox
                       ? "+"
                       : "!"}
                 </StatusMark>
                 <div className="min-w-0">
                   <p className="text-sm font-semibold text-slate-950">
-                    {mailbox
+                    {hasUsableAddress && mailbox
                       ? mailbox.status === "ACTIVE"
                         ? "Active"
                         : "Disabled"
-                      : setup.configured
+                      : setup.configured && !mailbox
                         ? "No address yet"
                         : "Service unavailable"}
                   </p>
@@ -372,7 +386,7 @@ export function EmailSetupPanel({
                     Copy test address
                   </Button>
                 </div>
-              ) : setup.configured ? (
+              ) : setup.configured && !mailbox ? (
                 <Button
                   className="mt-4 motion-reduce:transition-none"
                   disabled={isCreating}
@@ -471,24 +485,28 @@ export function EmailSetupPanel({
                   Testing controls
                 </h2>
                 <div className="mt-3 grid gap-2">
-                  <Button
-                    className="w-full motion-reduce:transition-none"
-                    onClick={() => openDialog("rotate")}
-                    variant="outline"
-                  >
-                    Rotate test address
-                  </Button>
-                  <Button
-                    className="w-full motion-reduce:transition-none"
-                    onClick={() =>
-                      openDialog(mailbox.status === "ACTIVE" ? "disable" : "enable")
-                    }
-                    variant="outline"
-                  >
-                    {mailbox.status === "ACTIVE"
-                      ? "Disable email forwarding"
-                      : "Enable email forwarding"}
-                  </Button>
+                  {hasUsableAddress ? (
+                    <>
+                      <Button
+                        className="w-full motion-reduce:transition-none"
+                        onClick={() => openDialog("rotate")}
+                        variant="outline"
+                      >
+                        Rotate test address
+                      </Button>
+                      <Button
+                        className="w-full motion-reduce:transition-none"
+                        onClick={() =>
+                          openDialog(mailbox.status === "ACTIVE" ? "disable" : "enable")
+                        }
+                        variant="outline"
+                      >
+                        {mailbox.status === "ACTIVE"
+                          ? "Disable email forwarding"
+                          : "Enable email forwarding"}
+                      </Button>
+                    </>
+                  ) : null}
                   <Button
                     className="w-full motion-reduce:transition-none"
                     onClick={() => openDialog("delete")}

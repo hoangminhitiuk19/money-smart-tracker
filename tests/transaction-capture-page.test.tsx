@@ -208,6 +208,15 @@ describe("transaction capture page", () => {
     expect(markup).toContain("Single entry");
     expect(markup).toContain('href="/transactions/capture/email"');
     expect(markup).toContain("Email forwarding");
+    const emailLinkMarkup = markup.match(
+      /<a[^>]*href="\/transactions\/capture\/email"[^>]*>[\s\S]*?<\/a>/
+    )?.[0];
+    expect(emailLinkMarkup).toBeDefined();
+    expect(emailLinkMarkup).not.toContain("<button");
+    const emailLinkOpeningTag = emailLinkMarkup?.match(/^<a[^>]*>/)?.[0];
+    expect(emailLinkOpeningTag).toContain("min-h-11");
+    expect(emailLinkOpeningTag).toContain("motion-reduce:transition-none");
+    expect(emailLinkOpeningTag).toContain("focus-visible:outline");
   });
 
   it("confirms the imported batch count on the transaction list", async () => {

@@ -139,6 +139,33 @@ describe("EmailSetupPanel safety and state", () => {
     expect(disabled.parentElement?.parentElement?.querySelector('[aria-hidden="true"]')).not.toBeNull();
   });
 
+  it("keeps an existing mailbox unavailable when provider configuration is absent", () => {
+    render(
+      <EmailSetupPanel
+        initialSetup={{
+          configured: false,
+          mailbox: {
+            address: null,
+            status: "ACTIVE",
+            lastDisposition: null,
+            lastReceivedAt: null,
+            reviewCaptureKey: null
+          }
+        }}
+      />
+    );
+
+    expect(screen.getByText("Service unavailable")).not.toBeNull();
+    expect(screen.getByRole("heading", { name: "Not configured" })).not.toBeNull();
+    expect(screen.queryByText("Active")).toBeNull();
+    expect(screen.queryByText("Disabled")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Rotate test address" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Enable email forwarding" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Disable email forwarding" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Delete pending test drafts" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Disconnect email forwarding" })).not.toBeNull();
+  });
+
   it("links to review using only the safe capture UUID", () => {
     render(
       <EmailSetupPanel
@@ -186,9 +213,33 @@ describe("EmailSetupPanel confirmations", () => {
     render(<EmailSetupPanel initialSetup={setupView({ status: "DISABLED" })} />);
 
     await user.click(screen.getByRole("button", { name: "Enable email forwarding" }));
-    expect(screen.getByRole("dialog", { name: "Enable email forwarding?" }).textContent).toContain(
+    const dialog = screen.getByRole("dialog", { name: "Enable email forwarding?" });
+    expect(dialog.textContent).toContain(
       "New synthetic or redacted messages sent to this address will be accepted for review."
     );
+    await user.click(within(dialog).getByRole("button", { name: "Enable forwarding" }));
+
+    expect(actionMocks.enable).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Email forwarding enabled.")).not.toBeNull();
+    expect(screen.getByText("Active")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Disable email forwarding" })).not.toBeNull();
+    const heading = screen.getByRole("heading", { name: "Waiting" });
+    await waitFor(() => expect(heading).toBe(document.activeElement));
+  });
+
+  it.each([
+    ["ACTIVE", "All pending email test drafts will be permanently deleted. Your forwarding address stays active."],
+    ["DISABLED", "All pending email test drafts will be permanently deleted. Your forwarding address remains disabled."]
+  ] as const)("describes delete-pending without changing %s forwarding", async (status, description) => {
+    const user = userEvent.setup();
+    render(<EmailSetupPanel initialSetup={setupView({ status })} />);
+
+    await user.click(screen.getByRole("button", { name: "Delete pending test drafts" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Delete pending test drafts?" });
+    expect(within(dialog).getByText(description)).not.toBeNull();
+    expect(dialog.textContent).not.toContain(address);
+    expect(dialog.textContent).not.toContain(captureKey);
   });
 
   it("returns focus to the trigger after cancel", async () => {
@@ -263,7 +314,18 @@ describe("EmailSetupPanel responsive access", () => {
     const targets = container.querySelectorAll("button, a[href]");
     expect(targets.length).toBeGreaterThan(0);
     expect(Array.from(targets).every((target) => target.classList.contains("min-h-11"))).toBe(true);
-    expect(container.querySelectorAll(".motion-reduce\\:transition-none").length).toBeGreaterThan(0);
+    const animatedTargets = Array.from(targets).filter((target) =>
+      Array.from(target.classList).some((className) =>
+        className === "transition" || className.startsWith("transition-")
+      )
+    );
+    expect(animatedTargets.length).toBeGreaterThan(0);
+    expect(animatedTargets.every((target) => target.classList.contains("motion-reduce:transition-none"))).toBe(true);
+    expect(Array.from(container.querySelectorAll("[class]")).some((element) =>
+      Array.from(element.classList).some((className) =>
+        /^(?:min-|max-)?w-96$/.test(className)
+      )
+    )).toBe(false);
     expect(container.innerHTML).not.toMatch(/(?:min-|max-)?w-\[(?:37[6-9]|3[89]\d|[4-9]\d\d|\d{4,})px\]/);
   });
 });
