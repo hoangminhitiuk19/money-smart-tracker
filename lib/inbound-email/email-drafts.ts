@@ -6,6 +6,7 @@ import {
   TransactionDraftOrigin
 } from "@prisma/client";
 import { INBOUND_DRAFT_RETENTION_MS } from "@/lib/inbound-email/constants";
+import { lockOwnedInboundMailbox } from "@/lib/inbound-email/mailbox-lock";
 import type { EmailDraftCandidate } from "@/lib/inbound-email/types";
 import type { TransactionDraftInput } from "@/lib/transaction-drafts/types";
 import { assessDraft } from "@/lib/transaction-drafts/validation";
@@ -32,6 +33,18 @@ export async function createEmailDraftFromCandidate(
     now: Date;
   }
 ): Promise<{ draftId: string; captureKey: string; created: boolean }> {
+  const mailbox = await lockOwnedInboundMailbox(db, {
+    userId: input.userId,
+    mailboxId: input.mailboxId
+  });
+  if (
+    !mailbox ||
+    mailbox.status !== InboundMailboxStatus.ACTIVE ||
+    mailbox.aliasLocalPart !== input.aliasLocalPart
+  ) {
+    throw new Error(RECEIPT_NOT_AVAILABLE_ERROR);
+  }
+
   await db.$queryRaw(
     Prisma.sql`SELECT 1 FROM "InboundEmailReceipt" WHERE "id" = ${input.receiptId} AND "userId" = ${input.userId} AND "mailboxId" = ${input.mailboxId} FOR UPDATE`
   );
@@ -41,15 +54,7 @@ export async function createEmailDraftFromCandidate(
       id: input.receiptId,
       userId: input.userId,
       mailboxId: input.mailboxId,
-      state: InboundEmailReceiptState.PROCESSING,
-      mailbox: {
-        is: {
-          id: input.mailboxId,
-          userId: input.userId,
-          aliasLocalPart: input.aliasLocalPart,
-          status: InboundMailboxStatus.ACTIVE
-        }
-      }
+      state: InboundEmailReceiptState.PROCESSING
     },
     select: { id: true }
   });

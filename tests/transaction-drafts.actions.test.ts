@@ -516,6 +516,34 @@ describe("transaction draft owned reads and mutations", () => {
     });
   });
 
+  it("never persists a client rawRow patch on an owned EMAIL draft", async () => {
+    drafts = [
+      fakeRecord(
+        expenseDraft({ origin: TransactionDraftOrigin.EMAIL, rawRow: null }),
+        { id: "owned-email-draft" }
+      )
+    ];
+
+    const result = await updateTransactionDraft("owned-email-draft", {
+      title: "Reviewed without raw content",
+      rawRow: {
+        Address: "synthetic-recipient@audit.invalid",
+        ProviderId: "synthetic-provider-id",
+        Secret: "synthetic-secret-value"
+      }
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      draft: {
+        id: "owned-email-draft",
+        title: "Reviewed without raw content",
+        rawRow: null
+      }
+    });
+    expect(drafts[0].rawRow).toBeNull();
+  });
+
   it("does not edit a draft that becomes importing after the ownership preflight", async () => {
     drafts = [
       fakeRecord(expenseDraft({ title: "Original title" }), {

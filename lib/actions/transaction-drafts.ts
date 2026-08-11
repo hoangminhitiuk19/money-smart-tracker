@@ -581,11 +581,15 @@ export async function updateTransactionDraft(
         return actionFailure(DRAFT_NOT_FOUND_ERROR);
       }
 
+      const storedInput = transactionDraftRecordToInput(existing);
       const merged = storedTransactionDraftInputSchema.safeParse({
-        ...transactionDraftRecordToInput(existing),
+        ...storedInput,
         ...parsedPatch.data,
+        ...(existing.origin === TransactionDraftOrigin.EMAIL
+          ? { rawRow: null }
+          : {}),
         invalidMappedFields: (
-          transactionDraftRecordToInput(existing).invalidMappedFields ?? []
+          storedInput.invalidMappedFields ?? []
         ).filter(
           (field) =>
             !Object.prototype.hasOwnProperty.call(parsedPatch.data, field)

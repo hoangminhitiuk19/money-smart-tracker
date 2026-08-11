@@ -39,7 +39,8 @@ const inboundActionMocks = vi.hoisted(() => ({
   txMailboxCreate: vi.fn(),
   txMailboxDeleteMany: vi.fn(),
   txMailboxFindUnique: vi.fn(),
-  txMailboxUpdateMany: vi.fn()
+  txMailboxUpdateMany: vi.fn(),
+  txQueryRaw: vi.fn()
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -61,6 +62,7 @@ vi.mock("@/lib/transaction-drafts/retention", () => ({
 
 vi.mock("@/lib/prisma", () => {
   const transactionClient = {
+    $queryRaw: inboundActionMocks.txQueryRaw,
     activityLog: { create: inboundActionMocks.activityCreate },
     inboundMailbox: {
       create: inboundActionMocks.txMailboxCreate,
@@ -118,6 +120,7 @@ function uniqueConflict(
 beforeEach(() => {
   vi.resetAllMocks();
   const transactionClient = {
+    $queryRaw: inboundActionMocks.txQueryRaw,
     activityLog: { create: inboundActionMocks.activityCreate },
     inboundMailbox: {
       create: inboundActionMocks.txMailboxCreate,
@@ -147,6 +150,7 @@ beforeEach(() => {
   inboundActionMocks.rootMailboxFindUnique.mockResolvedValue(null);
   inboundActionMocks.rootDraftFindFirst.mockResolvedValue(null);
   inboundActionMocks.txMailboxFindUnique.mockResolvedValue(null);
+  inboundActionMocks.txQueryRaw.mockResolvedValue([{ id: "mailbox-1" }]);
   inboundActionMocks.txMailboxCreate.mockImplementation(({ data }) =>
     Promise.resolve(mailbox({ aliasLocalPart: data.aliasLocalPart }))
   );
@@ -311,6 +315,37 @@ describe("inbound mailbox creation", () => {
 });
 
 describe("owned inbound mailbox state changes", () => {
+  it.each([
+    ["rotate", rotateInboundMailbox, inboundActionMocks.txMailboxUpdateMany],
+    ["enable", enableInboundMailbox, inboundActionMocks.txMailboxUpdateMany],
+    ["disable", disableInboundMailbox, inboundActionMocks.txMailboxUpdateMany],
+    [
+      "delete pending",
+      deletePendingInboundEmailDrafts,
+      inboundActionMocks.txDraftDeleteMany
+    ],
+    ["disconnect", disconnectInboundMailbox, inboundActionMocks.txDraftDeleteMany]
+  ])("locks the owned mailbox before %s lifecycle mutation", async (
+    _label,
+    action,
+    guardedMutation
+  ) => {
+    let mailboxLocked = false;
+    inboundActionMocks.txMailboxFindUnique.mockResolvedValue(mailbox());
+    inboundActionMocks.txQueryRaw.mockImplementation(async () => {
+      mailboxLocked = true;
+      return [{ id: "mailbox-1" }];
+    });
+    guardedMutation.mockImplementation(async () => {
+      if (!mailboxLocked) {
+        throw new Error("mailbox mutation ran without its row lock");
+      }
+      return { count: 1 };
+    });
+
+    await expect(action()).resolves.toMatchObject({ ok: true });
+  });
+
   it("rotates only the authenticated user's mailbox and logs no alias metadata", async () => {
     inboundActionMocks.txMailboxFindUnique.mockResolvedValue(mailbox());
 

@@ -17,6 +17,7 @@ import {
   generateInboundAliasLocalPart,
   inboundAddress
 } from "@/lib/inbound-email/mailboxes";
+import { lockOwnedInboundMailbox } from "@/lib/inbound-email/mailbox-lock";
 import { prisma } from "@/lib/prisma";
 import {
   checkAuthenticatedMutation,
@@ -292,8 +293,8 @@ export async function rotateInboundMailbox(): Promise<
   for (let attempt = 0; attempt <= ALIAS_COLLISION_RETRIES; attempt += 1) {
     try {
       return await prisma.$transaction(async (db) => {
-        const existing = await db.inboundMailbox.findUnique({
-          where: { userId: user.id }
+        const existing = await lockOwnedInboundMailbox(db, {
+          userId: user.id
         });
         if (!existing) {
           return actionFailure(MAILBOX_NOT_FOUND_ERROR);
@@ -356,8 +357,8 @@ async function setInboundMailboxStatus(
 
   try {
     return await prisma.$transaction(async (db) => {
-      const existing = await db.inboundMailbox.findUnique({
-        where: { userId: user.id }
+      const existing = await lockOwnedInboundMailbox(db, {
+        userId: user.id
       });
       if (!existing) {
         return actionFailure(MAILBOX_NOT_FOUND_ERROR);
@@ -421,8 +422,8 @@ export async function deletePendingInboundEmailDrafts(): Promise<
 
   try {
     return await prisma.$transaction(async (db) => {
-      const mailbox = await db.inboundMailbox.findUnique({
-        where: { userId: user.id }
+      const mailbox = await lockOwnedInboundMailbox(db, {
+        userId: user.id
       });
       const deleted = await db.transactionDraft.deleteMany({
         where: {
@@ -461,6 +462,7 @@ export async function disconnectInboundMailbox(): Promise<
 
   try {
     return await prisma.$transaction(async (db) => {
+      await lockOwnedInboundMailbox(db, { userId: user.id });
       const deletedDrafts = await db.transactionDraft.deleteMany({
         where: {
           userId: user.id,

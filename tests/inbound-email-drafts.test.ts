@@ -44,7 +44,8 @@ const storedDraft: TransactionDraftInput = {
   rawRow: null
 };
 
-function verifiedDb() {
+function verifiedDb(options: { enforceLockOrder?: boolean } = {}) {
+  const lockState = { mailbox: false, receipt: false, violated: false };
   const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
     id: "draft-1",
     captureKey: data.captureKey
@@ -58,21 +59,46 @@ function verifiedDb() {
       captureKey: storedDraft.captureKey,
       origin: "EMAIL"
     });
-  const findFirst = vi.fn(async (): Promise<any> => ({
-    id: "receipt-1",
+  const mailboxRecord = {
+    id: "mailbox-1",
     userId: "user-1",
-    mailboxId: "mailbox-1",
-    mailbox: {
-      id: "mailbox-1",
-      userId: "user-1",
-      aliasLocalPart: "alias-current",
-      status: "ACTIVE"
+    aliasLocalPart: "alias-current",
+    status: "ACTIVE"
+  };
+  const findFirst = vi.fn(async (): Promise<any> => {
+    if (
+      options.enforceLockOrder &&
+      (!lockState.mailbox || !lockState.receipt || lockState.violated)
+    ) {
+      return null;
     }
-  }));
+    return {
+      id: "receipt-1",
+      userId: "user-1",
+      mailboxId: "mailbox-1",
+      mailbox: mailboxRecord
+    };
+  });
+  const queryRaw = vi.fn(async (query: Prisma.Sql) => {
+    const statement = query.strings.join(" ");
+    if (statement.includes('FROM "InboundMailbox"')) {
+      lockState.mailbox = true;
+      return [{ id: "mailbox-1" }];
+    }
+    if (statement.includes('FROM "InboundEmailReceipt"')) {
+      if (!lockState.mailbox) lockState.violated = true;
+      lockState.receipt = true;
+      return [{ id: "receipt-1" }];
+    }
+    return [];
+  });
 
   return {
     db: {
-      $queryRaw: vi.fn(async () => [{ "?column?": 1 }]),
+      $queryRaw: queryRaw,
+      inboundMailbox: {
+        findUnique: vi.fn(async () => mailboxRecord)
+      },
       inboundEmailReceipt: { findFirst },
       transactionDraft: { findUnique, create },
       transaction: { create: vi.fn() }
@@ -84,6 +110,21 @@ function verifiedDb() {
 }
 
 describe("server-only email draft boundary", () => {
+  it("locks the owned mailbox before the owned receipt and draft creation", async () => {
+    const { db } = verifiedDb({ enforceLockOrder: true });
+
+    await expect(
+      createEmailDraftFromCandidate(db, {
+        userId: "user-1",
+        mailboxId: "mailbox-1",
+        aliasLocalPart: "alias-current",
+        receiptId: "receipt-1",
+        candidate,
+        now: new Date("2026-08-10T12:00:00.000Z")
+      })
+    ).resolves.toMatchObject({ created: true });
+  });
+
   it("rejects EMAIL at the public schema while accepting a persisted EMAIL record", () => {
     expect(transactionDraftInputSchema.safeParse(storedDraft).success).toBe(false);
     expect(storedTransactionDraftInputSchema.safeParse(storedDraft).success).toBe(true);
