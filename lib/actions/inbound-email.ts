@@ -383,7 +383,7 @@ async function setInboundMailboxStatus(
   }
 }
 
-export function enableInboundMailbox(): Promise<
+export async function enableInboundMailbox(): Promise<
   InboundEmailActionResult<{ setup: InboundEmailSetupView }>
 > {
   return setInboundMailboxStatus(
@@ -392,7 +392,7 @@ export function enableInboundMailbox(): Promise<
   );
 }
 
-export function disableInboundMailbox(): Promise<
+export async function disableInboundMailbox(): Promise<
   InboundEmailActionResult<{ setup: InboundEmailSetupView }>
 > {
   return setInboundMailboxStatus(
