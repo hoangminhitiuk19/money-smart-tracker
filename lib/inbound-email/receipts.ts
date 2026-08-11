@@ -6,7 +6,10 @@ import {
   Prisma,
   type InboundEmailDisposition
 } from "@prisma/client";
-import { INBOUND_RECEIPT_RETENTION_MS } from "@/lib/inbound-email/constants";
+import {
+  INBOUND_PROCESSING_LEASE_MS,
+  INBOUND_RECEIPT_RETENTION_MS
+} from "@/lib/inbound-email/constants";
 import { prisma } from "@/lib/prisma";
 
 export type InboundReceiptClaim =
@@ -149,6 +152,9 @@ export async function claimInboundEmailReceipt(input: {
     input.provider,
     input.messageId
   );
+  const processingLeaseCutoff = new Date(
+    input.now.getTime() - INBOUND_PROCESSING_LEASE_MS
+  );
 
   try {
     const created = await prisma.inboundEmailReceipt.create({
@@ -194,7 +200,13 @@ export async function claimInboundEmailReceipt(input: {
         id: existing.id,
         userId: input.userId,
         mailboxId: input.mailboxId,
-        state: { in: [...claimableStates] }
+        OR: [
+          { state: { in: [...claimableStates] } },
+          {
+            state: InboundEmailReceiptState.PROCESSING,
+            updatedAt: { lte: processingLeaseCutoff }
+          }
+        ]
       },
       data: {
         state: InboundEmailReceiptState.PROCESSING,

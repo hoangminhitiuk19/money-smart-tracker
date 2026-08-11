@@ -1,6 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { claimInboundEmailReceipt } from "@/lib/inbound-email/receipts";
+import { INBOUND_PROCESSING_LEASE_MS } from "@/lib/inbound-email/constants";
+import {
+  claimInboundEmailReceipt,
+  hashInboundIdentifier
+} from "@/lib/inbound-email/receipts";
 import { prisma } from "@/lib/prisma";
 import {
   cleanupAuditContext,
@@ -80,4 +84,51 @@ describe("concurrent inbound receipt claims", () => {
       })
     ).resolves.toBe(1);
   });
+
+  it("allows exactly one concurrent reclaim of a stale processing receipt", async () => {
+    const eventId = opaqueIdentifier();
+    const messageId = opaqueIdentifier();
+    const first = await claimInboundEmailReceipt(claimInput(eventId, messageId));
+    expect(first.kind).toBe("claimed");
+    const staleNow = new Date();
+    await prisma.inboundEmailReceipt.update({
+      where: { id: first.receipt.id },
+      data: {
+        state: "PROCESSING",
+        disposition: "PROVIDER_ERROR",
+        attemptCount: 1,
+        updatedAt: new Date(
+          staleNow.getTime() - INBOUND_PROCESSING_LEASE_MS
+        )
+      }
+    });
+
+    const results = await Promise.all([
+      claimInboundEmailReceipt({
+        ...claimInput(eventId, messageId),
+        now: staleNow
+      }),
+      claimInboundEmailReceipt({
+        ...claimInput(eventId, messageId),
+        now: staleNow
+      })
+    ]);
+
+    expect(results.map(({ kind }) => kind).sort()).toEqual([
+      "claimed",
+      "duplicate"
+    ]);
+    await expect(
+      prisma.inboundEmailReceipt.findUnique({
+        where: {
+          providerEventHash: hashInboundIdentifier("RESEND", eventId)
+        },
+        select: { attemptCount: true, disposition: true, state: true }
+      })
+    ).resolves.toEqual({
+      attemptCount: 2,
+      disposition: null,
+      state: "PROCESSING"
+    });
+  }, 30_000);
 });

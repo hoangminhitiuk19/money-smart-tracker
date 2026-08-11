@@ -7,7 +7,10 @@ import {
   hashInboundIdentifier,
   markInboundReceipt
 } from "@/lib/inbound-email/receipts";
-import { INBOUND_RECEIPT_RETENTION_MS } from "@/lib/inbound-email/constants";
+import {
+  INBOUND_PROCESSING_LEASE_MS,
+  INBOUND_RECEIPT_RETENTION_MS
+} from "@/lib/inbound-email/constants";
 
 const { receiptCreate, receiptFindUnique, receiptUpdateMany } = vi.hoisted(() => ({
   receiptCreate: vi.fn(),
@@ -261,7 +264,15 @@ describe("inbound receipt claiming", () => {
           id: existing.id,
           userId: claimInput.userId,
           mailboxId: claimInput.mailboxId,
-          state: { in: ["RECEIVED", "RETRYABLE_FAILED"] }
+          OR: [
+            { state: { in: ["RECEIVED", "RETRYABLE_FAILED"] } },
+            {
+              state: "PROCESSING",
+              updatedAt: {
+                lte: new Date(now.getTime() - INBOUND_PROCESSING_LEASE_MS)
+              }
+            }
+          ]
         },
         data: {
           state: "PROCESSING",
@@ -272,7 +283,115 @@ describe("inbound receipt claiming", () => {
     }
   );
 
-  it.each(["PROCESSING", "PROCESSED", "IGNORED", "TERMINAL_FAILED"] as const)(
+  it.each([
+    {
+      label: "fresh",
+      updatedAt: now
+    },
+    {
+      label: "one millisecond before the lease boundary",
+      updatedAt: new Date(
+        now.getTime() - INBOUND_PROCESSING_LEASE_MS + 1
+      )
+    }
+  ])(
+    "does not reclaim a $label processing receipt",
+    async ({ updatedAt }) => {
+      const claimInput = input();
+      const existing = receipt({
+        userId: claimInput.userId,
+        mailboxId: claimInput.mailboxId,
+        state: "PROCESSING",
+        updatedAt
+      });
+      receiptCreate.mockRejectedValue(uniqueConflict(["providerEventHash"]));
+      receiptFindUnique.mockResolvedValueOnce(existing);
+      receiptUpdateMany.mockResolvedValue({ count: 0 });
+
+      await expect(claimInboundEmailReceipt(claimInput)).resolves.toEqual(
+        expect.objectContaining({ kind: "duplicate" })
+      );
+      expect(receiptUpdateMany).toHaveBeenCalledWith({
+        where: {
+          id: existing.id,
+          userId: claimInput.userId,
+          mailboxId: claimInput.mailboxId,
+          OR: [
+            { state: { in: ["RECEIVED", "RETRYABLE_FAILED"] } },
+            {
+              state: "PROCESSING",
+              updatedAt: {
+                lte: new Date(now.getTime() - INBOUND_PROCESSING_LEASE_MS)
+              }
+            }
+          ]
+        },
+        data: {
+          state: "PROCESSING",
+          disposition: null,
+          attemptCount: { increment: 1 }
+        }
+      });
+    }
+  );
+
+  it.each([
+    {
+      label: "at the inclusive lease boundary",
+      updatedAt: new Date(now.getTime() - INBOUND_PROCESSING_LEASE_MS)
+    },
+    {
+      label: "older than the lease",
+      updatedAt: new Date(now.getTime() - INBOUND_PROCESSING_LEASE_MS - 1)
+    }
+  ])(
+    "atomically reclaims processing $label and clears its stale disposition",
+    async ({ updatedAt }) => {
+      const claimInput = input();
+      const existing = receipt({
+        userId: claimInput.userId,
+        mailboxId: claimInput.mailboxId,
+        state: "PROCESSING",
+        disposition: "PROVIDER_ERROR",
+        updatedAt
+      });
+      receiptCreate.mockRejectedValue(uniqueConflict(["providerEventHash"]));
+      receiptFindUnique.mockResolvedValueOnce(existing);
+      receiptUpdateMany.mockResolvedValue({ count: 1 });
+
+      await expect(claimInboundEmailReceipt(claimInput)).resolves.toEqual({
+        kind: "claimed",
+        receipt: {
+          id: existing.id,
+          userId: existing.userId,
+          mailboxId: existing.mailboxId
+        }
+      });
+      expect(receiptUpdateMany).toHaveBeenCalledWith({
+        where: {
+          id: existing.id,
+          userId: claimInput.userId,
+          mailboxId: claimInput.mailboxId,
+          OR: [
+            { state: { in: ["RECEIVED", "RETRYABLE_FAILED"] } },
+            {
+              state: "PROCESSING",
+              updatedAt: {
+                lte: new Date(now.getTime() - INBOUND_PROCESSING_LEASE_MS)
+              }
+            }
+          ]
+        },
+        data: {
+          state: "PROCESSING",
+          disposition: null,
+          attemptCount: { increment: 1 }
+        }
+      });
+    }
+  );
+
+  it.each(["PROCESSED", "IGNORED", "TERMINAL_FAILED"] as const)(
     "does not reclaim a %s receipt",
     async (state) => {
       const claimInput = input();
@@ -287,6 +406,15 @@ describe("inbound receipt claiming", () => {
 
       await expect(claimInboundEmailReceipt(claimInput)).resolves.toEqual(
         expect.objectContaining({ kind: "duplicate" })
+      );
+      expect(receiptUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            id: existing.id,
+            userId: claimInput.userId,
+            mailboxId: claimInput.mailboxId
+          })
+        })
       );
     }
   );
