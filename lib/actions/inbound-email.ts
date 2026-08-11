@@ -77,11 +77,25 @@ function actionFailure<T>(error: string): InboundEmailActionResult<T> {
   return { ok: false, error };
 }
 
-function isUniqueConflict(error: unknown) {
-  return (
-    error instanceof Prisma.PrismaClientKnownRequestError &&
-    error.code === "P2002"
-  );
+function inboundMailboxUniqueConflictTarget(
+  error: unknown
+): "userId" | "aliasLocalPart" | null {
+  if (
+    !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+    error.code !== "P2002"
+  ) {
+    return null;
+  }
+
+  const modelName = error.meta?.modelName;
+  if (modelName !== undefined && modelName !== "InboundMailbox") {
+    return null;
+  }
+
+  const target = error.meta?.target;
+  const field =
+    Array.isArray(target) && target.length === 1 ? target[0] : target;
+  return field === "userId" || field === "aliasLocalPart" ? field : null;
 }
 
 async function logLifecycleActivity(
@@ -227,7 +241,11 @@ export async function createInboundMailbox(): Promise<
         };
       });
     } catch (error) {
-      if (!isUniqueConflict(error)) {
+      const conflictTarget = inboundMailboxUniqueConflictTarget(error);
+      if (conflictTarget === "aliasLocalPart") {
+        continue;
+      }
+      if (conflictTarget !== "userId") {
         return actionFailure(UPDATE_ERROR);
       }
 
@@ -244,6 +262,8 @@ export async function createInboundMailbox(): Promise<
       } catch {
         return actionFailure(UPDATE_ERROR);
       }
+
+      return actionFailure(UPDATE_ERROR);
     }
   }
 
@@ -308,7 +328,7 @@ export async function rotateInboundMailbox(): Promise<
         };
       });
     } catch (error) {
-      if (!isUniqueConflict(error)) {
+      if (inboundMailboxUniqueConflictTarget(error) !== "aliasLocalPart") {
         return actionFailure(UPDATE_ERROR);
       }
     }
@@ -319,8 +339,7 @@ export async function rotateInboundMailbox(): Promise<
 
 async function setInboundMailboxStatus(
   status: typeof InboundMailboxStatus.ACTIVE | typeof InboundMailboxStatus.DISABLED,
-  action: "INBOUND_EMAIL_ENABLED" | "INBOUND_EMAIL_DISABLED",
-  requireConfiguration: boolean
+  action: "INBOUND_EMAIL_ENABLED" | "INBOUND_EMAIL_DISABLED"
 ): Promise<InboundEmailActionResult<{ setup: InboundEmailSetupView }>> {
   const user = await requireAuth();
   const denied = await authorizeMutation(user.id);
@@ -332,12 +351,7 @@ async function setInboundMailboxStatus(
   try {
     config = getInboundEmailConfig();
   } catch {
-    return actionFailure(
-      requireConfiguration ? CONFIGURATION_ERROR : UPDATE_ERROR
-    );
-  }
-  if (requireConfiguration && !config) {
-    return actionFailure(CONFIGURATION_ERROR);
+    config = null;
   }
 
   try {
@@ -373,8 +387,7 @@ export function enableInboundMailbox(): Promise<
 > {
   return setInboundMailboxStatus(
     InboundMailboxStatus.ACTIVE,
-    "INBOUND_EMAIL_ENABLED",
-    true
+    "INBOUND_EMAIL_ENABLED"
   );
 }
 
@@ -383,8 +396,7 @@ export function disableInboundMailbox(): Promise<
 > {
   return setInboundMailboxStatus(
     InboundMailboxStatus.DISABLED,
-    "INBOUND_EMAIL_DISABLED",
-    false
+    "INBOUND_EMAIL_DISABLED"
   );
 }
 

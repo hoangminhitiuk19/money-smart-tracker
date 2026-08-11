@@ -104,10 +104,14 @@ function mailbox(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function uniqueConflict() {
+function uniqueConflict(
+  target?: string[],
+  modelName = "InboundMailbox"
+) {
   return new Prisma.PrismaClientKnownRequestError("Synthetic unique conflict", {
     code: "P2002",
-    clientVersion: "6.19.0"
+    clientVersion: "6.19.0",
+    ...(target ? { meta: { modelName, target } } : {})
   });
 }
 
@@ -256,7 +260,9 @@ describe("inbound mailbox creation", () => {
   });
 
   it("returns the owned mailbox when a concurrent create wins the user uniqueness race", async () => {
-    inboundActionMocks.transaction.mockRejectedValueOnce(uniqueConflict());
+    inboundActionMocks.transaction.mockRejectedValueOnce(
+      uniqueConflict(["userId"])
+    );
     inboundActionMocks.rootMailboxFindUnique.mockResolvedValue(mailbox());
 
     await expect(createInboundMailbox()).resolves.toMatchObject({
@@ -271,7 +277,9 @@ describe("inbound mailbox creation", () => {
   });
 
   it("stops after an initial alias collision and three retries", async () => {
-    inboundActionMocks.txMailboxCreate.mockRejectedValue(uniqueConflict());
+    inboundActionMocks.txMailboxCreate.mockRejectedValue(
+      uniqueConflict(["aliasLocalPart"])
+    );
     inboundActionMocks.rootMailboxFindUnique.mockResolvedValue(null);
 
     await expect(createInboundMailbox()).resolves.toEqual({
@@ -281,6 +289,24 @@ describe("inbound mailbox creation", () => {
 
     expect(inboundActionMocks.txMailboxCreate).toHaveBeenCalledTimes(4);
     expect(inboundActionMocks.transaction).toHaveBeenCalledTimes(4);
+  });
+
+  it.each([
+    ["targetless", uniqueConflict()],
+    ["unrelated", uniqueConflict(["id"], "ActivityLog")]
+  ])("refuses a %s P2002 without retry or recovery lookup", async (_kind, conflict) => {
+    inboundActionMocks.transaction.mockRejectedValueOnce(conflict);
+
+    const result = await createInboundMailbox();
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Unable to update inbound email settings."
+    });
+    expect(inboundActionMocks.transaction).toHaveBeenCalledTimes(1);
+    expect(inboundActionMocks.rootMailboxFindUnique).not.toHaveBeenCalled();
+    expect(inboundActionMocks.activityCreate).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain("P2002");
   });
 });
 
@@ -338,14 +364,31 @@ describe("owned inbound mailbox state changes", () => {
     });
   });
 
-  it("requires configuration before enabling a mailbox", async () => {
+  it("enables an existing owned mailbox without configuration and withholds its address", async () => {
     inboundActionMocks.getConfig.mockReturnValue(null);
+    inboundActionMocks.txMailboxFindUnique.mockResolvedValue(
+      mailbox({ status: "DISABLED" })
+    );
 
-    await expect(enableInboundMailbox()).resolves.toEqual({
-      ok: false,
-      error: "Inbound email testing is unavailable."
+    await expect(enableInboundMailbox()).resolves.toMatchObject({
+      ok: true,
+      setup: {
+        configured: false,
+        mailbox: { address: null, status: "ACTIVE" }
+      }
     });
-    expect(inboundActionMocks.transaction).not.toHaveBeenCalled();
+    expect(inboundActionMocks.txMailboxUpdateMany).toHaveBeenCalledWith({
+      where: { userId: "user-1", id: "mailbox-1" },
+      data: { status: "ACTIVE" }
+    });
+    expect(inboundActionMocks.activityCreate).toHaveBeenCalledWith({
+      data: {
+        userId: "user-1",
+        action: "INBOUND_EMAIL_ENABLED",
+        entityType: "InboundEmail",
+        entityId: null
+      }
+    });
   });
 });
 
