@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { getInboundEmailConfig, parseServerEnv } from "@/lib/env";
 
@@ -12,6 +14,11 @@ const inbound = {
   INBOUND_EMAIL_WEBHOOK_SECRET: "whsec_test_secret",
   INBOUND_EMAIL_DOMAIN: "Demo-Inbound.resend.app"
 };
+
+const inboundKeys = Object.keys(inbound);
+const envExample = readFileSync(resolve(process.cwd(), ".env.example"), "utf8");
+const readme = readFileSync(resolve(process.cwd(), "README.md"), "utf8");
+const readmeText = readme.replace(/[`*_]/g, "").replace(/\s+/g, " ");
 
 describe("server environment", () => {
   it("accepts exactly the required variables", () => {
@@ -83,4 +90,43 @@ describe("server environment", () => {
       );
     }
   );
+});
+
+describe("inbound environment setup documentation", () => {
+  it("keeps optional inbound entries commented so a copied example disables inbound email", () => {
+    for (const key of inboundKeys) {
+      expect(envExample).not.toMatch(new RegExp(`^${key}\\s*=`, "m"));
+      expect(envExample).toMatch(new RegExp(`^#\\s*${key}\\s*=$`, "m"));
+    }
+  });
+
+  it("explains that copying the example leaves inbound disabled until all three entries are uncommented", () => {
+    expect(readmeText).toContain(
+      "copying .env.example leaves inbound-email testing disabled"
+    );
+    expect(readmeText).toContain(
+      "uncomment all three entries and configure them together"
+    );
+  });
+
+  it("gives executable API-key and webhook signing-secret acquisition steps", () => {
+    expect(readme).toContain(
+      "https://resend.com/docs/dashboard/api-keys/introduction"
+    );
+    expect(readme).toContain(
+      "https://resend.com/docs/webhooks/verify-webhooks-requests"
+    );
+    expect(readmeText).toContain(
+      "API Keys dashboard, choose Create API Key, enter a named testing key, and choose Full access"
+    );
+    expect(readmeText).toContain(
+      "Received-email retrieval requires API access; Sending access is insufficient"
+    );
+    expect(readmeText).toContain(
+      "key only once, so copy it directly to Vercel"
+    );
+    expect(readmeText).toContain(
+      "After creating the email.received webhook, open its details and copy the signing secret directly to Vercel"
+    );
+  });
 });

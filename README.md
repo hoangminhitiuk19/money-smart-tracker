@@ -23,13 +23,14 @@ NEXTAUTH_SECRET=
 NEXTAUTH_URL=
 ```
 
-For optional inbound-email testing only, configure this entire group or leave
-the entire group absent:
+The optional inbound templates in `.env.example` are commented, so copying
+`.env.example` leaves inbound-email testing disabled. To enable it, uncomment
+all three entries and configure them together:
 
 ```bash
-INBOUND_EMAIL_API_KEY=
-INBOUND_EMAIL_WEBHOOK_SECRET=
-INBOUND_EMAIL_DOMAIN=
+# INBOUND_EMAIL_API_KEY=
+# INBOUND_EMAIL_WEBHOOK_SECRET=
+# INBOUND_EMAIL_DOMAIN=
 ```
 
 Do not commit `.env` or any file containing real secret values.
@@ -70,10 +71,96 @@ Never commit database URLs or secret values.
 
 ## Free inbound-email testing
 
-The inbound-email group is optional: leave all three values absent unless this
-testing foundation is explicitly enabled, and configure all three together when
-it is. It accepts synthetic or redacted messages only. This testing setup does
-not authorize Production use.
+The secure inbound-email foundation is available at
+`/transactions/capture/email` for Local and Vercel Preview testing. It accepts
+only the exact synthetic fixture below and creates a reviewable `EMAIL` draft;
+receiving email never creates a transaction or changes any financial total.
+
+The inbound-email group is optional. Leave all three values absent for normal
+local builds and automated tests. To test the live Resend boundary, uncomment
+all three entries and configure them together:
+
+```bash
+# INBOUND_EMAIL_API_KEY=
+# INBOUND_EMAIL_WEBHOOK_SECRET=
+# INBOUND_EMAIL_DOMAIN=
+```
+
+Automated tests use mocked provider contracts and do not need a Resend account.
+When the group is absent, the protected setup page shows a safe unavailable
+state while disable, deletion, and disconnect privacy controls remain usable for
+an existing mailbox.
+
+### Owner runbook: free Resend and Vercel Preview
+
+Use synthetic data and a separate testing database. Never paste credentials,
+webhook signatures, generated addresses, or provider identifiers into chat,
+git, screenshots, logs, or acceptance documents.
+
+1. Create a free Resend account. On the **Emails** page, open the **Receiving**
+   tab, use the three-dot menu, choose **Receiving address**, and copy the
+   assigned `*.resend.app` receiving domain. See Resend's
+   [Receiving introduction](https://resend.com/docs/dashboard/receiving/introduction).
+2. Deploy this branch to Vercel Preview with the Preview `DATABASE_URL`,
+   `NEXTAUTH_SECRET`, and exact Preview `NEXTAUTH_URL`. Do not reuse Production
+   values.
+3. In Resend, open the **API Keys** dashboard, choose **Create API Key**, enter
+   a named testing key, and choose **Full access**. Received-email retrieval
+   requires API access; **Sending access** is insufficient. Resend displays the
+   key only once, so copy it directly to Vercel as
+   `INBOUND_EMAIL_API_KEY` with the **Preview** target. See Resend's
+   [API-key guidance](https://resend.com/docs/dashboard/api-keys/introduction).
+4. Copy the complete HTTPS Preview deployment URL and append
+   `/api/webhooks/inbound-email`. On Resend's **Webhooks** page choose **Add
+   Webhook**, enter that complete endpoint, select only `email.received`, and
+   choose **Add**. After creating the `email.received` webhook, open its details
+   and copy the signing secret directly to Vercel as
+   `INBOUND_EMAIL_WEBHOOK_SECRET` with the **Preview** target. See Resend's
+   [webhook-signature guidance](https://resend.com/docs/webhooks/verify-webhooks-requests).
+5. In Vercel **Project Settings → Environment Variables**, add the receiving
+   domain as `INBOUND_EMAIL_DOMAIN` with the **Preview** target. Confirm all
+   three inbound entries are configured for Preview. Environment changes apply
+   only to a new deployment, so redeploy Preview. See Vercel's
+   [environment-variable guidance](https://vercel.com/docs/environment-variables/managing-environment-variables).
+6. Sign in to Preview, open `/transactions/capture/email`, create the private
+   test address, and send exactly this fixture to it:
+
+   ```text
+   MONEY SMART TRACKER TEST
+   Amount: 125000
+   Currency: VND
+   Date: 2026-08-10
+   Merchant: Demo Cafe
+   ```
+
+7. Confirm one received status and one `NEEDS_REVIEW` email draft. Choose an
+   owned source, import once, and confirm exactly one transaction appears.
+8. Replay the same event from Resend and confirm it is reported as a duplicate
+   without another draft or transaction.
+9. Rotate the test address and confirm the old address no longer creates a
+   draft. Exercise disable, enable, delete-pending-data, and disconnect.
+10. Repeat the flow by keyboard on desktop and at 375px. Confirm visible focus,
+   text/icon status labels, 44px targets, reduced-motion behavior, and no
+   document overflow.
+
+The application can receive only messages explicitly sent to the generated
+address; it cannot browse a mailbox. Message text and HTML are processed only in
+memory. Attachments are never requested. The database stores the random local
+alias needed for repeat copying, hashes of provider event/message identifiers,
+bounded status/disposition metadata, and lifecycle timestamps. It does not store
+the raw webhook, body, HTML, subject, sender or forwarding address, complete
+generated address, provider identifiers, headers, or attachments. Resend may
+retain received email separately for up to 30 days; see Resend's
+[retention guidance](https://resend.com/docs/dashboard/webhooks/how-to-store-webhooks-data).
+
+Pending email drafts become cleanup-eligible after 30 days and receipt metadata
+after 90 days. Preview cleanup is opportunistic, so these thresholds are not a
+wall-clock deletion guarantee while the app is idle.
+
+Gmail/Outlook onboarding, institution or bank parsers, real financial email,
+custom domains, attachment handling, scheduled deletion with monitoring, and
+Production use remain excluded. A separate Production security/privacy design
+and approval are required before enabling this feature in Production.
 
 Before deploying, run `npm run verify`. During the release, run migrations with:
 
@@ -115,8 +202,9 @@ Saving is atomic for the selected set, and retrying a failed request reuses its
 idempotency key so the same batch is not created twice. Unselected drafts remain
 available for later review.
 
-Email ingestion is planned but is not part of the transaction-capture
-foundation. It requires no additional environment variables in this phase.
+Email forwarding testing is available at `/transactions/capture/email` as a
+separate, review-first path. It uses the optional all-or-none environment group
+documented above and remains excluded from Production.
 
 ## Phase 2 release evidence
 
