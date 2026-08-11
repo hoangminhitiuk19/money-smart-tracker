@@ -139,7 +139,21 @@ describe("EmailSetupPanel safety and state", () => {
     expect(disabled.parentElement?.parentElement?.querySelector('[aria-hidden="true"]')).not.toBeNull();
   });
 
-  it("keeps an existing mailbox unavailable when provider configuration is absent", () => {
+  it("keeps the disable privacy control for an active mailbox when provider configuration is absent", async () => {
+    const user = userEvent.setup();
+    actionMocks.disable.mockResolvedValue({
+      ok: true,
+      setup: {
+        configured: false,
+        mailbox: {
+          address: null,
+          status: "DISABLED",
+          lastDisposition: null,
+          lastReceivedAt: null,
+          reviewCaptureKey: null
+        }
+      }
+    });
     render(
       <EmailSetupPanel
         initialSetup={{
@@ -159,6 +173,48 @@ describe("EmailSetupPanel safety and state", () => {
     expect(screen.getByRole("heading", { name: "Not configured" })).not.toBeNull();
     expect(screen.queryByText("Active")).toBeNull();
     expect(screen.queryByText("Disabled")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Rotate test address" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Enable email forwarding" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Disable email forwarding" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Disable email forwarding?" });
+    expect(within(dialog).getByText(
+      "New messages will be ignored until email forwarding is enabled again. Pending test drafts stay available."
+    )).not.toBeNull();
+    await user.click(within(dialog).getByRole("button", { name: "Disable forwarding" }));
+
+    expect(actionMocks.disable).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Email forwarding disabled.")).not.toBeNull();
+    expect(screen.getByText("Service unavailable")).not.toBeNull();
+    expect(screen.getByRole("heading", { name: "Not configured" })).not.toBeNull();
+    expect(screen.queryByText("Active")).toBeNull();
+    expect(screen.queryByText("Disabled")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Rotate test address" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Enable email forwarding" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Disable email forwarding" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Delete pending test drafts" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Disconnect email forwarding" })).not.toBeNull();
+    const heading = screen.getByRole("heading", { name: "Not configured" });
+    await waitFor(() => expect(heading).toBe(document.activeElement));
+  });
+
+  it("hides lifecycle status controls for a disabled mailbox when provider configuration is absent", () => {
+    render(
+      <EmailSetupPanel
+        initialSetup={{
+          configured: false,
+          mailbox: {
+            address: null,
+            status: "DISABLED",
+            lastDisposition: null,
+            lastReceivedAt: null,
+            reviewCaptureKey: null
+          }
+        }}
+      />
+    );
+
+    expect(screen.getByText("Service unavailable")).not.toBeNull();
     expect(screen.queryByRole("button", { name: "Rotate test address" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Enable email forwarding" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Disable email forwarding" })).toBeNull();
@@ -253,13 +309,16 @@ describe("EmailSetupPanel confirmations", () => {
     expect(trigger).toBe(document.activeElement);
   });
 
-  it("moves focus to the status heading after a successful action", async () => {
+  it("shows the disabled state and focuses status after configured forwarding is disabled", async () => {
     const user = userEvent.setup();
     render(<EmailSetupPanel initialSetup={setupView()} />);
 
     await user.click(screen.getByRole("button", { name: "Disable email forwarding" }));
     await user.click(screen.getByRole("button", { name: "Disable forwarding" }));
 
+    expect(actionMocks.disable).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Email forwarding disabled.")).not.toBeNull();
+    expect(screen.getByText("Disabled")).not.toBeNull();
     const heading = await screen.findByRole("heading", { name: "Waiting" });
     await waitFor(() => expect(heading).toBe(document.activeElement));
   });

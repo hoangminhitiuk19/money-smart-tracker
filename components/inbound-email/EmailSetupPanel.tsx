@@ -486,26 +486,26 @@ export function EmailSetupPanel({
                 </h2>
                 <div className="mt-3 grid gap-2">
                   {hasUsableAddress ? (
-                    <>
-                      <Button
-                        className="w-full motion-reduce:transition-none"
-                        onClick={() => openDialog("rotate")}
-                        variant="outline"
-                      >
-                        Rotate test address
-                      </Button>
-                      <Button
-                        className="w-full motion-reduce:transition-none"
-                        onClick={() =>
-                          openDialog(mailbox.status === "ACTIVE" ? "disable" : "enable")
-                        }
-                        variant="outline"
-                      >
-                        {mailbox.status === "ACTIVE"
-                          ? "Disable email forwarding"
-                          : "Enable email forwarding"}
-                      </Button>
-                    </>
+                    <Button
+                      className="w-full motion-reduce:transition-none"
+                      onClick={() => openDialog("rotate")}
+                      variant="outline"
+                    >
+                      Rotate test address
+                    </Button>
+                  ) : null}
+                  {mailbox.status === "ACTIVE" || hasUsableAddress ? (
+                    <Button
+                      className="w-full motion-reduce:transition-none"
+                      onClick={() =>
+                        openDialog(mailbox.status === "ACTIVE" ? "disable" : "enable")
+                      }
+                      variant="outline"
+                    >
+                      {mailbox.status === "ACTIVE"
+                        ? "Disable email forwarding"
+                        : "Enable email forwarding"}
+                    </Button>
                   ) : null}
                   <Button
                     className="w-full motion-reduce:transition-none"
