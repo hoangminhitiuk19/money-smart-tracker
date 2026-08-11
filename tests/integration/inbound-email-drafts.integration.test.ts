@@ -107,9 +107,44 @@ async function createReceipt(
 }
 
 type GateEvent = "UPDATE" | "DELETE";
+type GateCleanup = () => Promise<void>;
+
+const TEST_GATE_NAMESPACE_MIN = 219_701;
+const TEST_GATE_NAMESPACE_MAX = 219_707;
 
 function sqlLiteral(value: string) {
   return value.replaceAll("'", "''");
+}
+
+function sqlIdentifier(value: string) {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function databaseGateCleanup(
+  tableName: "InboundMailbox" | "TransactionDraft",
+  triggerName: string,
+  functionName: string
+): GateCleanup {
+  return async () => {
+    let firstError: unknown;
+
+    try {
+      await prisma.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS ${sqlIdentifier(triggerName)} ON ${sqlIdentifier(tableName)}`
+      );
+    } catch (error) {
+      firstError = error;
+    }
+    try {
+      await prisma.$executeRawUnsafe(
+        `DROP FUNCTION IF EXISTS ${sqlIdentifier(functionName)}()`
+      );
+    } catch (error) {
+      firstError ??= error;
+    }
+
+    if (firstError) throw firstError;
+  };
 }
 
 async function installMailboxLifecycleGate(
@@ -124,33 +159,46 @@ async function installMailboxLifecycleGate(
   const functionName = `gate_inbound_mailbox_${suffix}`;
   const triggerName = `gate_inbound_mailbox_trigger_${suffix}`;
   const rowId = sqlLiteral(mailboxId);
+  const cleanup = databaseGateCleanup(
+    "InboundMailbox",
+    triggerName,
+    functionName
+  );
+  let functionCreated = false;
 
-  await prisma.$executeRawUnsafe(`
-    CREATE FUNCTION "${functionName}"() RETURNS trigger
-    LANGUAGE plpgsql AS $$
-    BEGIN
-      IF OLD."id" = '${rowId}' THEN
-        PERFORM pg_advisory_xact_lock(${markerNamespace}, ${markerKey});
-        PERFORM pg_advisory_xact_lock(${gateNamespace}, ${gateKey});
-      END IF;
-      RETURN ${event === "UPDATE" ? "NEW" : "OLD"};
-    END;
-    $$;
-  `);
-  await prisma.$executeRawUnsafe(`
-    CREATE TRIGGER "${triggerName}"
-    BEFORE ${event} ON "InboundMailbox"
-    FOR EACH ROW EXECUTE FUNCTION "${functionName}"();
-  `);
-
-  return async () => {
-    await prisma.$executeRawUnsafe(
-      `DROP TRIGGER IF EXISTS "${triggerName}" ON "InboundMailbox"`
-    );
-    await prisma.$executeRawUnsafe(
-      `DROP FUNCTION IF EXISTS "${functionName}"()`
-    );
-  };
+  try {
+    await prisma.$executeRawUnsafe(`
+      CREATE FUNCTION "${functionName}"() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        IF OLD."id" = '${rowId}' THEN
+          PERFORM pg_advisory_xact_lock(${markerNamespace}, ${markerKey});
+          PERFORM pg_advisory_xact_lock(${gateNamespace}, ${gateKey});
+        END IF;
+        RETURN ${event === "UPDATE" ? "NEW" : "OLD"};
+      END;
+      $$;
+    `);
+    functionCreated = true;
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER "${triggerName}"
+      BEFORE ${event} ON "InboundMailbox"
+      FOR EACH ROW EXECUTE FUNCTION "${functionName}"();
+    `);
+    return cleanup;
+  } catch (error) {
+    if (functionCreated) {
+      try {
+        await cleanup();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "Lifecycle gate installation and cleanup failed."
+        );
+      }
+    }
+    throw error;
+  }
 }
 
 async function installDraftInsertGate(
@@ -164,33 +212,46 @@ async function installDraftInsertGate(
   const functionName = `gate_email_draft_insert_${suffix}`;
   const triggerName = `gate_email_draft_insert_trigger_${suffix}`;
   const ownedReceiptId = sqlLiteral(receiptId);
+  const cleanup = databaseGateCleanup(
+    "TransactionDraft",
+    triggerName,
+    functionName
+  );
+  let functionCreated = false;
 
-  await prisma.$executeRawUnsafe(`
-    CREATE FUNCTION "${functionName}"() RETURNS trigger
-    LANGUAGE plpgsql AS $$
-    BEGIN
-      IF NEW."inboundEmailReceiptId" = '${ownedReceiptId}' THEN
-        PERFORM pg_advisory_xact_lock(${markerNamespace}, ${markerKey});
-        PERFORM pg_advisory_xact_lock(${gateNamespace}, ${gateKey});
-      END IF;
-      RETURN NEW;
-    END;
-    $$;
-  `);
-  await prisma.$executeRawUnsafe(`
-    CREATE TRIGGER "${triggerName}"
-    BEFORE INSERT ON "TransactionDraft"
-    FOR EACH ROW EXECUTE FUNCTION "${functionName}"();
-  `);
-
-  return async () => {
-    await prisma.$executeRawUnsafe(
-      `DROP TRIGGER IF EXISTS "${triggerName}" ON "TransactionDraft"`
-    );
-    await prisma.$executeRawUnsafe(
-      `DROP FUNCTION IF EXISTS "${functionName}"()`
-    );
-  };
+  try {
+    await prisma.$executeRawUnsafe(`
+      CREATE FUNCTION "${functionName}"() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW."inboundEmailReceiptId" = '${ownedReceiptId}' THEN
+          PERFORM pg_advisory_xact_lock(${markerNamespace}, ${markerKey});
+          PERFORM pg_advisory_xact_lock(${gateNamespace}, ${gateKey});
+        END IF;
+        RETURN NEW;
+      END;
+      $$;
+    `);
+    functionCreated = true;
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER "${triggerName}"
+      BEFORE INSERT ON "TransactionDraft"
+      FOR EACH ROW EXECUTE FUNCTION "${functionName}"();
+    `);
+    return cleanup;
+  } catch (error) {
+    if (functionCreated) {
+      try {
+        await cleanup();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "Draft gate installation and cleanup failed."
+        );
+      }
+    }
+    throw error;
+  }
 }
 
 async function waitForAdvisoryLock(namespace: number, key: number) {
@@ -231,27 +292,60 @@ async function waitForMailboxLockWaiter() {
   throw new Error("Timed out waiting for the owned mailbox row lock.");
 }
 
-function holdAdvisoryGate(namespace: number, key: number) {
+function holdAdvisoryGate(
+  namespace: number,
+  key: number,
+  options: { timeoutMs?: number } = {}
+) {
+  const timeoutMs = Math.max(1, Math.floor(options.timeoutMs ?? 20_000));
   let release: () => void = () => undefined;
   let signalHeld: () => void = () => undefined;
-  const held = new Promise<void>((resolve) => {
+  let signalHeldFailure: (error: unknown) => void = () => undefined;
+  let heldSettled = false;
+  let releasedSettled = false;
+  const held = new Promise<void>((resolve, reject) => {
     signalHeld = resolve;
+    signalHeldFailure = reject;
   });
   const released = new Promise<void>((resolve) => {
-    release = resolve;
+    release = () => {
+      if (releasedSettled) return;
+      releasedSettled = true;
+      resolve();
+    };
   });
-  const transaction = prisma.$transaction(
+  const completion = prisma.$transaction(
     async (db) => {
+      await db.$executeRawUnsafe(
+        `SET LOCAL lock_timeout = '${timeoutMs}ms'`
+      );
       await db.$executeRawUnsafe(
         `SELECT pg_advisory_xact_lock(${namespace}, ${key})`
       );
+      heldSettled = true;
       signalHeld();
       await released;
     },
-    { timeout: 20_000 }
+    { timeout: timeoutMs + 1_000 }
+  );
+  void completion.then(
+    () => {
+      if (heldSettled) return;
+      heldSettled = true;
+      signalHeldFailure(
+        new Error("Advisory gate completed before acquiring its lock.")
+      );
+    },
+    (error) => {
+      if (!heldSettled) {
+        heldSettled = true;
+        signalHeldFailure(error);
+      }
+      release();
+    }
   );
 
-  return { held, release, transaction };
+  return { held, release, completion };
 }
 
 async function createConcurrencyFixture(label: string) {
@@ -313,6 +407,103 @@ async function financialSnapshot(
   };
 }
 
+type TestGateResources = {
+  advisoryLocks: Array<{ pid: number }>;
+  functions: Array<{ name: string }>;
+  triggers: Array<{ name: string; tableName: string }>;
+};
+
+async function inspectTestGateResources(): Promise<TestGateResources> {
+  const [advisoryLocks, functions, triggers] = await Promise.all([
+    prisma.$queryRaw<Array<{ pid: number }>>`
+      SELECT DISTINCT pid
+      FROM pg_locks
+      WHERE locktype = 'advisory'
+        AND classid::bigint BETWEEN ${TEST_GATE_NAMESPACE_MIN} AND ${TEST_GATE_NAMESPACE_MAX}
+        AND objsubid = 2
+        AND database = (
+          SELECT oid FROM pg_database WHERE datname = current_database()
+        )
+        AND pid <> pg_backend_pid()
+    `,
+    prisma.$queryRaw<Array<{ name: string }>>`
+      SELECT procedure.proname AS "name"
+      FROM pg_proc AS procedure
+      JOIN pg_namespace AS namespace
+        ON namespace.oid = procedure.pronamespace
+      WHERE namespace.nspname = current_schema()
+        AND (
+          procedure.proname LIKE 'gate_inbound_mailbox_%'
+          OR procedure.proname LIKE 'gate_email_draft_insert_%'
+        )
+    `,
+    prisma.$queryRaw<Array<{ name: string; tableName: string }>>`
+      SELECT trigger.tgname AS "name", relation.relname AS "tableName"
+      FROM pg_trigger AS trigger
+      JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+      JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = current_schema()
+        AND (
+          trigger.tgname LIKE 'gate_inbound_mailbox_trigger_%'
+          OR trigger.tgname LIKE 'gate_email_draft_insert_trigger_%'
+        )
+    `
+  ]);
+
+  return { advisoryLocks, functions, triggers };
+}
+
+async function recoverTestGateResources(resources: TestGateResources) {
+  const cleanupErrors: unknown[] = [];
+
+  for (const { pid } of resources.advisoryLocks) {
+    try {
+      await prisma.$queryRaw`
+        SELECT pg_terminate_backend(${pid})
+      `;
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const [row] = await prisma.$queryRaw<Array<{ count: number }>>`
+      SELECT COUNT(*)::int AS "count"
+      FROM pg_locks
+      WHERE locktype = 'advisory'
+        AND classid::bigint BETWEEN ${TEST_GATE_NAMESPACE_MIN} AND ${TEST_GATE_NAMESPACE_MAX}
+        AND objsubid = 2
+        AND database = (
+          SELECT oid FROM pg_database WHERE datname = current_database()
+        )
+        AND pid <> pg_backend_pid()
+    `;
+    if (row?.count === 0) break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  for (const trigger of resources.triggers) {
+    try {
+      await prisma.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS ${sqlIdentifier(trigger.name)} ON ${sqlIdentifier(trigger.tableName)}`
+      );
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  for (const gateFunction of resources.functions) {
+    try {
+      await prisma.$executeRawUnsafe(
+        `DROP FUNCTION IF EXISTS ${sqlIdentifier(gateFunction.name)}()`
+      );
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+
+  return cleanupErrors.length;
+}
+
 beforeAll(async () => {
   context = await createAuditContext(`email-draft-${randomUUID()}`);
   contexts.push(context);
@@ -320,32 +511,19 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
-  const [cleanup] = await prisma.$queryRaw<
-    Array<{ advisoryLocks: number; functions: number; triggers: number }>
-  >`
-    SELECT
-      (
-        SELECT COUNT(*)::int
-        FROM pg_locks
-        WHERE locktype = 'advisory'
-          AND classid::bigint BETWEEN 219701 AND 219704
-          AND granted
-      ) AS "advisoryLocks",
-      (
-        SELECT COUNT(*)::int
-        FROM pg_proc
-        WHERE proname LIKE 'gate_inbound_mailbox_%'
-           OR proname LIKE 'gate_email_draft_insert_%'
-      ) AS "functions",
-      (
-        SELECT COUNT(*)::int
-        FROM pg_trigger
-        WHERE tgname LIKE 'gate_inbound_mailbox_trigger_%'
-           OR tgname LIKE 'gate_email_draft_insert_trigger_%'
-      ) AS "triggers"
-  `;
+  const leftovers = await inspectTestGateResources();
+  const found = {
+    advisoryLocks: leftovers.advisoryLocks.length,
+    functions: leftovers.functions.length,
+    triggers: leftovers.triggers.length
+  };
+  if (found.advisoryLocks + found.functions + found.triggers === 0) return;
 
-  expect(cleanup).toEqual({ advisoryLocks: 0, functions: 0, triggers: 0 });
+  const cleanupErrors = await recoverTestGateResources(leftovers);
+  const remaining = await inspectTestGateResources();
+  throw new Error(
+    `Recovered leaked test gate resources (locks=${found.advisoryLocks}, functions=${found.functions}, triggers=${found.triggers}, cleanupErrors=${cleanupErrors}); remaining (locks=${remaining.advisoryLocks.length}, functions=${remaining.functions.length}, triggers=${remaining.triggers.length}).`
+  );
 });
 
 afterAll(async () => {
@@ -359,6 +537,91 @@ afterAll(async () => {
 });
 
 describe("verified inbound EMAIL drafts", () => {
+  it("removes a gate function when trigger installation fails", async () => {
+    const gateNamespace = 219_705;
+    const markerNamespace = 219_706;
+    const gateKey = Math.floor(Math.random() * 1_000_000_000) + 1;
+    const markerKey = Math.floor(Math.random() * 1_000_000_000) + 1;
+
+    try {
+      await expect(
+        installMailboxLifecycleGate(
+          randomUUID(),
+          "INVALID_FOR_TEST" as GateEvent,
+          gateNamespace,
+          gateKey,
+          markerNamespace,
+          markerKey
+        )
+      ).rejects.toThrow();
+
+      const leakedFunctions = await prisma.$queryRaw<Array<{ name: string }>>`
+        SELECT proname AS "name"
+        FROM pg_proc
+        WHERE proname LIKE 'gate_inbound_mailbox_%'
+      `;
+      expect(leakedFunctions).toEqual([]);
+    } finally {
+      const leakedFunctions = await prisma.$queryRaw<Array<{ name: string }>>`
+        SELECT proname AS "name"
+        FROM pg_proc
+        WHERE proname LIKE 'gate_inbound_mailbox_%'
+      `;
+      for (const { name } of leakedFunctions) {
+        const quotedName = name.replaceAll('"', '""');
+        await prisma.$executeRawUnsafe(
+          `DROP FUNCTION IF EXISTS "${quotedName}"()`
+        );
+      }
+    }
+  });
+
+  it("rejects held and settles completion when advisory acquisition times out", async () => {
+    type GateHandle = {
+      held: Promise<void>;
+      release: () => void;
+      completion?: Promise<void>;
+      transaction?: Promise<void>;
+    };
+    const startGate = holdAdvisoryGate as unknown as (
+      namespace: number,
+      key: number,
+      options: { timeoutMs: number }
+    ) => GateHandle;
+    const namespace = 219_707;
+    const key = Math.floor(Math.random() * 1_000_000_000) + 1;
+    let blocker: GateHandle | null = null;
+    let contender: GateHandle | null = null;
+
+    try {
+      blocker = startGate(namespace, key, { timeoutMs: 2_000 });
+      await blocker.held;
+      contender = startGate(namespace, key, { timeoutMs: 100 });
+      const heldOutcome = await Promise.race([
+        contender.held.then(
+          () => "resolved",
+          () => "rejected"
+        ),
+        new Promise<"pending">((resolve) =>
+          setTimeout(() => resolve("pending"), 1_000)
+        )
+      ]);
+
+      expect(heldOutcome).toBe("rejected");
+      expect(contender.completion).toBeDefined();
+      await expect(contender.completion).rejects.toThrow();
+    } finally {
+      contender?.release();
+      blocker?.release();
+      await (contender?.completion ?? contender?.transaction)?.catch(
+        () => undefined
+      );
+      await (blocker?.completion ?? blocker?.transaction)?.catch(
+        () => undefined
+      );
+    }
+  }, 5_000);
+
   it.each([
     ["rotate", "UPDATE", rotateInboundMailbox],
     ["disable", "UPDATE", disableInboundMailbox],
@@ -371,21 +634,23 @@ describe("verified inbound EMAIL drafts", () => {
       const markerNamespace = 219_702;
       const gateKey = Math.floor(Math.random() * 1_000_000_000) + 1;
       const markerKey = Math.floor(Math.random() * 1_000_000_000) + 1;
-      const uninstallGate = await installMailboxLifecycleGate(
-        fixture.mailbox.id,
-        event,
-        gateNamespace,
-        gateKey,
-        markerNamespace,
-        markerKey
-      );
-      const heldGate = holdAdvisoryGate(gateNamespace, gateKey);
+      let uninstallGate: GateCleanup = async () => undefined;
+      let heldGate: ReturnType<typeof holdAdvisoryGate> | null = null;
       let lifecyclePromise: ReturnType<typeof lifecycleAction> | null = null;
       let builderPromise: Promise<
         Awaited<ReturnType<typeof createEmailDraftFromCandidate>>
       > | null = null;
 
       try {
+        uninstallGate = await installMailboxLifecycleGate(
+          fixture.mailbox.id,
+          event,
+          gateNamespace,
+          gateKey,
+          markerNamespace,
+          markerKey
+        );
+        heldGate = holdAdvisoryGate(gateNamespace, gateKey);
         await heldGate.held;
         lifecyclePromise = lifecycleAction();
         await waitForAdvisoryLock(markerNamespace, markerKey);
@@ -409,10 +674,10 @@ describe("verified inbound EMAIL drafts", () => {
           })
         ).resolves.toBe(0);
       } finally {
-        heldGate.release();
+        heldGate?.release();
         await lifecyclePromise?.catch(() => undefined);
         await builderPromise?.catch(() => undefined);
-        await heldGate.transaction.catch(() => undefined);
+        await heldGate?.completion.catch(() => undefined);
         await uninstallGate();
       }
     },
@@ -425,20 +690,22 @@ describe("verified inbound EMAIL drafts", () => {
     const markerNamespace = 219_704;
     const gateKey = Math.floor(Math.random() * 1_000_000_000) + 1;
     const markerKey = Math.floor(Math.random() * 1_000_000_000) + 1;
-    const uninstallGate = await installDraftInsertGate(
-      fixture.receipt.id,
-      gateNamespace,
-      gateKey,
-      markerNamespace,
-      markerKey
-    );
-    const heldGate = holdAdvisoryGate(gateNamespace, gateKey);
+    let uninstallGate: GateCleanup = async () => undefined;
+    let heldGate: ReturnType<typeof holdAdvisoryGate> | null = null;
     let builderPromise: Promise<
       Awaited<ReturnType<typeof createEmailDraftFromCandidate>>
     > | null = null;
     let disconnectPromise: ReturnType<typeof disconnectInboundMailbox> | null = null;
 
     try {
+      uninstallGate = await installDraftInsertGate(
+        fixture.receipt.id,
+        gateNamespace,
+        gateKey,
+        markerNamespace,
+        markerKey
+      );
+      heldGate = holdAdvisoryGate(gateNamespace, gateKey);
       await heldGate.held;
       builderPromise = prisma.$transaction(
         (db) => createEmailDraftFromCandidate(db, fixture.input),
@@ -464,10 +731,10 @@ describe("verified inbound EMAIL drafts", () => {
         prisma.inboundEmailReceipt.count({ where: { id: fixture.receipt.id } })
       ).resolves.toBe(0);
     } finally {
-      heldGate.release();
+      heldGate?.release();
       await builderPromise?.catch(() => undefined);
       await disconnectPromise?.catch(() => undefined);
-      await heldGate.transaction.catch(() => undefined);
+      await heldGate?.completion.catch(() => undefined);
       await uninstallGate();
     }
   }, 30_000);
