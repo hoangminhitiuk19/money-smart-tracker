@@ -1,6 +1,7 @@
 import { TransactionType } from "@prisma/client";
 import { z } from "zod";
 import { CaptureWorkspace } from "@/components/transaction-capture/CaptureWorkspace";
+import { CaptureMethodNav } from "@/components/transaction-capture/CaptureMethodNav";
 import { listCategories } from "@/lib/actions/categories";
 import { listMoneySources } from "@/lib/actions/money-sources";
 import { listProjects } from "@/lib/actions/projects";
@@ -47,36 +48,43 @@ export default async function TransactionCapturePage({
   ]);
 
   return (
-    <CaptureWorkspace
-      initialCaptureKey={captureKey}
-      initialDrafts={draftResult.ok ? draftResult.drafts : []}
-      options={{
-        categories: categories.map(
-          ({ id, name, defaultQualityRating }) => ({
+    <>
+      <div className="min-w-0 bg-capture-canvas px-4 pt-4 font-capture-ui sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-[90rem]">
+          <CaptureMethodNav active="manual" />
+        </div>
+      </div>
+      <CaptureWorkspace
+        initialCaptureKey={captureKey}
+        initialDrafts={draftResult.ok ? draftResult.drafts : []}
+        options={{
+          categories: categories.map(
+            ({ id, name, defaultQualityRating }) => ({
+              id,
+              name,
+              defaultQualityRating
+            })
+          ),
+          moneySources: moneySources.map(({ id, name, type }) => ({
             id,
             name,
-            defaultQualityRating
-          })
-        ),
-        moneySources: moneySources.map(({ id, name, type }) => ({
-          id,
-          name,
-          type
-        })),
-        projects: projects.map(({ id, name }) => ({ id, name })),
-        expenses: expenses.map(({ amount, id, title, transactionDate }) => ({
-          id,
-          name: title,
-          title,
-          amount: amount.toString(),
-          transactionDate: transactionDate.toISOString().slice(0, 10)
-        }))
-      }}
-      settings={{
-        defaultCurrency: settings.defaultCurrency,
-        dateFormat: settings.dateFormat,
-        numberFormat: settings.numberFormat
-      }}
-    />
+            type
+          })),
+          projects: projects.map(({ id, name }) => ({ id, name })),
+          expenses: expenses.map(({ amount, id, title, transactionDate }) => ({
+            id,
+            name: title,
+            title,
+            amount: amount.toString(),
+            transactionDate: transactionDate.toISOString().slice(0, 10)
+          }))
+        }}
+        settings={{
+          defaultCurrency: settings.defaultCurrency,
+          dateFormat: settings.dateFormat,
+          numberFormat: settings.numberFormat
+        }}
+      />
+    </>
   );
 }

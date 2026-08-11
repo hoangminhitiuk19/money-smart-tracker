@@ -189,6 +189,16 @@ describe("transaction capture page", () => {
     expect(pageMocks.listTransactionDrafts).not.toHaveBeenCalled();
   });
 
+  it("links both capture methods and marks quick and paste current", async () => {
+    const markup = await renderCapturePage();
+
+    expect(markup).toContain('href="/transactions/capture"');
+    expect(markup).toContain("Quick and paste");
+    expect(markup).toContain('href="/transactions/capture/email"');
+    expect(markup).toContain("Email forwarding");
+    expect(markup).toMatch(/aria-current="page"[^>]*href="\/transactions\/capture"/);
+  });
+
   it("makes capture the primary transaction action while retaining single entry", async () => {
     const markup = await renderTransactionsPage();
 
@@ -196,6 +206,8 @@ describe("transaction capture page", () => {
     expect(markup).toContain("Capture transactions");
     expect(markup).toContain('href="/transactions/new"');
     expect(markup).toContain("Single entry");
+    expect(markup).toContain('href="/transactions/capture/email"');
+    expect(markup).toContain("Email forwarding");
   });
 
   it("confirms the imported batch count on the transaction list", async () => {

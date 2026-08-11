@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import ReceiptUploadLoading from "@/app/(protected)/receipt-upload/loading";
 import SettingsLoading from "@/app/(protected)/settings/loading";
 import TransactionCaptureLoading from "@/app/(protected)/transactions/capture/loading";
+import InboundEmailLoading from "@/app/(protected)/transactions/capture/email/loading";
 import TransactionsLoading from "@/app/(protected)/transactions/loading";
 
 afterEach(cleanup);
@@ -58,6 +59,22 @@ describe("remaining protected loading states", () => {
     expect(screen.getByLabelText("Paste rows loading")).not.toBeNull();
     expect(screen.getByLabelText("Review ledger loading")).not.toBeNull();
     expect(screen.getByLabelText("Capture summary loading")).not.toBeNull();
+    expect(container.querySelectorAll(".animate-pulse").length).toBeGreaterThan(0);
+    expect(
+      Array.from(container.querySelectorAll(".animate-pulse")).every((element) =>
+        element.classList.contains("motion-reduce:animate-none")
+      )
+    ).toBe(true);
+    expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
+  it("renders a labelled, bounded inbound email setup skeleton", () => {
+    const { container } = render(<InboundEmailLoading />);
+
+    expect(screen.getByRole("heading", { name: "Email forwarding" })).not.toBeNull();
+    expect(screen.getByLabelText("Email setup loading")).not.toBeNull();
+    expect(container.querySelectorAll("section.rounded-xl").length).toBeGreaterThanOrEqual(2);
+    expect(container.querySelector(".max-w-5xl")).not.toBeNull();
     expect(container.querySelectorAll(".animate-pulse").length).toBeGreaterThan(0);
     expect(
       Array.from(container.querySelectorAll(".animate-pulse")).every((element) =>

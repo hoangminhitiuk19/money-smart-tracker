@@ -162,6 +162,9 @@ async function TransactionsPageContent({
             <Link href="/transactions/capture">
               <Button variant="primary">Capture transactions</Button>
             </Link>
+            <Link href="/transactions/capture/email">
+              <Button variant="outline">Email forwarding</Button>
+            </Link>
             <Link href="/transactions/new">
               <Button variant="outline">Single entry</Button>
             </Link>
