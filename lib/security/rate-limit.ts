@@ -18,7 +18,12 @@ export const policies = {
   registerIp: { scope: "register:ip", limit: 5, windowMs: 60 * 60_000 },
   registerEmail: { scope: "register:email", limit: 3, windowMs: 60 * 60_000 },
   mutationUser: { scope: "mutation:user", limit: 60, windowMs: 60_000 },
-  exportUser: { scope: "export:user", limit: 10, windowMs: 60_000 }
+  exportUser: { scope: "export:user", limit: 10, windowMs: 60_000 },
+  inboundAlias: {
+    scope: "inbound-email:alias",
+    limit: 60,
+    windowMs: 10 * 60_000
+  }
 } as const;
 
 export function checkPolicy(policy: RateLimitPolicy, identifier: string) {
@@ -93,4 +98,8 @@ export function checkAuthenticatedMutation(userId: string) {
 
 export function checkExport(userId: string) {
   return checkPolicy(policies.exportUser, userId);
+}
+
+export function checkInboundEmailAlias(aliasLocalPart: string) {
+  return checkPolicy(policies.inboundAlias, aliasLocalPart);
 }
