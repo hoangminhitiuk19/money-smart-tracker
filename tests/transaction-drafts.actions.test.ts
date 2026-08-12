@@ -493,6 +493,19 @@ describe("transaction draft owned reads and mutations", () => {
     expect(fakeDb.transactionDraft.update).not.toHaveBeenCalled();
   });
 
+  it("gives draft reassessment a bounded interactive transaction timeout", async () => {
+    drafts = [fakeRecord(expenseDraft(), { id: "owned-draft" })];
+
+    await expect(
+      updateTransactionDraft("owned-draft", { title: "Reviewed lunch" })
+    ).resolves.toMatchObject({ ok: true });
+
+    expect(prisma.$transaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      { timeout: 60_000 }
+    );
+  });
+
   it("edits an owned persisted EMAIL draft through stored validation", async () => {
     drafts = [
       fakeRecord(expenseDraft({ origin: TransactionDraftOrigin.EMAIL }), {
