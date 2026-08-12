@@ -12,13 +12,18 @@ import {
   updateTransactionDraft
 } from "@/lib/actions/transaction-drafts";
 import {
+  createInboundMailbox,
   disableInboundMailbox,
   disconnectInboundMailbox,
   rotateInboundMailbox
 } from "@/lib/actions/inbound-email";
+import { listGoals } from "@/lib/actions/goals";
+import { listProjects } from "@/lib/actions/projects";
 import { loadIncomeVsExpenseOverTime } from "@/lib/actions/reports";
 import { calculateAccountProjection } from "@/lib/calc/dashboard";
 import { calculateCreditCardState } from "@/lib/calc/credit-card";
+import { calculateGoalProgress } from "@/lib/calc/goals";
+import { calculateProjectSummary } from "@/lib/calc/projects";
 import { createEmailDraftFromCandidate } from "@/lib/inbound-email/email-drafts";
 import type { EmailDraftCandidate } from "@/lib/inbound-email/types";
 import { prisma } from "@/lib/prisma";
@@ -106,7 +111,7 @@ async function createReceipt(
   });
 }
 
-type GateEvent = "UPDATE" | "DELETE";
+type GateEvent = "INSERT" | "UPDATE" | "DELETE";
 type GateCleanup = () => Promise<void>;
 
 const TEST_GATE_NAMESPACE_MIN = 219_701;
@@ -218,6 +223,8 @@ async function installMailboxLifecycleGate(
     suffix
   );
   const rowId = sqlLiteral(mailboxId);
+  const rowReference =
+    event === "INSERT" ? 'NEW."userId"' : 'OLD."id"';
   const cleanup = databaseGateCleanup(
     schemaName,
     "InboundMailbox",
@@ -231,11 +238,11 @@ async function installMailboxLifecycleGate(
       CREATE FUNCTION ${sqlIdentifier(schemaName)}.${sqlIdentifier(functionName)}() RETURNS trigger
       LANGUAGE plpgsql AS $$
       BEGIN
-        IF OLD."id" = '${rowId}' THEN
+        IF ${rowReference} = '${rowId}' THEN
           PERFORM pg_advisory_xact_lock(${markerNamespace}, ${markerKey});
           PERFORM pg_advisory_xact_lock(${gateNamespace}, ${gateKey});
         END IF;
-        RETURN ${event === "UPDATE" ? "NEW" : "OLD"};
+        RETURN ${event === "DELETE" ? "OLD" : "NEW"};
       END;
       $$;
     `);
@@ -333,6 +340,25 @@ async function waitForAdvisoryLock(namespace: number, key: number) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error("Timed out waiting for the deterministic lifecycle gate.");
+}
+
+async function waitForAdvisoryLockWaiter(namespace: number, key: number) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const [row] = await prisma.$queryRaw<Array<{ waiting: boolean }>>`
+      SELECT EXISTS (
+        SELECT 1
+        FROM pg_locks
+        WHERE locktype = 'advisory'
+          AND classid = ${namespace}::oid
+          AND objid = ${key}::oid
+          AND objsubid = 2
+          AND NOT granted
+      ) AS "waiting"
+    `;
+    if (row?.waiting) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Timed out waiting for the deterministic advisory waiter.");
 }
 
 async function waitForMailboxLockWaiter() {
@@ -444,23 +470,71 @@ async function createConcurrencyFixture(label: string) {
 async function financialSnapshot(
   userId: string,
   bank: Awaited<ReturnType<typeof prisma.moneySource.create>>,
-  card: Awaited<ReturnType<typeof prisma.moneySource.create>>
+  card: Awaited<ReturnType<typeof prisma.moneySource.create>>,
+  goalId: string,
+  projectId: string
 ) {
-  const transactions = await prisma.transaction.findMany({
-    where: { userId },
-    orderBy: [{ transactionDate: "asc" }, { id: "asc" }]
-  });
-  const report = await loadIncomeVsExpenseOverTime({
-    startDate: "2026-08-01",
-    endDate: "2026-08-31"
-  });
+  const [transactions, report, goals, projects, financialActivities] =
+    await Promise.all([
+      prisma.transaction.findMany({
+        where: { userId },
+        orderBy: [{ transactionDate: "asc" }, { id: "asc" }]
+      }),
+      loadIncomeVsExpenseOverTime({
+        startDate: "2026-08-01",
+        endDate: "2026-08-31"
+      }),
+      listGoals(),
+      listProjects(),
+      prisma.activityLog.findMany({
+        where: {
+          userId,
+          entityType: {
+            in: [
+              "Transaction",
+              "SavingGoal",
+              "GoalContribution",
+              "FinancialProject"
+            ]
+          }
+        },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        select: { action: true, entityType: true, entityId: true }
+      })
+    ]);
   const cardState = calculateCreditCardState(card, transactions);
+  const goal = goals.find((candidateGoal) => candidateGoal.id === goalId);
+  const project = projects.find(
+    (candidateProject) => candidateProject.id === projectId
+  );
+  if (!goal || !project) {
+    throw new Error("Synthetic goal or project projection is unavailable.");
+  }
+  const goalProgress = calculateGoalProgress(
+    goal.goalContributions,
+    goal.targetAmount
+  );
+  const projectSummary = calculateProjectSummary(
+    transactions.filter((transaction) => transaction.projectId === project.id)
+  );
 
   return {
     transactionCount: transactions.length,
     bankBalance: calculateAccountProjection(bank, transactions).trackedAmount.toFixed(2),
     cardDebt: cardState.outstandingDebt.toFixed(2),
     cardCredit: cardState.cardCredit.toFixed(2),
+    goal: {
+      netContributed: goalProgress.netContributed.toFixed(2),
+      progressPercent: goalProgress.progressPercent.toFixed(2),
+      remaining: goalProgress.remaining.toFixed(2)
+    },
+    project: {
+      totalIncome: projectSummary.totalIncome.toFixed(2),
+      totalExpense: projectSummary.totalExpense.toFixed(2),
+      profit: projectSummary.profit.toFixed(2),
+      roi: projectSummary.roi?.toFixed(2) ?? null
+    },
+    financialActivities,
     report: report.map(({ period, income, expense }) => ({
       period,
       income: income.toFixed(2),
@@ -629,6 +703,94 @@ afterAll(async () => {
 });
 
 describe("verified inbound EMAIL drafts", () => {
+  it("converges concurrent authenticated mailbox creation on one safe setup", async () => {
+    const user = await prisma.user.create({
+      data: {
+        email: `inbound-action-concurrency-${randomUUID()}@audit.invalid`,
+        name: "Synthetic inbound action concurrency user",
+        passwordHash: "synthetic-non-authenticated-test-hash"
+      },
+      select: { id: true }
+    });
+    concurrencyUserIds.push(user.id);
+    authState.userId = user.id;
+    const gateNamespace = 219_705;
+    const markerNamespace = 219_706;
+    const gateKey = Math.floor(Math.random() * 1_000_000_000) + 1;
+    const markerKey = Math.floor(Math.random() * 1_000_000_000) + 1;
+    let uninstallGate: GateCleanup = async () => undefined;
+    let heldGate: ReturnType<typeof holdAdvisoryGate> | null = null;
+    let first: ReturnType<typeof createInboundMailbox> | null = null;
+    let second: ReturnType<typeof createInboundMailbox> | null = null;
+    let results!: Awaited<ReturnType<typeof createInboundMailbox>>[];
+
+    try {
+      uninstallGate = await installMailboxLifecycleGate(
+        user.id,
+        "INSERT",
+        gateNamespace,
+        gateKey,
+        markerNamespace,
+        markerKey
+      );
+      heldGate = holdAdvisoryGate(gateNamespace, gateKey);
+      await heldGate.held;
+      first = createInboundMailbox();
+      await waitForAdvisoryLock(markerNamespace, markerKey);
+      second = createInboundMailbox();
+      await waitForAdvisoryLockWaiter(markerNamespace, markerKey);
+
+      heldGate.release();
+      results = await Promise.all([first, second]);
+    } finally {
+      heldGate?.release();
+      await first?.catch(() => undefined);
+      await second?.catch(() => undefined);
+      await heldGate?.completion.catch(() => undefined);
+      await uninstallGate();
+    }
+
+    expect(results[0]).toEqual(results[1]);
+    expect(results[0]).toMatchObject({
+      ok: true,
+      setup: {
+        configured: true,
+        mailbox: {
+          address: expect.stringMatching(/^m_[0-9a-f]{40}@inbound\.audit\.invalid$/),
+          status: "ACTIVE",
+          lastDisposition: null,
+          lastReceivedAt: null,
+          reviewCaptureKey: null
+        }
+      }
+    });
+    expect(JSON.stringify(results)).not.toContain(user.id);
+    await expect(
+      prisma.inboundMailbox.count({ where: { userId: user.id } })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.activityLog.findMany({
+        where: {
+          userId: user.id,
+          action: "INBOUND_EMAIL_CONNECTED"
+        },
+        select: {
+          action: true,
+          entityType: true,
+          entityId: true,
+          metadata: true
+        }
+      })
+    ).resolves.toEqual([
+      {
+        action: "INBOUND_EMAIL_CONNECTED",
+        entityType: "InboundEmail",
+        entityId: null,
+        metadata: null
+      }
+    ]);
+  }, 30_000);
+
   it("recovers exact generated gate objects without dropping wildcard decoys", async () => {
     const suffix = randomUUID().replaceAll("-", "");
     const genuineFunction = `gate_inbound_mailbox_${suffix}`;
@@ -823,7 +985,7 @@ describe("verified inbound EMAIL drafts", () => {
           () => "rejected"
         ),
         new Promise<"pending">((resolve) =>
-          setTimeout(() => resolve("pending"), 1_000)
+          setTimeout(() => resolve("pending"), 3_000)
         )
       ]);
 
@@ -840,7 +1002,7 @@ describe("verified inbound EMAIL drafts", () => {
         () => undefined
       );
     }
-  }, 5_000);
+  }, 8_000);
 
   it.each([
     ["rotate", "UPDATE", rotateInboundMailbox],
@@ -963,7 +1125,7 @@ describe("verified inbound EMAIL drafts", () => {
     authState.userId = context.userA.id;
     const now = new Date("2026-08-10T12:00:00.000Z");
     const suffix = randomUUID();
-    const [bank, card] = await prisma.$transaction([
+    const [bank, card, goal, project] = await prisma.$transaction([
       prisma.moneySource.create({
         data: {
           userId: context.userA.id,
@@ -981,6 +1143,19 @@ describe("verified inbound EMAIL drafts", () => {
           initialOutstandingDebt: "20.00",
           initialCardCredit: "3.00"
         }
+      }),
+      prisma.savingGoal.create({
+        data: {
+          userId: context.userA.id,
+          name: `Synthetic goal ${suffix}`,
+          targetAmount: "1000.00"
+        }
+      }),
+      prisma.financialProject.create({
+        data: {
+          userId: context.userA.id,
+          name: `Synthetic project ${suffix}`
+        }
       })
     ]);
     await prisma.$transaction([
@@ -991,7 +1166,8 @@ describe("verified inbound EMAIL drafts", () => {
           amount: "100.00",
           title: `Synthetic baseline income ${suffix}`,
           transactionDate: new Date("2026-08-01T00:00:00.000Z"),
-          toMoneySourceId: bank.id
+          toMoneySourceId: bank.id,
+          projectId: project.id
         }
       }),
       prisma.transaction.create({
@@ -1001,11 +1177,50 @@ describe("verified inbound EMAIL drafts", () => {
           amount: "5.00",
           title: `Synthetic baseline card expense ${suffix}`,
           transactionDate: new Date("2026-08-02T00:00:00.000Z"),
-          fromMoneySourceId: card.id
+          fromMoneySourceId: card.id,
+          projectId: project.id
+        }
+      }),
+      prisma.goalContribution.create({
+        data: {
+          userId: context.userA.id,
+          savingGoalId: goal.id,
+          amount: "250.00",
+          type: "CONTRIBUTION",
+          contributionDate: new Date("2026-08-03T00:00:00.000Z")
+        }
+      }),
+      prisma.goalContribution.create({
+        data: {
+          userId: context.userA.id,
+          savingGoalId: goal.id,
+          amount: "50.00",
+          type: "WITHDRAWAL",
+          contributionDate: new Date("2026-08-04T00:00:00.000Z")
         }
       })
     ]);
-    const before = await financialSnapshot(context.userA.id, bank, card);
+    const before = await financialSnapshot(
+      context.userA.id,
+      bank,
+      card,
+      goal.id,
+      project.id
+    );
+    expect(before).toMatchObject({
+      goal: {
+        netContributed: "200.00",
+        progressPercent: "20.00",
+        remaining: "800.00"
+      },
+      project: {
+        totalIncome: "100.00",
+        totalExpense: "5.00",
+        profit: "95.00",
+        roi: "1900.00"
+      },
+      financialActivities: []
+    });
     const [mailboxA, mailboxB] = await prisma.$transaction([
       prisma.inboundMailbox.create({
         data: {
@@ -1031,28 +1246,34 @@ describe("verified inbound EMAIL drafts", () => {
     };
 
     await expect(
-      prisma.$transaction((db) =>
-        createEmailDraftFromCandidate(db, {
-          ...input,
-          userId: context.userB.id
-        })
+      prisma.$transaction(
+        (db) =>
+          createEmailDraftFromCandidate(db, {
+            ...input,
+            userId: context.userB.id
+          }),
+        { timeout: 20_000 }
       )
     ).rejects.toThrow("Inbound email receipt is not available.");
     await expect(
-      prisma.$transaction((db) =>
-        createEmailDraftFromCandidate(db, {
-          ...input,
-          mailboxId: mailboxB.id,
-          aliasLocalPart: mailboxB.aliasLocalPart
-        })
+      prisma.$transaction(
+        (db) =>
+          createEmailDraftFromCandidate(db, {
+            ...input,
+            mailboxId: mailboxB.id,
+            aliasLocalPart: mailboxB.aliasLocalPart
+          }),
+        { timeout: 20_000 }
       )
     ).rejects.toThrow("Inbound email receipt is not available.");
     await expect(
-      prisma.$transaction((db) =>
-        createEmailDraftFromCandidate(db, {
-          ...input,
-          aliasLocalPart: `${mailboxA.aliasLocalPart}_stale`
-        })
+      prisma.$transaction(
+        (db) =>
+          createEmailDraftFromCandidate(db, {
+            ...input,
+            aliasLocalPart: `${mailboxA.aliasLocalPart}_stale`
+          }),
+        { timeout: 20_000 }
       )
     ).rejects.toThrow("Inbound email receipt is not available.");
     await prisma.inboundMailbox.update({
@@ -1060,7 +1281,10 @@ describe("verified inbound EMAIL drafts", () => {
       data: { status: "DISABLED" }
     });
     await expect(
-      prisma.$transaction((db) => createEmailDraftFromCandidate(db, input))
+      prisma.$transaction(
+        (db) => createEmailDraftFromCandidate(db, input),
+        { timeout: 20_000 }
+      )
     ).rejects.toThrow("Inbound email receipt is not available.");
     await prisma.inboundMailbox.update({
       where: { id: mailboxA.id },
@@ -1068,8 +1292,14 @@ describe("verified inbound EMAIL drafts", () => {
     });
 
     const [first, replay] = await Promise.all([
-      prisma.$transaction((db) => createEmailDraftFromCandidate(db, input)),
-      prisma.$transaction((db) => createEmailDraftFromCandidate(db, input))
+      prisma.$transaction(
+        (db) => createEmailDraftFromCandidate(db, input),
+        { timeout: 20_000 }
+      ),
+      prisma.$transaction(
+        (db) => createEmailDraftFromCandidate(db, input),
+        { timeout: 20_000 }
+      )
     ]);
     expect(first.draftId).toBe(replay.draftId);
     expect(first.captureKey).toBe(replay.captureKey);
@@ -1082,9 +1312,47 @@ describe("verified inbound EMAIL drafts", () => {
         }
       })
     ).resolves.toBe(1);
-    await expect(financialSnapshot(context.userA.id, bank, card)).resolves.toEqual(
-      before
-    );
+    await expect(
+      financialSnapshot(
+        context.userA.id,
+        bank,
+        card,
+        goal.id,
+        project.id
+      )
+    ).resolves.toEqual(before);
+    await expect(
+      prisma.transactionDraft.findUniqueOrThrow({
+        where: { id: first.draftId },
+        select: {
+          origin: true,
+          status: true,
+          confidence: true,
+          type: true,
+          amountText: true,
+          currency: true,
+          title: true,
+          description: true,
+          transactionDateText: true,
+          fromMoneySourceId: true,
+          projectId: true,
+          rawRow: true
+        }
+      })
+    ).resolves.toEqual({
+      origin: "EMAIL",
+      status: "NEEDS_REVIEW",
+      confidence: 100,
+      type: "EXPENSE",
+      amountText: "125000",
+      currency: "VND",
+      title: input.candidate.title,
+      description: "Synthetic inbound-email test data.",
+      transactionDateText: "2026-08-10",
+      fromMoneySourceId: null,
+      projectId: null,
+      rawRow: null
+    });
 
     const edited = await updateTransactionDraft(first.draftId, {
       fromMoneySourceId: bank.id
@@ -1093,9 +1361,15 @@ describe("verified inbound EMAIL drafts", () => {
       ok: true,
       draft: { origin: "EMAIL", status: "READY" }
     });
-    await expect(financialSnapshot(context.userA.id, bank, card)).resolves.toEqual(
-      before
-    );
+    await expect(
+      financialSnapshot(
+        context.userA.id,
+        bank,
+        card,
+        goal.id,
+        project.id
+      )
+    ).resolves.toEqual(before);
 
     const idempotencyKey = randomUUID();
     const imported = await importTransactionDrafts({
@@ -1215,7 +1489,7 @@ describe("verified inbound EMAIL drafts", () => {
       validationIssues: [],
       rawRow: null
     });
-  }, 30_000);
+  }, 60_000);
 
   it("clears a dismissed EMAIL draft while keeping receipt idempotency provenance", async () => {
     authState.userId = context.userA.id;
@@ -1224,15 +1498,17 @@ describe("verified inbound EMAIL drafts", () => {
       where: { userId: context.userA.id }
     });
     const receipt = await createReceipt(context.userA.id, mailbox.id, now);
-    const created = await prisma.$transaction((db) =>
-      createEmailDraftFromCandidate(db, {
-        userId: context.userA.id,
-        mailboxId: mailbox.id,
-        aliasLocalPart: mailbox.aliasLocalPart,
-        receiptId: receipt.id,
-        candidate: candidate(`Synthetic dismissed merchant ${randomUUID()}`),
-        now
-      })
+    const created = await prisma.$transaction(
+      (db) =>
+        createEmailDraftFromCandidate(db, {
+          userId: context.userA.id,
+          mailboxId: mailbox.id,
+          aliasLocalPart: mailbox.aliasLocalPart,
+          receiptId: receipt.id,
+          candidate: candidate(`Synthetic dismissed merchant ${randomUUID()}`),
+          now
+        }),
+      { timeout: 20_000 }
     );
 
     await expect(dismissTransactionDrafts([created.draftId])).resolves.toEqual({
