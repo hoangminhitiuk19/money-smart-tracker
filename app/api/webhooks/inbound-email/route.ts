@@ -13,7 +13,10 @@ import {
 
 export const runtime = "nodejs";
 
-function safeJson(status: InboundWebhookResult["status"], message: string) {
+function safeJson(
+  status: InboundWebhookResult["status"] | 408,
+  message: string
+) {
   return Response.json(
     { message },
     {
@@ -61,6 +64,12 @@ export async function POST(request: Request) {
         error.code === "PAYLOAD_TOO_LARGE"
       ) {
         return safeJson(413, "Webhook request is too large.");
+      }
+      if (
+        isBoundedReaderError(error) &&
+        error.code === "BODY_READ_TIMED_OUT"
+      ) {
+        return safeJson(408, "Webhook request timed out.");
       }
       if (isBoundedReaderError(error)) {
         return safeJson(400, "Invalid webhook request.");

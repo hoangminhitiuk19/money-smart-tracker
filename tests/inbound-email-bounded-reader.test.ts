@@ -28,6 +28,37 @@ function requestWithChunks(
 }
 
 describe("bounded inbound-email readers", () => {
+  it("cancels a request stream that does not complete before its deadline", async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn();
+    const request = new Request("http://localhost", {
+      method: "POST",
+      body: new ReadableStream<Uint8Array>({
+        pull: () => new Promise<void>(() => undefined),
+        cancel
+      }),
+      duplex: "half"
+    } as StreamRequestInit);
+
+    try {
+      const rejection = readBoundedRequestText(request, 100, 5).catch(
+        (error: unknown) => error
+      );
+
+      await vi.advanceTimersByTimeAsync(5);
+      await expect(rejection).resolves.toEqual({ code: "BODY_READ_TIMED_OUT" });
+      await expect(rejection).resolves.toSatisfy(
+        (error: unknown) =>
+          typeof error === "object" &&
+          error !== null &&
+          Object.keys(error).join(",") === "code"
+      );
+      expect(cancel).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     {
       entryPoint: "request",

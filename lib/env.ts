@@ -29,7 +29,12 @@ const hostnameSchema = z
       !value.includes("/") &&
       !value.includes("@") &&
       !value.includes(":") &&
-      /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(value),
+      value.split(".").every(
+        (label) =>
+          label.length >= 1 &&
+          label.length <= 63 &&
+          /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)
+      ),
     { message: "INBOUND_EMAIL_DOMAIN must be a hostname." }
   );
 

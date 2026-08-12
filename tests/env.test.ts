@@ -75,7 +75,11 @@ describe("server environment", () => {
     "https://demo.resend.app",
     "demo.resend.app/path",
     "user@demo.resend.app",
-    "demo.resend.app:443"
+    "demo.resend.app:443",
+    "demo..resend.app",
+    "-demo.resend.app",
+    "demo-.resend.app",
+    `${"a".repeat(64)}.resend.app`
   ])("rejects unsafe inbound hostname %s", (domain) => {
     expect(() =>
       parseServerEnv({ ...valid, ...inbound, INBOUND_EMAIL_DOMAIN: domain })

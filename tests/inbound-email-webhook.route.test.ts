@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { INBOUND_WEBHOOK_BODY_TIMEOUT_MS } from "@/lib/inbound-email/constants";
 
 const routeMocks = vi.hoisted(() => ({
   config: vi.fn(),
@@ -92,6 +93,38 @@ describe("inbound-email webhook route", () => {
     expect(response.status).toBe(413);
     expect(await response.json()).toEqual({ message: "Webhook request is too large." });
     expect(routeMocks.handle).not.toHaveBeenCalled();
+  });
+
+  it("cancels a stalled webhook body and returns a generic timeout before orchestration", async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn();
+    const request = new Request(
+      "http://localhost/api/webhooks/inbound-email",
+      {
+        method: "POST",
+        body: new ReadableStream<Uint8Array>({
+          pull: () => new Promise<void>(() => undefined),
+          cancel
+        }),
+        duplex: "half"
+      } as RequestInit & { duplex: "half" }
+    );
+
+    try {
+      const responsePromise = POST(request);
+
+      await vi.advanceTimersByTimeAsync(INBOUND_WEBHOOK_BODY_TIMEOUT_MS);
+      const response = await responsePromise;
+      expect(response.status).toBe(408);
+      expect(await response.json()).toEqual({
+        message: "Webhook request timed out."
+      });
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(routeMocks.provider).not.toHaveBeenCalled();
+      expect(routeMocks.handle).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("passes the untouched bounded body, headers, and configured domain", async () => {
