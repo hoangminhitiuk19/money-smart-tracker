@@ -395,6 +395,10 @@ export async function handleInboundEmailWebhook(
     return result(200, "IGNORED");
   }
 
+  if (claim.kind === "processing") {
+    return result(503, "RETRY");
+  }
+
   if (claim.kind === "duplicate") {
     try {
       await updateOwnedDuplicateMailbox(dependencies, mailbox, receivedAt);

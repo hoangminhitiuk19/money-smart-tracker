@@ -133,7 +133,7 @@ describe("inbound-email webhook PostgreSQL orchestration", () => {
 
     expect(results.map(({ code }) => code).sort()).toEqual([
       "ACCEPTED",
-      "DUPLICATE"
+      "RETRY"
     ]);
     await expect(
       prisma.inboundEmailReceipt.count({ where: { userId: fixture.user.id } })
@@ -325,13 +325,16 @@ describe("inbound-email webhook PostgreSQL orchestration", () => {
         }
       })
     ).resolves.toBe(0);
-    clock = new Date(
-      abandoned.updatedAt.getTime() + INBOUND_PROCESSING_LEASE_MS - 1
-    );
-    await expect(handleInboundEmailWebhook(input, injected)).resolves.toEqual({
-      status: 200,
-      code: "DUPLICATE"
-    });
+    for (const elapsedMs of [
+      0,
+      Math.floor(INBOUND_PROCESSING_LEASE_MS / 2),
+      INBOUND_PROCESSING_LEASE_MS - 1
+    ]) {
+      clock = new Date(abandoned.updatedAt.getTime() + elapsedMs);
+      await expect(
+        handleInboundEmailWebhook(input, injected)
+      ).resolves.toEqual({ status: 503, code: "RETRY" });
+    }
     expect(provider.retrievals).toBe(1);
     await expect(
       prisma.transactionDraft.count({
@@ -401,6 +404,28 @@ describe("inbound-email webhook PostgreSQL orchestration", () => {
         metadata: { disposition: "TEST_DRAFT_CREATED" }
       }
     ]);
+
+    clock = new Date(
+      abandoned.updatedAt.getTime() + INBOUND_PROCESSING_LEASE_MS + 1
+    );
+    await expect(handleInboundEmailWebhook(input, injected)).resolves.toEqual({
+      status: 200,
+      code: "DUPLICATE"
+    });
+    expect(provider.retrievals).toBe(2);
+    await expect(
+      prisma.transactionDraft.count({
+        where: { userId: fixture.user.id, origin: "EMAIL" }
+      })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.activityLog.count({
+        where: {
+          userId: fixture.user.id,
+          action: "INBOUND_EMAIL_RECEIVED"
+        }
+      })
+    ).resolves.toBe(1);
   }, 30_000);
 
   it("blocks a draft when alias rotation commits between retrieval and transaction", async () => {

@@ -66,7 +66,7 @@ function testHarness(options: {
   notification?: InboundNotification;
   mailbox?: typeof mailbox | null;
   currentMailbox?: CurrentMailbox | null;
-  receiptKind?: "claimed" | "duplicate";
+  receiptKind?: "claimed" | "duplicate" | "processing";
   receipt?: typeof receipt;
   rateLimit?: ReturnType<typeof rateLimit>;
   message?: InboundMessage;
@@ -406,6 +406,23 @@ describe("signed inbound-email webhook orchestration", () => {
       },
       data: { lastDisposition: "DUPLICATE", lastReceivedAt: now }
     });
+  });
+
+  it("returns retry without any processing or duplicate side effect for an in-flight receipt", async () => {
+    const harness = testHarness({ receiptKind: "processing" });
+
+    await expect(
+      handleInboundEmailWebhook(input, harness.dependencies)
+    ).resolves.toEqual({ status: 503, code: "RETRY" });
+    expect(harness.calls).toEqual(["verify", "resolve", "claim"]);
+    expect(harness.spies.runTransaction).not.toHaveBeenCalled();
+    expect(harness.spies.retrieveMessage).not.toHaveBeenCalled();
+    expect(harness.spies.parseMessage).not.toHaveBeenCalled();
+    expect(harness.spies.createDraft).not.toHaveBeenCalled();
+    expect(harness.spies.markReceipt).not.toHaveBeenCalled();
+    expect(harness.spies.mailboxUpdate).not.toHaveBeenCalled();
+    expect(harness.spies.activityCreate).not.toHaveBeenCalled();
+    expect(harness.spies.cleanup).not.toHaveBeenCalled();
   });
 
   it("acknowledges a duplicate when its optional mailbox-status update fails", async () => {

@@ -58,7 +58,7 @@ describe("concurrent inbound receipt claims", () => {
 
     expect(results.map(({ kind }) => kind).sort()).toEqual([
       "claimed",
-      "duplicate"
+      "processing"
     ]);
     await expect(
       prisma.inboundEmailReceipt.count({
@@ -76,7 +76,7 @@ describe("concurrent inbound receipt claims", () => {
 
     expect(results.map(({ kind }) => kind).sort()).toEqual([
       "claimed",
-      "duplicate"
+      "processing"
     ]);
     await expect(
       prisma.inboundEmailReceipt.count({
@@ -116,7 +116,7 @@ describe("concurrent inbound receipt claims", () => {
 
     expect(results.map(({ kind }) => kind).sort()).toEqual([
       "claimed",
-      "duplicate"
+      "processing"
     ]);
     await expect(
       prisma.inboundEmailReceipt.findUnique({

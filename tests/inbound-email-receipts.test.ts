@@ -214,7 +214,7 @@ describe("inbound receipt claiming", () => {
 
   it("returns an existing receipt for a duplicate event", async () => {
     const claimInput = input();
-    const existing = receipt();
+    const existing = receipt({ state: "PROCESSED" });
     receiptCreate.mockRejectedValue(
       uniqueConflict(["providerEventHash"])
     );
@@ -241,7 +241,8 @@ describe("inbound receipt claiming", () => {
     const claimInput = input();
     const existing = receipt({
       userId: claimInput.userId,
-      mailboxId: claimInput.mailboxId
+      mailboxId: claimInput.mailboxId,
+      state: "IGNORED"
     });
     receiptCreate.mockRejectedValue(
       uniqueConflict(["mailboxId", "providerMessageHash"])
@@ -335,9 +336,14 @@ describe("inbound receipt claiming", () => {
       receiptFindUnique.mockResolvedValueOnce(existing);
       receiptUpdateMany.mockResolvedValue({ count: 0 });
 
-      await expect(claimInboundEmailReceipt(claimInput)).resolves.toEqual(
-        expect.objectContaining({ kind: "duplicate" })
-      );
+      await expect(claimInboundEmailReceipt(claimInput)).resolves.toEqual({
+        kind: "processing",
+        receipt: {
+          id: existing.id,
+          userId: existing.userId,
+          mailboxId: existing.mailboxId
+        }
+      });
       expect(receiptUpdateMany).toHaveBeenCalledWith({
         where: {
           id: existing.id,

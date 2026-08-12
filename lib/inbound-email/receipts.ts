@@ -20,6 +20,10 @@ export type InboundReceiptClaim =
   | {
       kind: "duplicate";
       receipt: { id: string; userId: string; mailboxId: string };
+    }
+  | {
+      kind: "processing";
+      receipt: { id: string; userId: string; mailboxId: string };
     };
 
 export type InboundMailboxReader = Pick<
@@ -42,6 +46,12 @@ const claimableStates = [
   InboundEmailReceiptState.RECEIVED,
   InboundEmailReceiptState.RETRYABLE_FAILED
 ] as const;
+
+const terminalStates = new Set<InboundEmailReceiptState>([
+  InboundEmailReceiptState.PROCESSED,
+  InboundEmailReceiptState.IGNORED,
+  InboundEmailReceiptState.TERMINAL_FAILED
+]);
 
 const markableStates = new Set<InboundEmailReceiptState>([
   InboundEmailReceiptState.PROCESSED,
@@ -254,9 +264,12 @@ export async function claimInboundEmailReceipt(input: {
       mailboxId: existing.mailboxId
     };
 
-    return claimed.count === 1
-      ? { kind: "claimed", receipt }
-      : { kind: "duplicate", receipt };
+    if (claimed.count === 1) {
+      return { kind: "claimed", receipt };
+    }
+    return terminalStates.has(existing.state)
+      ? { kind: "duplicate", receipt }
+      : { kind: "processing", receipt };
   }
 }
 
