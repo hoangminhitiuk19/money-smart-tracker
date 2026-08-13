@@ -47,7 +47,7 @@ import {
 const DRAFT_RETENTION_DAYS = 30;
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1_000;
 const IMPORT_TRANSACTION_TIMEOUT_MS = 60_000;
-const UPDATE_TRANSACTION_DRAFT_TIMEOUT_MS = 60_000;
+const DRAFT_TRANSACTION_TIMEOUT_MS = 60_000;
 const INVALID_DRAFT_ERROR = "Enter valid draft data.";
 const DRAFT_NOT_FOUND_ERROR = "Draft not found.";
 const CAPTURE_NOT_EDITABLE_ERROR = "This capture can no longer be edited.";
@@ -416,7 +416,7 @@ export async function savePasteDrafts(input: {
         ok: true as const,
         records: await reassessCapture(db, user.id, parsed.data.captureKey)
       };
-    });
+    }, undefined, DRAFT_TRANSACTION_TIMEOUT_MS);
 
     return saved.ok
       ? {
@@ -497,7 +497,7 @@ export async function saveQuickDraft(
         ok: true as const,
         records: await reassessCapture(db, user.id, parsed.data.captureKey)
       };
-    });
+    }, undefined, DRAFT_TRANSACTION_TIMEOUT_MS);
     if (!saved.ok) return actionFailure(saved.error);
     const draft = saved.records.find(
       ({ position }) => position === parsed.data.position
@@ -641,7 +641,7 @@ export async function updateTransactionDraft(
       const drafts = records.map(transactionDraftRecordToView);
       const draft = drafts.find((record) => record.id === updated.id);
       return draft ? { ok: true as const, draft, drafts } : actionFailure();
-    }, { timeout: UPDATE_TRANSACTION_DRAFT_TIMEOUT_MS });
+    }, { timeout: DRAFT_TRANSACTION_TIMEOUT_MS });
   } catch {
     return actionFailure();
   }

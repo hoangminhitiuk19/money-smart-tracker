@@ -298,6 +298,10 @@ describe("transaction draft save contracts", () => {
     expect(JSON.parse(JSON.stringify(result))).toEqual(result);
     expect(drafts[0].duplicateFingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(drafts[0].expiresAt.toISOString()).toBe("2026-09-03T00:00:00.000Z");
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      timeout: 60_000
+    });
   });
 
   it("rejects non-contiguous paste rows and oversized raw values before writing", async () => {
@@ -392,6 +396,10 @@ describe("transaction draft save contracts", () => {
     expect(result).toMatchObject({
       ok: true,
       draft: { origin: "QUICK", status: "READY", amountText: "45.00" }
+    });
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      timeout: 60_000
     });
   });
 
