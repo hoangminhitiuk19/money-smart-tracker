@@ -55,7 +55,7 @@ for Production.
 | --- | --- | --- | --- | --- |
 | Local | `postgresql://<local-user>:<local-password>@<local-endpoint>-pooler.<neon-host>/<local-database>?sslmode=require` | `<generated-local-secret-at-least-32-characters>` | `http://localhost:3000` | Optional complete testing-only group |
 | Vercel Preview | `postgresql://<preview-user>:<preview-password>@<preview-endpoint>-pooler.<neon-host>/<preview-database>?sslmode=require` | `<generated-preview-secret-at-least-32-characters>` | `https://<preview-deployment-or-branch-url>` | Optional complete testing-only group |
-| Vercel Production | `postgresql://<production-user>:<production-password>@<production-endpoint>-pooler.<neon-host>/<production-database>?sslmode=require` | `<generated-production-secret-at-least-32-characters>` | `https://<canonical-production-domain>` | Not authorized |
+| Vercel Production | `postgresql://<production-user>:<production-password>@<production-endpoint>-pooler.<neon-host>/<production-database>?sslmode=require` | `<generated-production-secret-at-least-32-characters>` | `https://<canonical-production-domain>` | Not authorized, except the test-only sandbox below |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -70,6 +70,20 @@ For application traffic, use Neon’s pooled connection URL: its hostname includ
 Never commit database URLs or secret values.
 
 ## Free inbound-email testing
+
+### Test-only sandbox deployment
+
+The stable `money-smart-tracker.vercel.app` deployment is a **test-only
+sandbox**. Vercel labels its environment target as Production, but it uses a
+separate testing database and accepts only synthetic or redacted data. It is
+not a customer Production release, and it does not authorize real users, real
+financial email, or real bank-email parsing.
+
+For this sandbox, configure the complete all-or-none inbound group on the
+Vercel Production target, point `DATABASE_URL` at the testing database, and
+keep `NEXTAUTH_URL` equal to the stable sandbox origin. Keep the exact
+`NEXTAUTH_SECRET` and `NEXTAUTH_URL` names; never use `AUTH_SECRET` or
+`AUTH_URL`.
 
 The secure inbound-email foundation is available at
 `/transactions/capture/email` for Local and Vercel Preview testing. It accepts
@@ -201,6 +215,13 @@ cells support Tab and arrow-key navigation; narrow screens use editable cards.
 Saving is atomic for the selected set, and retrying a failed request reuses its
 idempotency key so the same batch is not created twice. Unselected drafts remain
 available for later review.
+
+Imported and dismissed drafts have their candidate values cleared for privacy,
+so reopening a finished capture shows its outcome instead of empty rows: a link
+to the imported transaction (or the transaction list for several), a dismissed
+notice, or a generic "Capture unavailable" state for missing, expired, or
+inaccessible captures. When some rows were imported and others remain, the
+remaining rows stay editable beneath a short imported notice.
 
 Email forwarding testing is available at `/transactions/capture/email` as a
 separate, review-first path. It uses the optional all-or-none environment group
