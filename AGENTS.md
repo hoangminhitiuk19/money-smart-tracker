@@ -57,6 +57,10 @@ mobile, loading, empty-state, receipt, and settings checks.
 - Obtain `userId` from `requireAuth()` only. Scope every private query by it,
   verify ownership before reads or mutations, and ownership-check every
   referenced foreign key.
+- The stable `money-smart-tracker.vercel.app` deployment is a test-only
+  sandbox even though Vercel labels its target Production. It uses the testing
+  database and accepts only synthetic or redacted data; real financial email,
+  real bank-email parsing, and real Production use remain unauthorized.
 - Never store full card numbers, CVV/CVC, PIN, OTP, or banking credentials.
 - Use `fromMoneySourceId` and `toMoneySourceId`; never replace the directional
   model with a single `moneySourceId`.
