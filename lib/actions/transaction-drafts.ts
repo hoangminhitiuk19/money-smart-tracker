@@ -17,6 +17,7 @@ import {
   RATE_LIMIT_MESSAGE
 } from "@/lib/security/rate-limit";
 import { MAX_DRAFT_ROWS, MAX_PASTE_BYTES } from "@/lib/transaction-drafts/paste";
+import { deriveCaptureOutcome } from "@/lib/transaction-drafts/capture-outcome";
 import { cleanupExpiredTransactionDrafts } from "@/lib/transaction-drafts/retention";
 import {
   storedTransactionDraftInputSchema,
@@ -517,6 +518,24 @@ function cleanupErrorClass(error: unknown) {
   return error instanceof Error ? error.constructor.name : "UnknownError";
 }
 
+async function cleanupBeforeCaptureRead() {
+  try {
+    await cleanupExpiredTransactionDrafts();
+  } catch (error) {
+    console.error("Transaction draft retention cleanup failed.", {
+      errorClass: cleanupErrorClass(error)
+    });
+  }
+}
+
+async function findOwnedCaptureDrafts(userId: string, captureKey: string) {
+  const records = await prisma.transactionDraft.findMany({
+    where: { userId, captureKey },
+    orderBy: [{ position: "asc" }, { id: "asc" }]
+  });
+  return records.map(transactionDraftRecordToView);
+}
+
 export async function listTransactionDrafts(
   captureKey: string
 ): Promise<DraftActionResult<{ drafts: TransactionDraftView[] }>> {
@@ -526,22 +545,67 @@ export async function listTransactionDrafts(
     return actionFailure();
   }
 
-  try {
-    await cleanupExpiredTransactionDrafts();
-  } catch (error) {
-    console.error("Transaction draft retention cleanup failed.", {
-      errorClass: cleanupErrorClass(error)
-    });
-  }
+  await cleanupBeforeCaptureRead();
 
   try {
-    const records = await prisma.transactionDraft.findMany({
-      where: { userId: user.id, captureKey: parsedCaptureKey.data },
-      orderBy: [{ position: "asc" }, { id: "asc" }]
-    });
-    return { ok: true, drafts: records.map(transactionDraftRecordToView) };
+    return {
+      ok: true,
+      drafts: await findOwnedCaptureDrafts(user.id, parsedCaptureKey.data)
+    };
   } catch {
     return actionFailure();
+  }
+}
+
+export type TransactionCaptureState =
+  | { kind: "active"; drafts: TransactionDraftView[]; importedCount: number }
+  | { kind: "imported"; importedCount: number; transactionIds: string[] }
+  | { kind: "dismissed" }
+  | { kind: "unavailable" }
+  | { kind: "failed" };
+
+// Missing, expired, malformed, and foreign capture keys all resolve to the same
+// "unavailable" state so the response never reveals another user's capture.
+export async function loadTransactionCapture(
+  captureKey: string
+): Promise<TransactionCaptureState> {
+  const user = await requireAuth();
+  const parsedCaptureKey = captureKeySchema.safeParse(captureKey);
+  if (!parsedCaptureKey.success) {
+    return { kind: "unavailable" };
+  }
+
+  await cleanupBeforeCaptureRead();
+
+  try {
+    const outcome = deriveCaptureOutcome(
+      await findOwnedCaptureDrafts(user.id, parsedCaptureKey.data)
+    );
+    if (outcome.kind === "active") {
+      return {
+        kind: "active",
+        drafts: outcome.activeDrafts,
+        importedCount: outcome.importedCount
+      };
+    }
+    if (outcome.kind !== "imported") {
+      return { kind: outcome.kind };
+    }
+
+    const ownedTransactions = await prisma.transaction.findMany({
+      where: { userId: user.id, id: { in: outcome.importedTransactionIds } },
+      select: { id: true }
+    });
+    const ownedIds = new Set(ownedTransactions.map(({ id }) => id));
+    return {
+      kind: "imported",
+      importedCount: outcome.importedCount,
+      transactionIds: outcome.importedTransactionIds.filter((id) =>
+        ownedIds.has(id)
+      )
+    };
+  } catch {
+    return { kind: "failed" };
   }
 }
 

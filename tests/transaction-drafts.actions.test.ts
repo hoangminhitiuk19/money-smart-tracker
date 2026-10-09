@@ -4,6 +4,7 @@ import {
   dismissTransactionDrafts,
   importTransactionDrafts,
   listTransactionDrafts,
+  loadTransactionCapture,
   savePasteDrafts,
   saveQuickDraft,
   updateTransactionDraft
@@ -187,6 +188,11 @@ vi.mock("@/lib/prisma", () => ({
     $transaction: vi.fn(async (operation: any) => operation(fakeDbState.current)),
     transactionImportBatch: {
       findUnique: vi.fn()
+    },
+    transaction: {
+      findMany: vi.fn((...args: any[]) =>
+        fakeDbState.current.transaction.findMany(...args)
+      )
     },
     transactionDraft: {
       findMany: vi.fn((...args: any[]) =>
@@ -489,6 +495,94 @@ describe("transaction draft owned reads and mutations", () => {
     );
     expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("45.00");
     expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("Still reachable");
+    errorSpy.mockRestore();
+  });
+
+  it("loads an active capture with only editable rows and an imported count", async () => {
+    drafts = [
+      fakeRecord(expenseDraft({ position: 0 }), {
+        id: "imported-draft",
+        status: "IMPORTED",
+        importedTransactionId: "tx-1"
+      }),
+      fakeRecord(expenseDraft({ position: 1, title: "Still editable" }), {
+        id: "ready-draft",
+        status: "READY"
+      }),
+      fakeRecord(expenseDraft({ position: 2 }), {
+        id: "dismissed-draft",
+        status: "DISMISSED"
+      })
+    ];
+
+    const result = await loadTransactionCapture(captureKey);
+
+    expect(result).toMatchObject({ kind: "active", importedCount: 1 });
+    expect(result.kind === "active" && result.drafts.map(({ id }) => id)).toEqual([
+      "ready-draft"
+    ]);
+    expect(JSON.parse(JSON.stringify(result))).toEqual(result);
+  });
+
+  it("returns only owned, existing transactions for an imported capture", async () => {
+    drafts = [
+      fakeRecord(expenseDraft({ position: 0 }), {
+        status: "IMPORTED",
+        importedTransactionId: "tx-owned"
+      }),
+      fakeRecord(expenseDraft({ position: 1 }), {
+        status: "IMPORTED",
+        importedTransactionId: "tx-deleted"
+      })
+    ];
+    fakeDb.transaction.findMany.mockImplementationOnce(async () => [
+      { id: "tx-owned" }
+    ] as any);
+
+    await expect(loadTransactionCapture(captureKey)).resolves.toEqual({
+      kind: "imported",
+      importedCount: 2,
+      transactionIds: ["tx-owned"]
+    });
+    expect(fakeDb.transaction.findMany).toHaveBeenCalledWith({
+      where: { userId: mockUser.id, id: { in: ["tx-owned", "tx-deleted"] } },
+      select: { id: true }
+    });
+  });
+
+  it("reports a dismissed-only capture without exposing cleared values", async () => {
+    drafts = [fakeRecord(expenseDraft(), { status: "DISMISSED" })];
+
+    await expect(loadTransactionCapture(captureKey)).resolves.toEqual({
+      kind: "dismissed"
+    });
+  });
+
+  it("makes foreign, missing, and malformed captures indistinguishable", async () => {
+    drafts = [fakeRecord(expenseDraft(), { userId: "user-2", status: "IMPORTED" })];
+
+    const foreign = await loadTransactionCapture(captureKey);
+    const missing = await loadTransactionCapture(
+      "6ba7b810-9dad-41d1-80b4-00c04fd430c8"
+    );
+    const malformed = await loadTransactionCapture("not-a-capture-key");
+
+    expect(foreign).toEqual({ kind: "unavailable" });
+    expect(missing).toEqual(foreign);
+    expect(malformed).toEqual(foreign);
+    expect(fakeDb.transaction.findMany).not.toHaveBeenCalled();
+  });
+
+  it("returns a safe failure without logging capture data when the read fails", async () => {
+    fakeDb.transactionDraft.findMany.mockRejectedValueOnce(
+      new Error(`lookup failed for ${captureKey}`)
+    );
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await expect(loadTransactionCapture(captureKey)).resolves.toEqual({
+      kind: "failed"
+    });
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(captureKey);
     errorSpy.mockRestore();
   });
 
